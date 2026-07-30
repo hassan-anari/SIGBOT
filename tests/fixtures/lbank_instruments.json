@@ -1,0 +1,7 @@
+[
+  {"baseCurrency":"BTC","clearCurrency":"USDT","priceCurrency":"USDT","symbol":"BTCUSDT"},
+  {"baseCurrency":"ETH","clearCurrency":"USDT","priceCurrency":"USDT","symbol":"ETHUSDT"},
+  {"baseCurrency":"1451800","clearCurrency":"USDT","priceCurrency":"USDT","symbol":"1451800USDT"},
+  {"baseCurrency":"4","clearCurrency":"USDT","priceCurrency":"USDT","symbol":"4USDT"},
+  {"baseCurrency":"1000XEC","clearCurrency":"USDT","priceCurrency":"USDT","symbol":"1000XECUSDT"}
+]

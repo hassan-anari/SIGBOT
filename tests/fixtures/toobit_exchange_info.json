@@ -1,0 +1,1 @@
+{"contracts":[{"symbol":"BTC-SWAP-USDT","status":"TRADING","quoteAsset":"USDT","marginToken":"USDT","inverse":false,"underlying":"BTC"},{"symbol":"BTC-SWAP","status":"TRADING","quoteAsset":"USDT","marginToken":"BTC","inverse":true,"underlying":"BTC"}]}
