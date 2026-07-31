@@ -24,3 +24,11 @@ class DuplicateTelegramUserIdError(ApplicationError):
 
 class SignalistPersistenceError(ApplicationError):
     pass
+
+
+class ActorResolutionError(ApplicationError):
+    """A sanitized failure while resolving the current Telegram actor."""
+
+
+class TelegramRuntimeError(ApplicationError):
+    """A sanitized Telegram runtime or coordination failure."""
