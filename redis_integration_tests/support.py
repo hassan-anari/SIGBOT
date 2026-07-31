@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote_plus, urlsplit
 from redis.asyncio import Redis
 
 class UnsafeRedisTestConfiguration(RuntimeError): pass
@@ -22,6 +22,13 @@ def require_safe_test_redis(mapping=None) -> SafeTestRedis:
     except Exception as exc: raise UnsafeRedisTestConfiguration('TEST_REDIS_URL is invalid') from exc
     if parsed.scheme not in {'redis','rediss'}: raise UnsafeRedisTestConfiguration('TEST_REDIS_URL scheme is unsafe')
     if not parsed.hostname: raise UnsafeRedisTestConfiguration('TEST_REDIS_URL must name a host')
+    try:
+        query_names = [unquote_plus(name).casefold() for name, _ in parse_qsl(
+            parsed.query, keep_blank_values=True, strict_parsing=False)]
+    except ValueError as exc:
+        raise UnsafeRedisTestConfiguration('TEST_REDIS_URL query is invalid') from exc
+    if 'db' in query_names:
+        raise UnsafeRedisTestConfiguration('TEST_REDIS_URL must select its database only by path')
     path=parsed.path
     if not path or path=='/': raise UnsafeRedisTestConfiguration('TEST_REDIS_URL must select a database')
     try: database=int(path.removeprefix('/'))

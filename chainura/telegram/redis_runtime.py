@@ -66,14 +66,22 @@ class PollerLease:
             raise TelegramRuntimeError("poller lease release failed") from exc
 
     async def run_renewal(self, stop: asyncio.Event, lost: asyncio.Event) -> None:
-        while not stop.is_set():
-            try:
-                await asyncio.wait_for(stop.wait(), LEASE_RENEW_SECONDS)
-                break
-            except asyncio.TimeoutError:
-                if not await self.renew():
-                    lost.set()
+        try:
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), LEASE_RENEW_SECONDS)
                     return
+                except asyncio.TimeoutError:
+                    if not await self.renew():
+                        raise TelegramRuntimeError("poller lease ownership was lost")
+        except asyncio.CancelledError:
+            raise
+        except TelegramRuntimeError:
+            lost.set()
+            raise
+        except Exception as exc:
+            lost.set()
+            raise TelegramRuntimeError("poller lease renewal failed") from exc
 
 
 class UpdateIdempotency:

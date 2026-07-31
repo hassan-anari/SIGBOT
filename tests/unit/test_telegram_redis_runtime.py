@@ -1,4 +1,7 @@
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
+from chainura.errors import TelegramRuntimeError
 from chainura.telegram.redis_runtime import PollerLease, UpdateIdempotency, ClaimResult, bot_identity
 
 class FakeRedis:
@@ -37,3 +40,13 @@ class RedisRuntimeTests(unittest.IsolatedAsyncioTestCase):
         processed,_=await service.claim(4); self.assertIs(processed,ClaimResult.PROCESSED)
         result,owner=await service.claim(5); self.assertTrue(await service.release(5,owner))
         self.assertNotIn(service.keys(5)[0],redis.values)
+
+    async def test_every_renewal_failure_sets_fatal_loss(self):
+        for failure in (False, TelegramRuntimeError('safe'), RuntimeError('unexpected')):
+            lease=PollerLease(FakeRedis(),'abc'); lost=asyncio.Event(); stop=asyncio.Event()
+            lease.renew=AsyncMock(return_value=failure) if failure is False else AsyncMock(side_effect=failure)
+            with self.subTest(failure=type(failure).__name__), patch(
+                'chainura.telegram.redis_runtime.LEASE_RENEW_SECONDS', 0
+            ), self.assertRaises(TelegramRuntimeError):
+                await lease.run_renewal(stop,lost)
+            self.assertTrue(lost.is_set())

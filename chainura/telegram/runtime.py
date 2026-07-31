@@ -4,6 +4,8 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
+from enum import Enum
+from typing import Awaitable, TypeVar
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -31,6 +33,18 @@ from chainura.telegram.routers import router
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 SHUTDOWN_TIMEOUT = 15
+T = TypeVar("T")
+
+
+class RuntimeState(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
+class RuntimeShutdownRequested(Exception):
+    """Internal control flow used to stop partial startup safely."""
 
 
 def create_production_storage(redis: Redis, identity: str) -> RedisStorage:
@@ -56,6 +70,8 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
 class Runtime:
     def __init__(self, settings: TelegramRuntimeSettings) -> None:
         self.settings = settings
+        self.state = RuntimeState.STARTING
+        self.shutdown_requested = asyncio.Event()
         self.engine = None
         self.redis: Redis | None = None
         self.storage: RedisStorage | None = None
@@ -67,96 +83,215 @@ class Runtime:
         self.renewal_stop = asyncio.Event()
         self.lease_lost = asyncio.Event()
         self._cleanup_lock = asyncio.Lock()
-        self._stopped = False
-        self._storage_owns_redis = False
+        self._cleanup_complete = asyncio.Event()
+        self._lease_released = False
+        self._redis_closed = False
+        self._bot_closed = False
+        self._engine_disposed = False
+
+    def request_shutdown(self) -> None:
+        if self.state is not RuntimeState.STOPPED:
+            self.shutdown_requested.set()
+
+    def _checkpoint(self) -> None:
+        if self.shutdown_requested.is_set():
+            raise RuntimeShutdownRequested
+
+    def _renewal_done(self, task: asyncio.Task[None]) -> None:
+        if not self.renewal_stop.is_set():
+            self.lease_lost.set()
+            self.request_shutdown()
+
+    async def _startup_await(self, awaitable: Awaitable[T]) -> T:
+        """Await one startup stage while renewal and shutdown remain supervised."""
+        self._checkpoint()
+        operation = asyncio.ensure_future(awaitable)
+        shutdown_waiter = asyncio.create_task(self.shutdown_requested.wait())
+        watched: set[asyncio.Future[object]] = {operation, shutdown_waiter}
+        if self.renewal_task is not None:
+            watched.add(self.renewal_task)
+        done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+        if operation in done and not self.shutdown_requested.is_set():
+            shutdown_waiter.cancel()
+            with suppress(asyncio.CancelledError):
+                await shutdown_waiter
+            result = await operation
+            self._checkpoint()
+            return result
+        if not operation.done():
+            operation.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await operation
+        shutdown_waiter.cancel()
+        with suppress(asyncio.CancelledError):
+            await shutdown_waiter
+        if self.renewal_task in done and self.renewal_task is not None:
+            self._observe_task_failure(self.renewal_task, "poller renewal")
+        raise RuntimeShutdownRequested
+
+    @staticmethod
+    def _observe_task_failure(task: asyncio.Task[object], component: str) -> None:
+        if task.cancelled():
+            return
+        try:
+            exception = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exception is not None:
+            LOGGER.error("%s task failed category=%s", component,
+                         type(exception).__name__)
 
     async def start(self) -> None:
         identity = bot_identity(self.settings.bot_token)
-        self.engine = create_database_engine(self.settings.application.database_url)
-        sessions = create_session_factory(self.engine)
-        service = SignalistService(SqlAlchemySignalistTransactionFactory(sessions))
-        resolver = ActorResolver(self.settings.application, service)
         try:
+            self._checkpoint()
+            self.engine = create_database_engine(self.settings.application.database_url)
+            sessions = create_session_factory(self.engine)
+            service = SignalistService(SqlAlchemySignalistTransactionFactory(sessions))
+            resolver = ActorResolver(self.settings.application, service)
+            self._checkpoint()
             self.redis = Redis.from_url(self.settings.redis_url, decode_responses=True)
-            await self.redis.ping()
+            await self._startup_await(self.redis.ping())
             self.lease = PollerLease(self.redis, identity)
-            if not await self.lease.acquire():
+            if not await self._startup_await(self.lease.acquire()):
                 raise TelegramRuntimeError("another poller is active")
-            self.bot = Bot(self.settings.bot_token,
-                           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            self.storage = create_production_storage(self.redis, identity)
-            self._storage_owns_redis = True
-            idempotency = UpdateIdempotency(self.redis, identity)
-            self.dispatcher = build_dispatcher(self.storage, idempotency, resolver)
-            await self.bot.set_my_commands([
-                BotCommand(command="start", description=texts.COMMAND_START),
-                BotCommand(command="help", description=texts.COMMAND_HELP),
-            ])
-            await self.bot.delete_webhook(drop_pending_updates=False)
+
+            # Renewal is supervised before any Telegram network operation begins.
             self.renewal_task = asyncio.create_task(
                 self.lease.run_renewal(self.renewal_stop, self.lease_lost))
+            self.renewal_task.add_done_callback(self._renewal_done)
+            self._checkpoint()
+
+            self.bot = Bot(self.settings.bot_token,
+                           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            self._checkpoint()
+            self.storage = create_production_storage(self.redis, identity)
+            idempotency = UpdateIdempotency(self.redis, identity)
+            self.dispatcher = build_dispatcher(self.storage, idempotency, resolver)
+            self._checkpoint()
+            await self._startup_await(self.bot.set_my_commands([
+                BotCommand(command="start", description=texts.COMMAND_START),
+                BotCommand(command="help", description=texts.COMMAND_HELP),
+            ]))
+            await self._startup_await(self.bot.delete_webhook(drop_pending_updates=False))
+            self._checkpoint()
+
+            self.state = RuntimeState.RUNNING
             self.polling_task = asyncio.create_task(self.dispatcher.start_polling(
                 self.bot, handle_signals=False, close_bot_session=False,
                 handle_as_tasks=False, allowed_updates=["message", "callback_query"]))
-            lost_waiter = asyncio.create_task(self.lease_lost.wait())
-            done, _ = await asyncio.wait({self.polling_task, lost_waiter},
-                                         return_when=asyncio.FIRST_COMPLETED)
-            if lost_waiter in done and self.lease_lost.is_set():
-                raise TelegramRuntimeError("poller lease ownership was lost")
-            lost_waiter.cancel()
-            with suppress(asyncio.CancelledError):
-                await lost_waiter
-            await self.polling_task
+            await self._supervise()
+        except RuntimeShutdownRequested:
+            pass
+        except asyncio.CancelledError:
+            raise
+        except TelegramRuntimeError:
+            raise
+        except Exception as exc:
+            raise TelegramRuntimeError("telegram runtime startup failed") from exc
         finally:
             await self.cleanup()
 
+    async def _supervise(self) -> None:
+        if self.polling_task is None or self.renewal_task is None:
+            return
+        shutdown_waiter = asyncio.create_task(self.shutdown_requested.wait())
+        shutdown_was_requested = self.shutdown_requested.is_set()
+        done, _ = await asyncio.wait(
+            {self.polling_task, self.renewal_task, shutdown_waiter},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        fatal_reason: str | None = None
+        if self.renewal_task in done:
+            self._observe_task_failure(self.renewal_task, "poller renewal")
+            if not self.renewal_stop.is_set():
+                self.lease_lost.set()
+                fatal_reason = "poller lease renewal stopped unexpectedly"
+        if self.polling_task in done:
+            self._observe_task_failure(self.polling_task, "telegram polling")
+            if not shutdown_was_requested:
+                fatal_reason = fatal_reason or "telegram polling stopped unexpectedly"
+        self.request_shutdown()
+        shutdown_waiter.cancel()
+        with suppress(asyncio.CancelledError):
+            await shutdown_waiter
+        if fatal_reason:
+            raise TelegramRuntimeError(fatal_reason)
+
+    async def _best_effort(self, action: Awaitable[object], component: str) -> bool:
+        try:
+            await action
+            return True
+        except asyncio.CancelledError:
+            return False
+        except Exception as exc:
+            LOGGER.error("cleanup failed component=%s category=%s", component,
+                         type(exc).__name__)
+            return False
+
     async def cleanup(self) -> None:
         async with self._cleanup_lock:
-            if self._stopped:
+            if self.state is RuntimeState.STOPPED:
                 return
+            self.state = RuntimeState.STOPPING
+            self.shutdown_requested.set()
+
             if self.dispatcher and self.polling_task and not self.polling_task.done():
-                try:
-                    await asyncio.wait_for(self.dispatcher.stop_polling(), SHUTDOWN_TIMEOUT)
-                except (TimeoutError, RuntimeError):
+                stopped = await self._best_effort(
+                    asyncio.wait_for(self.dispatcher.stop_polling(), SHUTDOWN_TIMEOUT),
+                    "polling stop",
+                )
+                if not stopped and not self.polling_task.done():
                     self.polling_task.cancel()
-                with suppress(asyncio.CancelledError, Exception):
-                    await self.polling_task
+            if self.polling_task:
+                await self._best_effort(self.polling_task, "polling task")
+
             self.renewal_stop.set()
             if self.renewal_task:
-                try:
-                    await asyncio.wait_for(self.renewal_task, SHUTDOWN_TIMEOUT)
-                except TimeoutError:
-                    self.renewal_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await self.renewal_task
-            if self.lease:
-                with suppress(TelegramRuntimeError):
-                    await self.lease.release()
-            if self.storage:
-                await self.storage.close()
-            elif self.redis:
-                await self.redis.aclose(close_connection_pool=True)
-            if self.bot:
-                await self.bot.session.close()
-            if self.engine:
-                await self.engine.dispose()
-            self._stopped = True
+                if not self.renewal_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(self.renewal_task), SHUTDOWN_TIMEOUT)
+                    except TimeoutError:
+                        self.renewal_task.cancel()
+                    except Exception:
+                        pass
+                if not self.renewal_task.done():
+                    await self._best_effort(self.renewal_task, "poller renewal task")
+                else:
+                    self._observe_task_failure(self.renewal_task, "poller renewal")
+
+            if self.lease and not self._lease_released:
+                if await self._best_effort(self.lease.release(), "poller lease release"):
+                    self._lease_released = True
+
+            if not self._redis_closed:
+                if self.storage:
+                    closed = await self._best_effort(self.storage.close(), "Redis storage")
+                elif self.redis:
+                    closed = await self._best_effort(
+                        self.redis.aclose(close_connection_pool=True), "Redis client")
+                else:
+                    closed = True
+                if closed:
+                    self._redis_closed = True
+
+            if self.bot and not self._bot_closed:
+                if await self._best_effort(self.bot.session.close(), "Bot session"):
+                    self._bot_closed = True
+
+            if self.engine and not self._engine_disposed:
+                if await self._best_effort(self.engine.dispose(), "database engine"):
+                    self._engine_disposed = True
+
+            self.state = RuntimeState.STOPPED
+            self._cleanup_complete.set()
 
 
 async def run() -> None:
     settings = load_telegram_runtime_settings()
     runtime = Runtime(settings)
     loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         with suppress(NotImplementedError):
-            loop.add_signal_handler(signum, stop.set)
-    task = asyncio.create_task(runtime.start())
-    stop_task = asyncio.create_task(stop.wait())
-    done, _ = await asyncio.wait({task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-    if stop_task in done:
-        await runtime.cleanup()
-    stop_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await stop_task
-    await task
+            loop.add_signal_handler(signum, runtime.request_shutdown)
+    await runtime.start()
