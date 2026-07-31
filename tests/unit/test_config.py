@@ -56,3 +56,29 @@ class ConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             main = importlib.import_module("main")
             self.assertIsNotNone(main.build_parser())
+
+class TelegramRuntimeConfigurationTests(unittest.TestCase):
+    def test_valid_secret_safe_runtime_settings(self) -> None:
+        from chainura.config import TelegramRuntimeSettings
+        settings = TelegramRuntimeSettings.from_mapping({
+            "DATABASE_URL": "postgresql+psycopg://user:secret@localhost/app",
+            "MAIN_ADMIN_TELEGRAM_ID": "10",
+            "TELEGRAM_BOT_TOKEN": "token-value",
+            "REDIS_URL": "rediss://user:redis-secret@localhost:6380/1",
+        })
+        rendered = repr(settings)
+        self.assertNotIn("token-value", rendered)
+        self.assertNotIn("redis-secret", rendered)
+
+    def test_missing_token_and_invalid_redis_are_safe(self) -> None:
+        from chainura.config import TelegramRuntimeSettings
+        from chainura.errors import InvalidApplicationConfigurationError
+        base = {"DATABASE_URL": "postgresql+psycopg://u:p@localhost/app",
+                "MAIN_ADMIN_TELEGRAM_ID": "10", "REDIS_URL": "redis://localhost/0"}
+        with self.assertRaisesRegex(InvalidApplicationConfigurationError, "TELEGRAM_BOT_TOKEN"):
+            TelegramRuntimeSettings.from_mapping(base)
+        base["TELEGRAM_BOT_TOKEN"] = "x"
+        base["REDIS_URL"] = "http://user:top-secret@localhost/1"
+        with self.assertRaises(InvalidApplicationConfigurationError) as caught:
+            TelegramRuntimeSettings.from_mapping(base)
+        self.assertNotIn("top-secret", str(caught.exception))

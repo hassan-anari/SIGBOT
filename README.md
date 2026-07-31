@@ -26,6 +26,11 @@ Python 3.11 یا جدیدتر و برای بخش پایدار برنامه Postg
 python -m pip install -r requirements.txt
 ```
 
+برای اجرای پوستهٔ تلگرام، Redis 7 نیز لازم است. رابط تلگرام فقط فارسی است؛
+Reply Keyboard تنها ناوبری اصلی و Inline Keyboard تنها عملیات وابسته به پیام را
+نمایش می‌دهد. متن‌های کاربر در یک کاتالوگ متمرکز نگهداری می‌شوند و انتخاب زبان
+وجود ندارد.
+
 ```powershell
 python main.py symbols
 python main.py watch --seconds 30
@@ -50,10 +55,33 @@ Admin جدول دیتابیس ندارد و شناسهٔ آن از محیط خو
 ```text
 DATABASE_URL=postgresql+psycopg://app_user:password@localhost/chainura
 MAIN_ADMIN_TELEGRAM_ID=123456789
+TELEGRAM_BOT_TOKEN=123456789:replace_me
+REDIS_URL=redis://localhost:6379/0
 ```
 
 فایل `.env.example` فقط نمونه است؛ برنامه فایل `.env` را خودکار بارگذاری نمی‌کند.
 مقادیر واقعی را در Environment سیستم قرار دهید و URL کامل را در لاگ ننویسید.
+
+`TELEGRAM_BOT_TOKEN` و گذرواژه‌های Redis/PostgreSQL نباید Commit یا Log شوند.
+PostgreSQL منبع دائمی حقیقت است. Redis فقط FSM موقت، قفل Poller، Idempotency و
+داده‌های کوتاه‌عمر رابط را نگهداری می‌کند.
+
+### اجرای تلگرام در توسعه
+
+```bash
+export DATABASE_URL='postgresql+psycopg://app_user:password@localhost/chainura'
+export MAIN_ADMIN_TELEGRAM_ID='123456789'
+export TELEGRAM_BOT_TOKEN='replace-with-real-token'
+export REDIS_URL='redis://localhost:6379/0'
+python -m chainura.telegram
+```
+
+توسعه از Long Polling رسمی aiogram استفاده می‌کند. پیش از Polling، Webhook قبلی
+با `drop_pending_updates=False` حذف می‌شود؛ بنابراین Updateهای معلق دور ریخته
+نمی‌شوند. قفل Lease در Redis اجازهٔ تنها یک Poller برای هر Bot Token را می‌دهد.
+SIGINT، SIGTERM یا از دست رفتن Lease از یک مسیر Shutdown استفاده می‌کنند: Polling
+متوقف می‌شود، Lease پیش از بسته‌شدن Redis آزاد می‌شود و سپس Redis، نشست Bot و
+Engine دیتابیس بسته می‌شوند.
 
 برای توسعه یک دیتابیس محلی بسازید و Migration را اجرا کنید:
 
@@ -88,6 +116,20 @@ python -m unittest discover -s integration_tests -v
 نبودن یا ناامن بودن `TEST_DATABASE_URL` باعث شکست صریح Suite، پیش از هر تغییر
 Schema، می‌شود.
 
+### تست Redis
+
+تست‌های Redis واقعی تنها یک URL صریح با دیتابیس غیرصفر می‌پذیرند و فقط کلیدهای
+Namespace تصادفی خود را پاک می‌کنند:
+
+```bash
+export TEST_REDIS_URL='redis://localhost:6379/15'
+python -c "from redis_integration_tests.support import require_safe_test_redis; require_safe_test_redis()"
+python -m unittest discover -s redis_integration_tests -v
+```
+
+این Suite از `KEYS`، `FLUSHDB` و `FLUSHALL` استفاده نمی‌کند و نبودن تنظیم امن
+باعث شکست صریح می‌شود.
+
 ### بررسی معادل CI در محیط محلی
 
 ```bash
@@ -101,11 +143,15 @@ alembic current
 alembic downgrade base
 alembic upgrade head
 python -m unittest discover -s integration_tests -v
+export TEST_REDIS_URL='redis://localhost:6379/15'
+python -m unittest discover -s redis_integration_tests -v
 git diff --check
 ```
 
 دستورهای `main.py` تنظیمات `DATABASE_URL`، `MAIN_ADMIN_TELEGRAM_ID` یا
 `TEST_DATABASE_URL` را بارگذاری نمی‌کنند و Engine دیتابیس نمی‌سازند.
+متغیرهای تلگرام و Redis نیز فقط توسط `python -m chainura.telegram` بارگذاری
+می‌شوند؛ بنابراین دستورهای Market Data مستقل باقی می‌مانند.
 
 
 ## لاگ دائمی فایل
