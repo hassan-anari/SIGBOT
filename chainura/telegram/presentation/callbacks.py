@@ -53,7 +53,7 @@ def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
         if action == "confirm": return len(args) == 3 and args[0] == "remove" and all(_positive(item) for item in args[1:])
         return False
     if namespace == "nav":
-        if action == "type": return len(args) == 1 and args[0] in {"channel", "group"}
+        if action in {"candidate-confirm", "candidate-retry"}: return len(args) == 1 and args[0].startswith("-100") and args[0][1:].isdigit()
         if action == "access": return len(args) == 1 and args[0] in {"public", "private"}
         if action == "exchange": return len(args) == 2 and args[0] in {"add", "remove", "up", "down"} and args[1] in EXCHANGE_CODES
         if action == "confirm": return len(args) == 1 and args[0] in FLOW_CODES

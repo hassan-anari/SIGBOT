@@ -1,144 +1,73 @@
 from __future__ import annotations
-
 from html import escape
+from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, NOT_RECORDED,
+    format_datetime, format_priority, persian_digits)
 
-MENU_MAIN = "منوی اصلی"
-MENU_ADMIN_STATUS = "وضعیت دسترسی"
-MENU_SIGNALIST_STATUS = "وضعیت حساب"
-MENU_HELP = "راهنما"
-MENU_ADMIN_SIGNALISTS = "مدیریت سیگنالیست‌ها"
-MENU_ADMIN_DESTINATIONS = "مدیریت مقصدها"
-BUTTON_BACK = "بازگشت به منوی اصلی"
-BUTTON_REFRESH = "تازه‌سازی وضعیت"
+MENU_MAIN="🏠 منوی اصلی"; MENU_ADMIN_STATUS="🛡 وضعیت دسترسی"; MENU_SIGNALIST_STATUS="👤 وضعیت حساب"
+MENU_HELP="❓ راهنما"; MENU_ADMIN_SIGNALISTS="👥 مدیریت سیگنالیست‌ها"; MENU_ADMIN_DESTINATIONS="📡 مدیریت مقصدها"
+BUTTON_BACK="⬅️ بازگشت به منوی اصلی"; BUTTON_REFRESH="تازه‌سازی وضعیت"
+WELCOME_ADMIN="<b>👋 خوش آمدید</b>\n\nشما مدیر اصلی سامانه هستید."
+WELCOME_SIGNALIST="<b>👋 خوش آمدید، {name}</b>\n\nحساب سیگنالیست شما فعال است."
+DASHBOARD_ADMIN="<b>🏠 منوی اصلی مدیر</b>\n\nیکی از گزینه‌ها را انتخاب کنید."
+DASHBOARD_SIGNALIST="<b>🏠 منوی اصلی سیگنالیست</b>\n\nیکی از گزینه‌ها را انتخاب کنید."
+HELP_ADMIN="<b>❓ راهنمای مدیر</b>\n\nمدیریت سیگنالیست‌ها، مقصدها، اولویت صرافی و انتساب‌ها در دسترس است."
+HELP_SIGNALIST="<b>❓ راهنمای سیگنالیست</b>\n\nدر این مرحله منوی اصلی و وضعیت حساب در دسترس است."
+STATUS_ADMIN="<b>🛡 وضعیت دسترسی</b>\n\nنقش: مدیر اصلی\nوضعیت: 🟢 فعال"
+STATUS_SIGNALIST="<b>👤 وضعیت حساب</b>\n\nنام: {name}\nنقش: سیگنالیست\nوضعیت: 🟢 فعال"
+INACTIVE="حساب شما غیرفعال است و امکان انجام عملیات جدید را ندارد."; ARCHIVED="حساب شما بایگانی شده است."
+UNKNOWN="دسترسی شما هنوز در سامانه تعریف نشده است."; FALLBACK="دستور شناخته نشد؛ از منو استفاده کنید."
+INVALID_CALLBACK="این دکمه معتبر نیست یا دیگر قابل استفاده نیست."; DUPLICATE_CALLBACK="این درخواست قبلاً دریافت شده است."
+TEMPORARY_ERROR="در حال حاضر انجام درخواست ممکن نیست. کمی بعد دوباره تلاش کنید."
+COMMAND_START="شروع و نمایش منوی اصلی"; COMMAND_HELP="نمایش راهنما"
+BUTTON_ADD="➕ افزودن"; BUTTON_CANCEL="❌ لغو"; BUTTON_CONFIRM="✅ تأیید"; BUTTON_PREVIOUS="قبلی"; BUTTON_NEXT="بعدی"
+BUTTON_ALL="همه"; BUTTON_ACTIVE="فعال"; BUTTON_INACTIVE="غیرفعال"; BUTTON_ARCHIVED="بایگانی‌شده"
+BUTTON_EDIT="✏️ ویرایش"; BUTTON_PRIORITY="اولویت صرافی‌ها"; BUTTON_ASSIGNMENTS="سیگنالیست‌های مقصد"
+BUTTON_ACTIVATE="🟢 فعال‌سازی"; BUTTON_DEACTIVATE="🟡 غیرفعال‌سازی"; BUTTON_ARCHIVE="🗃 بایگانی"
+BUTTON_BACK_STEP="⬅️ بازگشت"; BUTTON_ASSIGNED_DESTINATIONS="مقصدهای اختصاص‌یافته"
+BUTTON_CONFIRM_DESTINATION="✅ تأیید مقصد"; BUTTON_REENTER_CHAT="🔄 واردکردن شناسه دیگر"
+BUTTON_UP="▲"; BUTTON_DOWN="▼"
+SIGNALIST_LIST_TITLE="<b>👥 مدیریت سیگنالیست‌ها</b>\n\n📄 صفحه {page} از {pages}\nفیلتر: {filter}\n\nیکی از سیگنالیست‌ها را انتخاب کنید."
+DESTINATION_LIST_TITLE="<b>📡 مدیریت مقصدها</b>\n\n📄 صفحه {page} از {pages}\nفیلتر: {filter}\n\nیکی از مقصدها را انتخاب کنید."
+EMPTY_LIST="موردی برای نمایش وجود ندارد."; ASK_SIGNALIST_ID="🆔 شناسه عددی تلگرام سیگنالیست را وارد کنید."
+ASK_SIGNALIST_NAME="📝 نام نمایشی سیگنالیست را وارد کنید."
+ASK_DESTINATION_CHAT_ID="🆔 شناسه چت کانال یا گروه را وارد کنید."
+ASK_DAILY_LIMIT="📊 سقف سیگنال روزانه را به‌صورت عدد مثبت وارد کنید."
+INVALID_INPUT="مقدار واردشده معتبر نیست؛ دوباره تلاش کنید."; INVALID_CHAT_ID="❌ شناسه چت معتبر نیست.\n\nشناسه را بررسی کنید و دوباره تلاش کنید."
+DESTINATION_NOT_FOUND="❌ مقصد پیدا نشد.\n\nشناسه چت را بررسی کنید و دوباره تلاش کنید."
+DESTINATION_PRIVATE="❌ این شناسه مربوط به گفت‌وگوی خصوصی است.\n\nفقط کانال یا گروه قابل ثبت است."
+DESTINATION_NOT_ADMIN="⚠️ ربات در این مقصد مدیر نیست.\n\nابتدا ربات را به‌عنوان مدیر کانال یا گروه اضافه کنید و سپس دوباره تلاش کنید."
+TELEGRAM_TEMPORARY="⚠️ ارتباط با تلگرام موقتاً برقرار نشد.\n\nچند لحظه بعد دوباره تلاش کنید."
+FLOW_CANCELLED="فرایند لغو شد."; FLOW_EXPIRED="این فرایند منقضی شده است؛ دوباره آغاز کنید."
+CREATED_SUCCESS="✅ اطلاعات با موفقیت ثبت شد."; DUPLICATE_SIGNALIST="این شناسه تلگرام قبلاً ثبت شده است."
+DUPLICATE_DESTINATION_NAME="مقصدی با این نام تلگرام قبلاً ثبت شده است."; DUPLICATE_DESTINATION_CHAT="این شناسه چت قبلاً ثبت شده است."
+ASSIGNMENT_DUPLICATE="این سیگنالیست قبلاً به مقصد اختصاص یافته است."; ASSIGNMENT_MISSING="این انتساب قبلاً حذف شده است."
+ASSIGNMENT_INELIGIBLE="سیگنالیست بایگانی‌شده قابل انتساب نیست."; ASK_DESTINATION_ACCESS="سطح دسترسی مقصد را انتخاب کنید."
+ASK_DESTINATION_ACCESS_TEXT="سطح دسترسی را بنویسید: عمومی یا خصوصی"; ASK_PRIORITY="🏦 اولویت صرافی‌ها را تنظیم کنید."
+EDIT_PRIORITY="🏦 اولویت صرافی‌ها را ویرایش کنید."; EMPTY_VALUE="خالی"; TYPE_CHANNEL="📢 کانال"; TYPE_GROUP="👥 گروه"
+ACCESS_PUBLIC="🌐 عمومی"; ACCESS_PRIVATE="🔒 خصوصی"; SHOW_ELIGIBLE="نمایش واجدان شرایط"; SHOW_ASSIGNED="نمایش انتساب‌های فعلی"
+CONFIRM_UNASSIGN="آیا از حذف این انتساب مطمئن هستید؟"; CONFIRM_METADATA="تغییر مشخصات تأیید شود؟"
+CONFIRM_ARCHIVE_BUTTON="🗃 تأیید بایگانی"; ASSIGNED_DESTINATIONS_TITLE="<b>مقصدهای اختصاص‌یافته</b>\nصفحه {page} از {pages}"
+ADD_EXCHANGE="➕ افزودن {exchange}"; STATUS_LABELS={"active":"🟢 فعال","inactive":"🟡 غیرفعال","archived":"🔴 بایگانی‌شده"}
+TYPE_LABELS={"channel":"📢 کانال","group":"👥 گروه"}; ACCESS_LABELS={"public":"🌐 عمومی","private":"🔒 خصوصی"}
 
-WELCOME_ADMIN = "<b>خوش آمدید.</b>\nشما مدیر اصلی سامانه هستید."
-WELCOME_SIGNALIST = "<b>خوش آمدید، {name}.</b>\nحساب سیگنالیست شما فعال است."
-DASHBOARD_ADMIN = "<b>منوی اصلی مدیر</b>\nیکی از گزینه‌های موجود را انتخاب کنید."
-DASHBOARD_SIGNALIST = "<b>منوی اصلی سیگنالیست</b>\nیکی از گزینه‌های موجود را انتخاب کنید."
-HELP_ADMIN = "<b>راهنمای مدیر</b>\nمدیریت سیگنالیست‌ها، مقصدها، اولویت صرافی و انتساب‌ها در دسترس است."
-HELP_SIGNALIST = "<b>راهنمای سیگنالیست</b>\nدر این مرحله فقط منوی اصلی و وضعیت حساب در دسترس است."
-STATUS_ADMIN = "<b>وضعیت دسترسی</b>\nنقش: مدیر اصلی\nوضعیت: فعال"
-STATUS_SIGNALIST = "<b>وضعیت حساب</b>\nنام: {name}\nنقش: سیگنالیست\nوضعیت: فعال"
-INACTIVE = "حساب شما غیرفعال است و امکان انجام عملیات جدید را ندارد."
-ARCHIVED = "حساب شما بایگانی شده است و امکان دسترسی یا بازیابی آن از ربات وجود ندارد."
-UNKNOWN = "دسترسی شما هنوز در سامانه تعریف نشده است."
-FALLBACK = "دستور شناخته نشد؛ لطفاً از گزینه‌های منو استفاده کنید."
-INVALID_CALLBACK = "این دکمه معتبر نیست یا دیگر قابل استفاده نیست."
-DUPLICATE_CALLBACK = "این درخواست قبلاً دریافت شده است."
-TEMPORARY_ERROR = "در حال حاضر انجام درخواست ممکن نیست. لطفاً کمی بعد دوباره تلاش کنید."
-COMMAND_START = "شروع و نمایش منوی اصلی"
-COMMAND_HELP = "نمایش راهنما"
-BUTTON_ADD = "افزودن"
-BUTTON_CANCEL = "لغو"
-BUTTON_CONFIRM = "تأیید"
-BUTTON_PREVIOUS = "قبلی"
-BUTTON_NEXT = "بعدی"
-BUTTON_ALL = "همه"
-BUTTON_ACTIVE = "فعال"
-BUTTON_INACTIVE = "غیرفعال"
-BUTTON_ARCHIVED = "بایگانی‌شده"
-BUTTON_EDIT = "ویرایش مشخصات"
-BUTTON_PRIORITY = "اولویت صرافی‌ها"
-BUTTON_ASSIGNMENTS = "سیگنالیست‌های مقصد"
-BUTTON_ACTIVATE = "فعال‌سازی"
-BUTTON_DEACTIVATE = "غیرفعال‌سازی"
-BUTTON_ARCHIVE = "بایگانی"
-BUTTON_BACK_STEP = "بازگشت"
-BUTTON_ASSIGNED_DESTINATIONS = "مقصدهای اختصاص‌یافته"
-SIGNALIST_LIST_TITLE = "<b>مدیریت سیگنالیست‌ها</b>\nصفحه {page} از {pages}"
-DESTINATION_LIST_TITLE = "<b>مدیریت مقصدها</b>\nصفحه {page} از {pages}"
-EMPTY_LIST = "موردی برای نمایش وجود ندارد."
-ASK_SIGNALIST_ID = "شناسه عددی تلگرام سیگنالیست را وارد کنید."
-ASK_SIGNALIST_NAME = "نام نمایشی سیگنالیست را وارد کنید."
-ASK_SIGNALIST_USERNAME = "نام کاربری تلگرام را وارد کنید یا «رد کردن» را بفرستید."
-ASK_DESTINATION_NAME = "نام داخلی مقصد را وارد کنید."
-ASK_DESTINATION_CHAT_ID = "شناسه عددی چت مقصد را وارد کنید."
-ASK_DAILY_LIMIT = "سقف روزانه پیام اولیه را به‌صورت عدد مثبت وارد کنید."
-INVALID_INPUT = "مقدار واردشده معتبر نیست؛ دوباره تلاش کنید."
-STALE_ACTION = "اطلاعات تغییر کرده است؛ نمای فعلی تازه‌سازی شد."
-FLOW_CANCELLED = "فرایند لغو شد."
-FLOW_EXPIRED = "این فرایند منقضی شده است؛ دوباره آغاز کنید."
-CREATED_SUCCESS = "اطلاعات با موفقیت ثبت شد."
-DUPLICATE_SIGNALIST = "این شناسه تلگرام قبلاً ثبت شده است."
-DUPLICATE_DESTINATION_NAME = "این نام داخلی قبلاً ثبت شده است."
-DUPLICATE_DESTINATION_CHAT = "این شناسه چت قبلاً ثبت شده است."
-ASSIGNMENT_DUPLICATE = "این سیگنالیست قبلاً به مقصد اختصاص یافته است."
-ASSIGNMENT_MISSING = "این انتساب قبلاً حذف شده است."
-ASSIGNMENT_INELIGIBLE = "سیگنالیست بایگانی‌شده قابل انتساب نیست."
-SKIP = "رد کردن"
-ASK_DESTINATION_TYPE = "نوع مقصد را انتخاب کنید."
-ASK_DESTINATION_ACCESS = "سطح دسترسی را انتخاب کنید."
-ASK_DESTINATION_TYPE_TEXT = "نوع مقصد را بنویسید: کانال یا گروه"
-ASK_DESTINATION_ACCESS_TEXT = "سطح دسترسی را بنویسید: عمومی یا خصوصی"
-ASK_PRIORITY = "صرافی‌ها را به ترتیب انتخاب کنید."
-EDIT_PRIORITY = "اولویت صرافی‌ها را ویرایش کنید."
-PRIORITY_CURRENT = "اولویت فعلی: {value}"
-EMPTY_VALUE = "خالی"
-NOT_RECORDED = "ثبت نشده"
-TYPE_CHANNEL = "کانال"
-TYPE_GROUP = "گروه"
-ACCESS_PUBLIC = "عمومی"
-ACCESS_PRIVATE = "خصوصی"
-SHOW_ELIGIBLE = "نمایش واجدان شرایط"
-SHOW_ASSIGNED = "نمایش انتساب‌های فعلی"
-CONFIRM_UNASSIGN = "آیا از حذف این انتساب مطمئن هستید؟"
-CONFIRM_METADATA = "تغییر مشخصات تأیید شود؟"
-CONFIRM_ARCHIVE = "آیا از بایگانی این سیگنالیست مطمئن هستید؟"
-CONFIRM_ARCHIVE_BUTTON = "تأیید بایگانی"
-ASSIGNED_DESTINATIONS_TITLE = "<b>مقصدهای اختصاص‌یافته</b>\nصفحه {page} از {pages}"
-ADD_EXCHANGE = "افزودن {exchange}"
-
-
-def safe(value: object) -> str:
-    return escape(str(value), quote=True)
-
-
-def welcome_signalist(display_name: str) -> str:
-    return WELCOME_SIGNALIST.format(name=safe(display_name))
-
-
-def status_signalist(display_name: str) -> str:
-    return STATUS_SIGNALIST.format(name=safe(display_name))
-
-def page_title(template: str, page: int, pages: int) -> str:
-    return template.format(page=safe(page), pages=safe(pages))
-
-def signalist_line(item) -> str:
-    labels={"active":"فعال","inactive":"غیرفعال","archived":"بایگانی‌شده"}
-    return f"{safe(item.display_name)} — {safe(labels[item.status.value])} — #{safe(item.id)}"
-
-def destination_line(item) -> str:
-    labels={"active":"فعال","inactive":"غیرفعال"}
-    return f"{safe(item.internal_name)} — {safe(labels[item.status.value])} — #{safe(item.id)}"
-
-STATUS_LABELS = {"active":"فعال", "inactive":"غیرفعال", "archived":"بایگانی‌شده"}
-TYPE_LABELS = {"channel":"کانال", "group":"گروه"}
-ACCESS_LABELS = {"public":"عمومی", "private":"خصوصی"}
-
-def priority_current(values) -> str:
-    return PRIORITY_CURRENT.format(value=safe("، ".join(values) or EMPTY_VALUE))
-
-def signalist_review(data, username) -> str:
-    return f"نام: {safe(data['display_name'])}\nشناسه: {safe(data['telegram_user_id'])}\nنام کاربری: {safe(username or NOT_RECORDED)}"
-
-def signalist_detail(item, count) -> str:
-    return (f"<b>{safe(item.display_name)}</b>\nشناسه داخلی: {safe(item.id)}\nشناسه تلگرام: {safe(item.telegram_user_id)}\n"
-            f"نام کاربری: {safe(item.telegram_username or NOT_RECORDED)}\nوضعیت: {safe(STATUS_LABELS[item.status.value])}\nتعداد مقصدها: {safe(count)}\n"
-            f"ایجاد: {safe(item.created_at)}\nبه‌روزرسانی: {safe(item.updated_at)}" +
-            (f"\nبایگانی: {safe(item.archived_at)}" if item.archived_at else ""))
-
-def destination_detail(detail) -> str:
+def safe(value): return escape(str(value),quote=True)
+def welcome_signalist(name): return WELCOME_SIGNALIST.format(name=safe(name))
+def status_signalist(name): return STATUS_SIGNALIST.format(name=safe(name))
+def page_title(template,page,pages,filter_label="همه"): return template.format(page=persian_digits(page),pages=persian_digits(pages),filter=filter_label)
+def signalist_line(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {safe(item.display_name)}"
+def destination_line(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {safe(item.internal_name)}"
+def priority_current(values): return format_priority(values)
+def signalist_review(data, username=None):
+    return f"<b>👤 بررسی اطلاعات سیگنالیست</b>\n\n🆔 شناسه تلگرام: {safe(data['telegram_user_id'])}\n📝 نام نمایشی: {safe(data['display_name'])}\n\nآیا اطلاعات بالا تأیید می‌شود؟"
+def signalist_detail(item,count):
+    value=f"<b>👤 {safe(item.display_name)}</b>\n\n{STATUS_LABELS[item.status.value].split()[0]} وضعیت: {STATUS_LABELS[item.status.value].split(maxsplit=1)[1]}\n🆔 شناسه تلگرام: {item.telegram_user_id}\n📍 مقصدهای متصل: {persian_digits(count)}\n\n📅 ایجاد: {format_datetime(item.created_at)}\n🔄 آخرین تغییر: {format_datetime(item.updated_at)}"
+    return value+(f"\n🗃 بایگانی: {format_datetime(item.archived_at)}" if item.archived_at else "")
+def destination_detail(detail):
     d=detail.destination
-    return (f"<b>{safe(d.internal_name)}</b>\nشناسه داخلی: {safe(d.id)}\nشناسه چت: {safe(d.telegram_chat_id)}\nنوع: {safe(TYPE_LABELS[d.destination_type.value])}\n"
-            f"دسترسی: {safe(ACCESS_LABELS[d.access_level.value])}\nوضعیت: {safe(STATUS_LABELS[d.status.value])}\nسقف روزانه: {safe(d.daily_limit)}\n"
-            f"اولویت: {safe('، '.join(x.value for x in detail.priority.exchanges))}\nسیگنالیست‌ها: {safe(detail.assigned_count)}\n"
-            f"ایجاد: {safe(d.created_at)}\nبه‌روزرسانی: {safe(d.updated_at)}")
-
-def destination_review(data) -> str:
-    return (f"<b>بازبینی مقصد</b>\nنام داخلی: {safe(data['internal_name'])}\nشناسه چت: {safe(data['telegram_chat_id'])}\n"
-            f"نوع: {safe(TYPE_LABELS[data['destination_type']])}\nدسترسی: {safe(ACCESS_LABELS[data['access_level']])}\n"
-            f"سقف روزانه: {safe(data['daily_limit'])}\nاولویت: {safe('، '.join(data['exchanges']))}\nوضعیت اولیه: غیرفعال")
-
-def metadata_review(data) -> str:
-    return (f"<b>بازبینی تغییر مشخصات</b>\nنام داخلی: {safe(data['internal_name'])}\nنوع: {safe(TYPE_LABELS[data['destination_type']])}\n"
-            f"دسترسی: {safe(ACCESS_LABELS[data['access_level']])}\nسقف روزانه: {safe(data['daily_limit'])}")
+    return f"<b>📡 {safe(d.internal_name)}</b>\n\n🆔 شناسه چت:\n{d.telegram_chat_id}\n\n{TYPE_LABELS[d.destination_type.value].split()[0]} نوع: {TYPE_LABELS[d.destination_type.value].split(maxsplit=1)[1]}\n{ACCESS_LABELS[d.access_level.value].split()[0]} دسترسی: {ACCESS_LABELS[d.access_level.value].split(maxsplit=1)[1]}\n{STATUS_LABELS[d.status.value].split()[0]} وضعیت: {STATUS_LABELS[d.status.value].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(d.daily_limit)}\n👥 سیگنالیست‌های متصل: {persian_digits(detail.assigned_count)}\n\n{format_priority(detail.priority.exchanges)}\n\n📅 ایجاد: {format_datetime(d.created_at)}\n🔄 آخرین تغییر: {format_datetime(d.updated_at)}"
+def candidate_review(data):
+    return f"<b>✅ مقصد پیدا شد</b>\n\n📡 نام: {safe(data['internal_name'])}\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n🆔 شناسه چت: {data['telegram_chat_id']}\n\nآیا این همان مقصد موردنظر است؟"
+def destination_review(data):
+    return f"<b>📋 بررسی نهایی مقصد</b>\n\n📡 نام: {safe(data['internal_name'])}\n🆔 شناسه چت: {data['telegram_chat_id']}\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n🟡 وضعیت اولیه: غیرفعال\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\n{format_priority(data['exchanges'])}\n\nآیا اطلاعات بالا ثبت شود؟"
+def metadata_review(data): return f"<b>📋 بررسی ویرایش مقصد</b>\n\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\nتغییرات تأیید شود؟"
+def archive_confirmation(name): return f"<b>⚠️ بایگانی سیگنالیست</b>\n\nاین عملیات برگشت‌پذیر نیست.\n\nآیا از بایگانی «{safe(name)}» مطمئن هستید؟"

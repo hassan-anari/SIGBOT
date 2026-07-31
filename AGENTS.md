@@ -70,3 +70,12 @@ Before changing the code:
 - Admin-management handlers require `MAIN_ADMIN`, not generic authorization.
 - The existing Signalist service remains the sole owner of Signalist transitions.
 - FSM storage contains temporary form state only; permanent management data stays in SQLite.
+- Persist timestamps in aware UTC; localization belongs only to presentation. Phase 4
+  Telegram dates use the Jalali calendar and Tehran local time.
+- Internal database IDs never appear in Telegram-visible presentation.
+- Signalist usernames are retained as nullable compatibility data but are neither
+  collected nor displayed.
+- Destination title and type are derived from Telegram, and registration requires
+  the existing Bot instance to confirm administrator status.
+- Telegram inspection occurs outside database transactions, and automated tests
+  must never call live Telegram.

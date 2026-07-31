@@ -35,6 +35,7 @@ from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, Updat
                                              bot_identity)
 from chainura.telegram.routers import router
 from chainura.telegram.admin_routes import router as admin_router
+from chainura.telegram.destination_inspector import TelegramDestinationInspector
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -198,7 +199,8 @@ class Runtime:
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
                 signalist_service=service, destination_service=destination_service,
                 assignment_service=assignment_service,
-                admin_signalist_service=admin_signalist_service)
+                admin_signalist_service=admin_signalist_service,
+                destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
                 BotCommand(command="start", description=texts.COMMAND_START),

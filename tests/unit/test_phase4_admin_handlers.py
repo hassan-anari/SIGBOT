@@ -73,9 +73,9 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_global_start_clears_every_phase4_state(self):
         states=[AdminSignalistCreate.telegram_user_id,AdminSignalistCreate.display_name,
-            AdminSignalistCreate.telegram_username,AdminSignalistCreate.review,
-            AdminDestinationCreate.internal_name,AdminDestinationCreate.telegram_chat_id,
-            AdminDestinationCreate.destination_type,AdminDestinationCreate.access_level,
+            AdminSignalistCreate.review,
+            AdminDestinationCreate.discovering,AdminDestinationCreate.telegram_chat_id,
+            AdminDestinationCreate.candidate_review,AdminDestinationCreate.access_level,
             AdminDestinationCreate.daily_limit,AdminDestinationCreate.priority,
             AdminDestinationCreate.review,AdminDestinationPriority.editing,
             AdminDestinationPriority.review,AdminSignalistArchive.confirming]
@@ -86,9 +86,9 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_help_does_not_change_form_state(self):
         for value in (AdminSignalistCreate.telegram_user_id,AdminSignalistCreate.display_name,
-                      AdminSignalistCreate.telegram_username,AdminSignalistCreate.review,
-                      AdminDestinationCreate.internal_name,AdminDestinationCreate.telegram_chat_id,
-                      AdminDestinationCreate.destination_type,AdminDestinationCreate.access_level,
+                      AdminSignalistCreate.review,
+                      AdminDestinationCreate.discovering,AdminDestinationCreate.telegram_chat_id,
+                      AdminDestinationCreate.candidate_review,AdminDestinationCreate.access_level,
                       AdminDestinationCreate.daily_limit,AdminDestinationCreate.priority,
                       AdminDestinationCreate.review,AdminDestinationPriority.editing,
                       AdminDestinationPriority.review):
@@ -98,7 +98,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_top_level_navigation_clears_every_phase4_state(self):
         states=(AdminSignalistCreate.telegram_user_id,AdminSignalistCreate.display_name,
-                AdminDestinationCreate.internal_name,AdminDestinationCreate.priority,
+                AdminDestinationCreate.discovering,AdminDestinationCreate.priority,
                 AdminDestinationPriority.editing,AdminDestinationPriority.review)
         for value in states:
             for handler,service in ((admin_routes.global_main,None),
@@ -134,14 +134,14 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_creation_callback_requires_exact_state_and_keys(self):
         state=FakeState(AdminDestinationCreate.access_level.state,{})
-        query,_=await self.invoke("p4:nav:type:channel",state)
+        query,_=await self.invoke("p4:nav:candidate-confirm:-1001",state)
         self.assertEqual(query.message.answers[-1][0],texts.FLOW_EXPIRED)
         self.assertEqual(state.data,{})
 
     async def test_back_transitions_are_contextual(self):
         cases=[
             (AdminSignalistCreate.display_name,{"telegram_user_id":1},"p4:nav:back:slc:id",AdminSignalistCreate.telegram_user_id),
-            (AdminDestinationCreate.telegram_chat_id,{"internal_name":"D"},"p4:nav:back:dsc:name",AdminDestinationCreate.internal_name),
+            (AdminDestinationCreate.candidate_review,{"internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"},"p4:nav:back:dsc:chat",AdminDestinationCreate.telegram_chat_id),
             (AdminDestinationCreate.daily_limit,{"internal_name":"D"},"p4:nav:back:dsc:access",AdminDestinationCreate.access_level),
         ]
         for initial,data,callback,target in cases:
@@ -149,18 +149,12 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.state,target.state)
 
     async def test_destination_back_keyboards_allow_forward_progress(self):
-        data={"internal_name":"D","telegram_chat_id":-1,"destination_type":"channel"}
-        state=FakeState(AdminDestinationCreate.daily_limit.state,data)
-        access_query,_=await self.invoke("p4:nav:back:dsc:access",state)
-        access_labels={item.text for row in access_query.message.answers[-1][1].inline_keyboard for item in row}
-        self.assertIn(texts.ACCESS_PUBLIC,access_labels); self.assertIn(texts.ACCESS_PRIVATE,access_labels)
-        type_query,_=await self.invoke("p4:nav:back:dsc:type",state)
-        type_labels={item.text for row in type_query.message.answers[-1][1].inline_keyboard for item in row}
-        self.assertIn(texts.TYPE_CHANNEL,type_labels); self.assertIn(texts.TYPE_GROUP,type_labels)
-        await self.invoke("p4:nav:type:group",state)
-        self.assertEqual(state.state,AdminDestinationCreate.access_level.state)
-        await self.invoke("p4:nav:access:private",state)
-        self.assertEqual(state.state,AdminDestinationCreate.daily_limit.state)
+        data={"internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"}
+        state=FakeState(AdminDestinationCreate.access_level.state,data)
+        query,_=await self.invoke("p4:nav:back:dsc:candidate",state)
+        self.assertEqual(state.state,AdminDestinationCreate.candidate_review.state)
+        labels={item.text for row in query.message.answers[-1][1].inline_keyboard for item in row}
+        self.assertIn(texts.BUTTON_CONFIRM_DESTINATION,labels)
 
     async def test_cancel_clears_creation_flows(self):
         for initial,flow in ((AdminSignalistCreate.display_name,"slc"),(AdminDestinationCreate.daily_limit,"dsc")):
@@ -185,7 +179,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.data["exchanges"],["lbank","ourbit"])
         self.assertEqual(destinations.detail_calls,0); destinations.replace_priority.assert_not_awaited()
         labels=[item.text for row in query.message.answers[-1][1].inline_keyboard for item in row]
-        self.assertLess(labels.index("lbank"),labels.index("ourbit"))
+        self.assertLess(labels.index("LBank"),labels.index("Ourbit"))
         await self.invoke_with_destination("p4:dp:review:1",state,destinations)
         await self.invoke_with_destination("p4:dp:confirm:1",state,destinations)
         destinations.replace_priority.assert_awaited_once()
@@ -203,7 +197,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
             "destination_type":"channel","access_level":"private","daily_limit":1,"exchanges":["ourbit"]})
         query,_=await self.invoke("p4:nav:back:dsc:review",state)
         self.assertEqual(state.state,AdminDestinationCreate.review.state)
-        self.assertIn("بازبینی مقصد",query.message.answers[-1][0])
+        self.assertIn("بررسی نهایی مقصد",query.message.answers[-1][0])
 
     async def test_non_admin_cannot_open_management_callback(self):
         for kind in (ActorKind.ACTIVE_SIGNALIST,ActorKind.INACTIVE_SIGNALIST,
