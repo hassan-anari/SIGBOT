@@ -69,12 +69,19 @@ class SignalistService:
 
     async def _transition(self, signalist_id: int, target: SignalistStatus) -> Signalist:
         async with self._transactions() as transaction:
-            # The row lock is held by this transaction through validation,
-            # persistence, and commit, so the state cannot become stale.
-            current = await transaction.repository.get_by_id_for_transition(signalist_id)
+            current = await transaction.repository.get_by_id(signalist_id)
             if current is None:
                 raise SignalistNotFoundError("signalist was not found")
             approved = current.approve_transition(target)
-            result = await transaction.repository.persist_status(signalist_id, approved)
+            result = await transaction.repository.compare_and_swap_status(
+                signalist_id, current.status, approved
+            )
+            if result is None:
+                latest = await transaction.repository.get_by_id(signalist_id)
+                if latest is None:
+                    raise SignalistNotFoundError("signalist was not found")
+                # Produce the controlled domain error using the latest committed state.
+                latest.approve_transition(target)
+                raise RuntimeError("status transition compare-and-swap failed unexpectedly")
             await transaction.commit()
             return result

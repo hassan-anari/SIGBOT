@@ -22,7 +22,8 @@ from chainura.application.access import ActorResolver
 from chainura.application.signalist_service import SignalistService
 from chainura.config import TelegramRuntimeSettings, load_telegram_runtime_settings
 from chainura.errors import TelegramRuntimeError
-from chainura.persistence.database import create_database_engine, create_session_factory
+from chainura.persistence.database import (create_database_engine, create_session_factory,
+                                            initialize_database_engine)
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
 from chainura.telegram.middlewares import (ActorResolutionMiddleware, IdempotencyMiddleware,
                                             PrivateChatGate, TelegramErrorBoundary)
@@ -161,6 +162,7 @@ class Runtime:
         try:
             self._checkpoint()
             self.engine = create_database_engine(self.settings.application.database_url)
+            await self._startup_await(initialize_database_engine(self.engine))
             sessions = create_session_factory(self.engine)
             service = SignalistService(SqlAlchemySignalistTransactionFactory(sessions))
             resolver = ActorResolver(self.settings.application, service)

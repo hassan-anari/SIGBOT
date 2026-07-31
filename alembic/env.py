@@ -5,13 +5,14 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from chainura.config import validate_database_url
+from chainura.environment import load_project_environment
 from chainura.persistence.base import Base
+from chainura.persistence.database import create_database_engine
 from chainura.persistence import models  # noqa: F401 - registers metadata
 
+load_project_environment()
 config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
@@ -41,9 +42,7 @@ def do_run_migrations(connection: object) -> None:
 
 
 async def run_async_migrations() -> None:
-    section = config.get_section(config.config_ini_section) or {}
-    section["sqlalchemy.url"] = database_url()
-    engine = async_engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    engine = create_database_engine(database_url())
     try:
         async with engine.connect() as connection:
             await connection.run_sync(do_run_migrations)

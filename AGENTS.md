@@ -41,8 +41,22 @@ Before changing the code:
   `chainura/telegram/presentation/texts.py` catalog. Do not add a language selector.
 - Reply Keyboards are only for persistent top-level navigation. Inline Keyboards
   are for contextual actions, and menus must not advertise unimplemented features.
-- Redis stores ephemeral runtime state only. PostgreSQL is the source of truth for
+- Redis stores ephemeral runtime state only. SQLite is the source of truth for
   permanent product data and Signalist status.
 - Keep Telegram transport and polling lifecycle isolated from application and
   business logic so a future Webhook adapter can reuse the same dispatcher and routers.
 - Never log tokens, credentials, connection URLs, or sensitive Telegram payloads.
+
+## SQLite and environment rules
+
+- SQLite is the current permanent source of truth; Redis remains ephemeral only.
+- The SQLite database file must be on local persistent disk, regularly backed up,
+  and must never be placed on NFS, SMB, or another network filesystem.
+- Keep database transactions short and never perform Telegram, exchange, Redis,
+  or other network calls inside a database transaction.
+- Use portable SQLAlchemy constructs. Do not add PostgreSQL-specific types or SQL
+  unless PostgreSQL is explicitly re-approved.
+- Signalist status transitions use an atomic compare-and-swap conditional update.
+- Load `.env` only at executable entry points. Real process environment variables
+  override `.env` values.
+- Secrets and SQLite runtime artifacts must never be committed or logged.

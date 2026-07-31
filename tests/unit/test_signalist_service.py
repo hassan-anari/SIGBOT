@@ -83,3 +83,26 @@ class SignalistServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=status), self.assertRaises(InvalidSignalistInputError):
                 await self.service.list(status)  # type: ignore[arg-type]
             self.assertEqual(len(self.factory.created), before)
+
+class CompareAndSwapServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_transition_uses_latest_state_and_rejects(self) -> None:
+        repository = FakeRepository()
+        service = SignalistService(FakeTransactionFactory(repository))
+        row = await service.create(700, "CAS")
+        row = await service.deactivate(row.id)  # type: ignore[arg-type]
+        original = repository.compare_and_swap_status
+
+        async def archive_before_stale(signalist_id, expected, target):
+            current = repository.rows[signalist_id]
+            repository.rows[signalist_id] = Signalist.rehydrate(
+                id=current.id, telegram_user_id=current.telegram_user_id,
+                display_name=current.display_name, telegram_username=current.telegram_username,
+                status=SignalistStatus.ARCHIVED, created_at=current.created_at,
+                updated_at=current.updated_at, archived_at=current.updated_at,
+            )
+            return await original(signalist_id, expected, target)
+
+        from chainura.domain.signalist import Signalist
+        repository.compare_and_swap_status = archive_before_stale  # type: ignore[method-assign]
+        with self.assertRaises(InvalidSignalistStatusTransitionError):
+            await service.activate(row.id)  # type: ignore[arg-type]

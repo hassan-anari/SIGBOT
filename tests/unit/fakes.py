@@ -24,9 +24,6 @@ class FakeRepository:
         if self.fail: raise self.fail
         return self.rows.get(signalist_id)
 
-    async def get_by_id_for_transition(self, signalist_id: int) -> Signalist | None:
-        return await self.get_by_id(signalist_id)
-
     async def get_by_telegram_user_id(self, telegram_user_id: int) -> Signalist | None:
         if self.fail: raise self.fail
         return next((row for row in self.rows.values() if row.telegram_user_id == telegram_user_id), None)
@@ -34,9 +31,13 @@ class FakeRepository:
     async def list(self, status: SignalistStatus | None = None) -> list[Signalist]:
         return [row for row in self.rows.values() if status is None or row.status is status]
 
-    async def persist_status(self, signalist_id: int, target: SignalistStatus) -> Signalist:
+    async def compare_and_swap_status(
+        self, signalist_id: int, expected: SignalistStatus, target: SignalistStatus
+    ) -> Signalist | None:
         if self.fail: raise self.fail
         old = self.rows[signalist_id]
+        if old.status is not expected:
+            return None
         now = datetime.now(timezone.utc)
         row = Signalist.rehydrate(id=old.id, telegram_user_id=old.telegram_user_id,
             display_name=old.display_name, telegram_username=old.telegram_username,

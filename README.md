@@ -18,108 +18,95 @@
 - تشخیص Snapshot ناقص و نگهداری وضعیت جاری هر صرافی در حافظه
 - ثبت دائمی خطاها و وضعیت اجرا در فایل چرخشی `logs/market.log`
 
-## وابستگی
+## وابستگی و پیکربندی
 
-Python 3.11 یا جدیدتر و برای بخش پایدار برنامه PostgreSQL لازم است. وابستگی‌ها:
+Python 3.11 یا جدیدتر لازم است. SQLite پایگاه دائمی محصول و Redis 7 فقط
+ذخیره‌ساز وضعیت‌های موقت تلگرام (Lease Poller، Idempotency، FSM و هماهنگی کوتاه‌عمر)
+است:
 
 ```bash
 python -m pip install -r requirements.txt
+cp .env.example .env
+mkdir -p data
 ```
 
-برای اجرای پوستهٔ تلگرام، Redis 7 نیز لازم است. رابط تلگرام فقط فارسی است؛
-Reply Keyboard تنها ناوبری اصلی و Inline Keyboard تنها عملیات وابسته به پیام را
-نمایش می‌دهد. متن‌های کاربر در یک کاتالوگ متمرکز نگهداری می‌شوند و انتخاب زبان
-وجود ندارد.
-
-```powershell
-python main.py symbols
-python main.py watch --seconds 30
-```
-
-تست‌ها:
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-این تست‌های سریع آفلاین هستند و به PostgreSQL یا API زندهٔ صرافی متصل نمی‌شوند.
-
-## پایهٔ پایدار برنامه
-
-تنها موجودیت پایدار فعلی `Signalist` است. وضعیت‌های مجاز آن `active`،
-`inactive` و `archived` هستند و Archive به‌صورت Soft Delete انجام می‌شود. Main
-Admin جدول دیتابیس ندارد و شناسهٔ آن از محیط خوانده می‌شود.
-
-دو متغیر برنامه لازم است:
+برنامه فقط در Entry Pointهای `main.py`، `python -m chainura.telegram` و Alembic
+فایل `.env` ریشهٔ پروژه را صریحاً بارگذاری می‌کند. Import ماژول‌ها اثری بر محیط
+ندارد و مقدار واقعی Process Environment همیشه بر `.env` اولویت دارد. نمونهٔ امن:
 
 ```text
-DATABASE_URL=postgresql+psycopg://app_user:password@localhost/chainura
+DATABASE_URL=sqlite+aiosqlite:///./data/chainura.db
 MAIN_ADMIN_TELEGRAM_ID=123456789
 TELEGRAM_BOT_TOKEN=123456789:replace_me
 REDIS_URL=redis://localhost:6379/0
 ```
 
-فایل `.env.example` فقط نمونه است؛ برنامه فایل `.env` را خودکار بارگذاری نمی‌کند.
-مقادیر واقعی را در Environment سیستم قرار دهید و URL کامل را در لاگ ننویسید.
+فایل `.env`، Token و Credential نباید Commit یا Log شوند. مسیر نسبی SQLite از
+Working Directory پروژه resolve می‌شود و پوشهٔ والد هنگام ساخت Engine ایجاد
+می‌شود، نه هنگام Import تنظیمات.
 
-`TELEGRAM_BOT_TOKEN` و گذرواژه‌های Redis/PostgreSQL نباید Commit یا Log شوند.
-PostgreSQL منبع دائمی حقیقت است. Redis فقط FSM موقت، قفل Poller، Idempotency و
-داده‌های کوتاه‌عمر رابط را نگهداری می‌کند.
+## پایهٔ پایدار و اجرای دیتابیس
 
-### اجرای تلگرام در توسعه
+تنها موجودیت پایدار فعلی `Signalist` است. وضعیت‌های `active`، `inactive` و
+`archived` با Soft Archive نگهداری می‌شوند. SQLite منبع دائمی حقیقت است و فایل
+پیش‌فرض آن `data/chainura.db` روی دیسک محلی و پایدار قرار می‌گیرد؛ این فایل را
+روی NFS، SMB یا Network Filesystem قرار ندهید.
 
-```bash
-export DATABASE_URL='postgresql+psycopg://app_user:password@localhost/chainura'
-export MAIN_ADMIN_TELEGRAM_ID='123456789'
-export TELEGRAM_BOT_TOKEN='replace-with-real-token'
-export REDIS_URL='redis://localhost:6379/0'
-python -m chainura.telegram
-```
-
-توسعه از Long Polling رسمی aiogram استفاده می‌کند. پیش از Polling، Webhook قبلی
-با `drop_pending_updates=False` حذف می‌شود؛ بنابراین Updateهای معلق دور ریخته
-نمی‌شوند. قفل Lease در Redis اجازهٔ تنها یک Poller برای هر Bot Token را می‌دهد.
-SIGINT، SIGTERM یا از دست رفتن Lease از یک مسیر Shutdown استفاده می‌کنند: Polling
-متوقف می‌شود، Lease پیش از بسته‌شدن Redis آزاد می‌شود و سپس Redis، نشست Bot و
-Engine دیتابیس بسته می‌شوند.
-
-برای توسعه یک دیتابیس محلی بسازید و Migration را اجرا کنید:
+این بازنویسی Baseline فقط به‌دلیل نبود Deployment و دادهٔ Production مجاز است.
+دیتابیس‌های محلی PostgreSQL فاز ۲ دیگر استفاده نمی‌شوند و فایل SQLite توسعهٔ
+قدیمی باید حذف و از Migration بازسازی شود:
 
 ```bash
-createdb chainura
-export DATABASE_URL='postgresql+psycopg://app_user:password@localhost/chainura'
+mkdir -p data
 alembic upgrade head
 alembic current
 alembic history
 ```
 
-Alembic تنها مکانیزم ساخت Schema است. برای بررسی Downgrade و Re-upgrade روی
-دیتابیس disposable:
+برای آزمایش چرخه روی یک فایل Disposable (نه فایل توسعه):
 
 ```bash
+export DATABASE_URL="sqlite+aiosqlite:////tmp/chainura-migration-check.db"
+alembic upgrade head
+alembic current
 alembic downgrade base
 alembic upgrade head
+rm -f /tmp/chainura-migration-check.db{,-wal,-shm}
 ```
 
-### تست PostgreSQL
+هر Connection، Foreign Key، Busy Timeout پنج‌ثانیه‌ای، WAL و synchronous=NORMAL
+را فعال و بررسی می‌کند. فایل‌های `.db`، `-wal` و `-shm` همگی Runtime Artifact
+هستند و نباید Commit شوند. Transactionها کوتاه‌اند؛ هیچ Telegram/Exchange/Redis
+Network Call، Sleep یا انتظار کاربر داخل Transaction دیتابیس انجام نمی‌شود.
+Transition وضعیت با Update شرطی compare-and-swap انجام می‌شود.
 
-تست‌های Integration مخرب‌اند و فقط دیتابیسی را می‌پذیرند که نام آن به `_test`
-ختم شود. برای نمونه:
+### اجرای تلگرام و Market Data
 
 ```bash
-createdb chainura_phase2_test
-export TEST_DATABASE_URL='postgresql+psycopg://test_user:test_password@localhost/chainura_phase2_test'
-export DATABASE_URL="$TEST_DATABASE_URL"
+python -m chainura.telegram
+python main.py symbols
+python main.py watch --seconds 30
+```
+
+توسعه از Long Polling رسمی aiogram و Redis Poller Lease استفاده می‌کند. تنها یک
+Process برنامه و یک Poller فعال فرض شده است. Shutdown عادی Poller و Redis را
+می‌بندد و Engine را Dispose می‌کند تا WAL checkpoint/cleanup معمول SQLite انجام
+شود. CLI بازار `.env` را بارگذاری می‌کند اما تنظیمات دیتابیس را مطالبه نمی‌کند و
+در Automated Test هیچ Telegram API یا Live Exchange Call انجام نمی‌شود.
+
+### تست‌ها
+
+```bash
+python -m unittest discover -s tests -v
 python -m unittest discover -s integration_tests -v
 ```
 
-نبودن یا ناامن بودن `TEST_DATABASE_URL` باعث شکست صریح Suite، پیش از هر تغییر
-Schema، می‌شود.
+Integration SQLite برای هر اجرای ایزوله Temporary Directory و فایل واقعی خودش
+را می‌سازد، Engineها را می‌بندد و فقط همان Directory را پاک می‌کند؛ از `:memory:`
+یا دیتابیس توسعه استفاده نمی‌کند.
 
-### تست Redis
-
-تست‌های Redis واقعی تنها یک URL صریح با دیتابیس غیرصفر می‌پذیرند و فقط کلیدهای
-Namespace تصادفی خود را پاک می‌کنند:
+تست Redis فقط URL صریح با Database غیرصفر را می‌پذیرد و فقط Namespace تصادفی
+خودش را حذف می‌کند:
 
 ```bash
 export TEST_REDIS_URL='redis://localhost:6379/15'
@@ -127,10 +114,32 @@ python -c "from redis_integration_tests.support import require_safe_test_redis; 
 python -m unittest discover -s redis_integration_tests -v
 ```
 
-این Suite از `KEYS`، `FLUSHDB` و `FLUSHALL` استفاده نمی‌کند و نبودن تنظیم امن
-باعث شکست صریح می‌شود.
+### Backup و Restore امن SQLite
 
-### بررسی معادل CI در محیط محلی
+هنگام Write فعال در WAL، فقط فایل `.db` را Copy نکنید. روش پشتیبانی‌شدهٔ ساده:
+برنامه را Clean Stop کنید، از توقف Writer و بسته‌شدن Engine مطمئن شوید، سپس فایل
+`data/chainura.db` را روی Storage امن Copy کنید. برای Backup آنلاین فقط از دستور
+`.backup` ابزار SQLite یا Backup API رسمی استفاده کنید تا Snapshot سازگار شامل
+WAL ساخته شود. Backupها باید منظم، خارج از Repository و قابل بازیابی آزمایش‌شده
+باشند.
+
+برای Restore، برنامه را متوقف کنید، فایل‌های قدیمی `chainura.db-wal` و
+`chainura.db-shm` را پس از حفظ نسخهٔ ایمنی کنار بگذارید، فایل Backup را در
+`data/chainura.db` قرار دهید، دسترسی فایل را بررسی کنید، `alembic current` را
+اجرا و سپس برنامه را یک‌بار راه‌اندازی کنید.
+
+### مرز عملیاتی و مهاجرت آینده
+
+SQLite برای حدود ۱۰ Signalist، تا ۵۰ کانال و نزدیک ۴۰ Signal روزانه، با یک Process
+برنامه، دیسک محلی پایدار و Backup منظم انتخاب شده است. PostgreSQL اکنون لازم
+نیست. فقط در صورت نیاز به چند Instance برنامه، چند Worker همزمان، Write
+Concurrency بالا، Hosting راه‌دور، Replication، Analytics بزرگ یا الزام عملیاتی
+فراتر از Single-file Database باید دوباره بررسی شود. SQLAlchemy، Repository،
+Service و Alembic جدا از Domain و Telegram باقی مانده‌اند تا مهاجرت آینده بدون
+تغییر منطق Domain یا Transport ممکن باشد؛ فعلاً Dual-database Complexity نگهداری
+نمی‌شود.
+
+### بررسی معادل CI
 
 ```bash
 python -m unittest discover -s tests -v
@@ -138,21 +147,10 @@ python -m compileall .
 python main.py --help
 python main.py symbols --help
 python main.py watch --help
-alembic upgrade head
-alembic current
-alembic downgrade base
-alembic upgrade head
 python -m unittest discover -s integration_tests -v
-export TEST_REDIS_URL='redis://localhost:6379/15'
 python -m unittest discover -s redis_integration_tests -v
 git diff --check
 ```
-
-دستورهای `main.py` تنظیمات `DATABASE_URL`، `MAIN_ADMIN_TELEGRAM_ID` یا
-`TEST_DATABASE_URL` را بارگذاری نمی‌کنند و Engine دیتابیس نمی‌سازند.
-متغیرهای تلگرام و Redis نیز فقط توسط `python -m chainura.telegram` بارگذاری
-می‌شوند؛ بنابراین دستورهای Market Data مستقل باقی می‌مانند.
-
 
 ## لاگ دائمی فایل
 

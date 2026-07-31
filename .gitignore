@@ -9,3 +9,10 @@ logs/
 output/
 .coverage
 htmlcov/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*-wal
+data/*-shm
+data/*.backup
+integration_tests/*.db
