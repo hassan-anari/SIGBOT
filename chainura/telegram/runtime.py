@@ -20,6 +20,9 @@ from redis.asyncio import Redis
 
 from chainura.application.access import ActorResolver
 from chainura.application.signalist_service import SignalistService
+from chainura.application.admin_signalist_service import AdminSignalistService
+from chainura.application.destination_service import DestinationService
+from chainura.application.destination_assignment_service import DestinationAssignmentService
 from chainura.config import TelegramRuntimeSettings, load_telegram_runtime_settings
 from chainura.errors import TelegramRuntimeError
 from chainura.persistence.database import (create_database_engine, create_session_factory,
@@ -31,6 +34,7 @@ from chainura.telegram.presentation import texts
 from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, UpdateIdempotency,
                                              bot_identity)
 from chainura.telegram.routers import router
+from chainura.telegram.admin_routes import router as admin_router
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -55,7 +59,7 @@ def create_production_storage(redis: Redis, identity: str) -> RedisStorage:
 
 
 def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
-                     resolver: ActorResolver) -> Dispatcher:
+                     resolver: ActorResolver, **services) -> Dispatcher:
     dispatcher = Dispatcher(disable_fsm=True)
     production_fsm = FSMContextMiddleware(storage=storage,
         events_isolation=DisabledEventIsolation(), strategy=FSMStrategy.USER_IN_CHAT)
@@ -64,7 +68,9 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.update.outer_middleware(IdempotencyMiddleware(idempotency))
     dispatcher.update.outer_middleware(production_fsm)
     dispatcher.update.outer_middleware(ActorResolutionMiddleware(resolver))
+    dispatcher.include_router(admin_router)
     dispatcher.include_router(router)
+    for name, service in services.items(): dispatcher[name] = service
     return dispatcher
 
 
@@ -164,7 +170,8 @@ class Runtime:
             self.engine = create_database_engine(self.settings.application.database_url)
             await self._startup_await(initialize_database_engine(self.engine))
             sessions = create_session_factory(self.engine)
-            service = SignalistService(SqlAlchemySignalistTransactionFactory(sessions))
+            transactions = SqlAlchemySignalistTransactionFactory(sessions)
+            service = SignalistService(transactions)
             resolver = ActorResolver(self.settings.application, service)
             self._checkpoint()
             self.redis = Redis.from_url(self.settings.redis_url, decode_responses=True)
@@ -184,7 +191,14 @@ class Runtime:
             self._checkpoint()
             self.storage = create_production_storage(self.redis, identity)
             idempotency = UpdateIdempotency(self.redis, identity)
-            self.dispatcher = build_dispatcher(self.storage, idempotency, resolver)
+            destination_service = DestinationService(transactions)
+            assignment_service = DestinationAssignmentService(transactions)
+            admin_signalist_service = AdminSignalistService(
+                self.settings.application.main_admin_telegram_id, service, transactions)
+            self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
+                signalist_service=service, destination_service=destination_service,
+                assignment_service=assignment_service,
+                admin_signalist_service=admin_signalist_service)
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
                 BotCommand(command="start", description=texts.COMMAND_START),

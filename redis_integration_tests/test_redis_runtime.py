@@ -40,6 +40,19 @@ class RedisRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(ttl > 0 for ttl in ttls))
         await storage.close()
         self.redis=create_client(self.safe)
+    async def test_phase4_temporary_fsm_data_clears(self):
+        identity=f"{self.safe.namespace.removeprefix('chainura:tg:')}:phase4"
+        storage=create_production_storage(self.redis,identity)
+        key=StorageKey(bot_id=1,chat_id=9,user_id=9)
+        temporary={'internal_name':'temporary','exchanges':['ourbit','lbank']}
+        await storage.set_state(key,'AdminDestinationCreate:priority')
+        await storage.set_data(key,temporary)
+        self.assertEqual(await storage.get_data(key),temporary)
+        keys=[item async for item in self.redis.scan_iter(match=f'{self.safe.namespace}:*')]
+        self.assertTrue(keys); self.assertTrue(all(await self.redis.ttl(item)>0 for item in keys))
+        await storage.set_state(key,None); await storage.set_data(key,{})
+        self.assertIsNone(await storage.get_state(key)); self.assertEqual(await storage.get_data(key),{})
+        await storage.close(); self.redis=create_client(self.safe)
     async def asyncTearDown(self):
         if self.redis is not None:
             await cleanup(self.redis,self.safe); await self.redis.aclose(close_connection_pool=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from chainura.application.ports import SignalistTransactionFactory
+from chainura.application.pagination import Page, PageRequest
 from chainura.domain.signalist import (
     Signalist,
     SignalistStatus,
@@ -57,6 +58,15 @@ class SignalistService:
             result = await transaction.repository.list(status)
             await transaction.commit()
             return result
+
+    async def list_page(self, status: SignalistStatus | None, request: PageRequest) -> Page[Signalist]:
+        if status is not None and not isinstance(status, SignalistStatus):
+            raise InvalidSignalistInputError("status must be a SignalistStatus or None")
+        async with self._transactions() as transaction:
+            total = await transaction.repository.count(status)
+            page = min(request.page, max(1, (total + request.page_size - 1)//request.page_size))
+            items = await transaction.repository.list_page(status, (page-1)*request.page_size, request.page_size)
+            return Page(tuple(items), page, request.page_size, total)
 
     async def activate(self, signalist_id: int) -> Signalist:
         validate_internal_signalist_id(signalist_id)
