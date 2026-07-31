@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select, update
+from datetime import datetime, timezone
+
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from chainura.domain.signalist import Signalist, SignalistStatus
-from chainura.errors import SignalistNotFoundError
+from chainura.errors import SignalistPersistenceError
 from chainura.persistence.error_translation import persistence_error
 from chainura.persistence.mapping import to_domain
 from chainura.persistence.models import SignalistRecord
@@ -37,16 +39,13 @@ class SqlAlchemySignalistRepository:
             raise persistence_error(exc) from exc
         return to_domain(record) if record else None
 
-    async def get_by_id_for_transition(self, signalist_id: int) -> Signalist | None:
+    async def get_by_id_fresh(self, signalist_id: int) -> Signalist | None:
         try:
-            result = await self._session.execute(
-                select(SignalistRecord)
-                .where(SignalistRecord.id == signalist_id)
-                .with_for_update()
+            record = await self._session.get(
+                SignalistRecord, signalist_id, populate_existing=True
             )
         except SQLAlchemyError as exc:
             raise persistence_error(exc) from exc
-        record = result.scalar_one_or_none()
         return to_domain(record) if record else None
 
     async def get_by_telegram_user_id(self, telegram_user_id: int) -> Signalist | None:
@@ -69,22 +68,36 @@ class SqlAlchemySignalistRepository:
             raise persistence_error(exc) from exc
         return [to_domain(row) for row in result]
 
-    async def persist_status(self, signalist_id: int, target: SignalistStatus) -> Signalist:
+    async def compare_and_swap_status(
+        self, signalist_id: int, expected: SignalistStatus, target: SignalistStatus
+    ) -> Signalist | None:
+        now = datetime.now(timezone.utc)
         values = {
             "status": target,
-            "updated_at": func.current_timestamp(),
-            "archived_at": func.current_timestamp() if target is SignalistStatus.ARCHIVED else None,
+            "updated_at": now,
+            "archived_at": now if target is SignalistStatus.ARCHIVED else None,
         }
         try:
             result = await self._session.execute(
                 update(SignalistRecord)
-                .where(SignalistRecord.id == signalist_id)
+                .where(
+                    SignalistRecord.id == signalist_id,
+                    SignalistRecord.status == expected,
+                )
                 .values(**values)
-                .returning(SignalistRecord)
+                .execution_options(synchronize_session=False)
             )
-            record = result.scalar_one_or_none()
         except (IntegrityError, SQLAlchemyError) as exc:
             raise persistence_error(exc) from exc
-        if record is None:
-            raise SignalistNotFoundError("signalist was not found")
-        return to_domain(record)
+        if result.rowcount == 0:
+            return None
+        if result.rowcount != 1:
+            raise SignalistPersistenceError(
+                "signalist status update affected an unexpected number of rows"
+            )
+        updated = await self.get_by_id_fresh(signalist_id)
+        if updated is None:
+            raise SignalistPersistenceError(
+                "updated signalist could not be reloaded"
+            )
+        return updated

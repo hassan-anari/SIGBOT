@@ -5,6 +5,7 @@ import asyncio
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from chainura.environment import load_project_environment
 from logging_config import get_logger, setup_logging
 from market import MarketProbe
 
@@ -101,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_project_environment()
     args = build_parser().parse_args()
     log_path = setup_logging()
     LOGGER.info(

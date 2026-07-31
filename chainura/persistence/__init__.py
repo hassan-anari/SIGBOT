@@ -1,1 +1,1 @@
-"""PostgreSQL persistence implementations; no resources are created on import."""
+"""Portable SQLAlchemy persistence; no resources are created on import."""

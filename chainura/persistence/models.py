@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Identity, Index, Text, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import ENUM
+from sqlalchemy import BigInteger, CheckConstraint, Enum, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.base import Base
+from chainura.persistence.types import UTCDateTime
 
-SIGNALIST_STATUS_ENUM = ENUM(
+SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
     name="signalist_status",
-    native_enum=True,
+    native_enum=False,
+    create_constraint=True,
+    validate_strings=True,
     values_callable=lambda enum: [member.value for member in enum],
-    create_type=False,
 )
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class SignalistRecord(Base):
@@ -23,7 +28,7 @@ class SignalistRecord(Base):
     __table_args__ = (
         CheckConstraint("telegram_user_id > 0", name="ck_signalists_telegram_user_id_positive"),
         UniqueConstraint("telegram_user_id", name="uq_signalists_telegram_user_id"),
-        CheckConstraint("btrim(display_name) <> ''", name="ck_signalists_display_name_nonempty"),
+        CheckConstraint("trim(display_name) <> ''", name="ck_signalists_display_name_nonempty"),
         CheckConstraint(
             "(status = 'archived' AND archived_at IS NOT NULL) OR "
             "(status <> 'archived' AND archived_at IS NULL)",
@@ -33,7 +38,7 @@ class SignalistRecord(Base):
     )
 
     id: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), primary_key=True,
+        Integer, primary_key=True, autoincrement=True,
     )
     telegram_user_id: Mapped[int] = mapped_column(
         BigInteger, nullable=False,
@@ -41,15 +46,15 @@ class SignalistRecord(Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     telegram_username: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[SignalistStatus] = mapped_column(
-        SIGNALIST_STATUS_ENUM, nullable=False, server_default=text("'active'::signalist_status")
+        SIGNALIST_STATUS_ENUM, nullable=False, default=SignalistStatus.ACTIVE,
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+        UTCDateTime(), nullable=False, default=utc_now,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+        UTCDateTime(), nullable=False, default=utc_now,
     )
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 # Explicit names are part of the persistence contract.

@@ -9,6 +9,7 @@ from chainura.errors import (
     InvalidSignalistInputError,
     InvalidSignalistStatusTransitionError,
     SignalistNotFoundError,
+    SignalistPersistenceError,
 )
 from tests.unit.fakes import FakeRepository, FakeTransactionFactory
 
@@ -83,3 +84,108 @@ class SignalistServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=status), self.assertRaises(InvalidSignalistInputError):
                 await self.service.list(status)  # type: ignore[arg-type]
             self.assertEqual(len(self.factory.created), before)
+
+class CompareAndSwapServiceTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def replace_status(repository, signalist_id, status):
+        from datetime import datetime, timezone
+        from chainura.domain.signalist import Signalist
+
+        current = repository.rows[signalist_id]
+        now = datetime.now(timezone.utc)
+        repository.rows[signalist_id] = Signalist.rehydrate(
+            id=current.id, telegram_user_id=current.telegram_user_id,
+            display_name=current.display_name, telegram_username=current.telegram_username,
+            status=status, created_at=current.created_at, updated_at=now,
+            archived_at=now if status is SignalistStatus.ARCHIVED else None,
+        )
+
+    async def test_stale_transition_uses_latest_state_and_rejects(self) -> None:
+        repository = FakeRepository()
+        service = SignalistService(FakeTransactionFactory(repository))
+        row = await service.create(700, "CAS")
+        row = await service.deactivate(row.id)  # type: ignore[arg-type]
+        original = repository.compare_and_swap_status
+
+        async def archive_before_stale(signalist_id, expected, target):
+            current = repository.rows[signalist_id]
+            repository.rows[signalist_id] = Signalist.rehydrate(
+                id=current.id, telegram_user_id=current.telegram_user_id,
+                display_name=current.display_name, telegram_username=current.telegram_username,
+                status=SignalistStatus.ARCHIVED, created_at=current.created_at,
+                updated_at=current.updated_at, archived_at=current.updated_at,
+            )
+            return await original(signalist_id, expected, target)
+
+        from chainura.domain.signalist import Signalist
+        repository.compare_and_swap_status = archive_before_stale  # type: ignore[method-assign]
+        with self.assertRaises(InvalidSignalistStatusTransitionError):
+            await service.activate(row.id)  # type: ignore[arg-type]
+
+    async def test_archive_retries_after_concurrent_deactivation(self) -> None:
+        repository = FakeRepository(); factory = FakeTransactionFactory(repository)
+        service = SignalistService(factory)
+        row = await service.create(701, "Retry deactivate")
+        original = repository.compare_and_swap_status
+        calls = 0
+
+        async def concurrent_deactivation(signalist_id, expected, target):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.replace_status(repository, signalist_id, SignalistStatus.INACTIVE)
+            return await original(signalist_id, expected, target)
+
+        repository.compare_and_swap_status = concurrent_deactivation  # type: ignore[method-assign]
+        archived = await service.archive(row.id)  # type: ignore[arg-type]
+        self.assertIs(archived.status, SignalistStatus.ARCHIVED)
+        self.assertEqual(calls, 2)
+        self.assertEqual(factory.created[-1].commits, 1)
+
+    async def test_archive_retries_after_concurrent_activation(self) -> None:
+        repository = FakeRepository(); factory = FakeTransactionFactory(repository)
+        service = SignalistService(factory)
+        row = await service.create(702, "Retry activate")
+        row = await service.deactivate(row.id)  # type: ignore[arg-type]
+        original = repository.compare_and_swap_status
+        calls = 0
+
+        async def concurrent_activation(signalist_id, expected, target):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.replace_status(repository, signalist_id, SignalistStatus.ACTIVE)
+            return await original(signalist_id, expected, target)
+
+        repository.compare_and_swap_status = concurrent_activation  # type: ignore[method-assign]
+        archived = await service.archive(row.id)  # type: ignore[arg-type]
+        self.assertIs(archived.status, SignalistStatus.ARCHIVED)
+        self.assertEqual(calls, 2)
+        self.assertEqual(factory.created[-1].commits, 1)
+
+    async def test_repeated_contention_is_bounded_and_controlled(self) -> None:
+        repository = FakeRepository(); factory = FakeTransactionFactory(repository)
+        service = SignalistService(factory)
+        row = await service.create(703, "Contention")
+        calls = 0
+
+        async def always_stale(signalist_id, expected, target):
+            nonlocal calls
+            calls += 1
+            replacement = (
+                SignalistStatus.INACTIVE
+                if repository.rows[signalist_id].status is SignalistStatus.ACTIVE
+                else SignalistStatus.ACTIVE
+            )
+            self.replace_status(repository, signalist_id, replacement)
+            return None
+
+        repository.compare_and_swap_status = always_stale  # type: ignore[method-assign]
+        with self.assertRaises(SignalistPersistenceError) as caught:
+            await service.archive(row.id)  # type: ignore[arg-type]
+        self.assertNotIsInstance(caught.exception, RuntimeError)
+        self.assertEqual(calls, 3)
+        transition = factory.created[-1]
+        self.assertEqual(transition.commits, 0)
+        self.assertEqual(transition.rollbacks, 1)
+        self.assertTrue(transition.closed)

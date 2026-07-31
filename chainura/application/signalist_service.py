@@ -11,7 +11,10 @@ from chainura.errors import (
     DuplicateTelegramUserIdError,
     InvalidSignalistInputError,
     SignalistNotFoundError,
+    SignalistPersistenceError,
 )
+
+MAX_STATUS_TRANSITION_ATTEMPTS = 3
 
 
 class SignalistService:
@@ -69,12 +72,22 @@ class SignalistService:
 
     async def _transition(self, signalist_id: int, target: SignalistStatus) -> Signalist:
         async with self._transactions() as transaction:
-            # The row lock is held by this transaction through validation,
-            # persistence, and commit, so the state cannot become stale.
-            current = await transaction.repository.get_by_id_for_transition(signalist_id)
+            current = await transaction.repository.get_by_id(signalist_id)
             if current is None:
                 raise SignalistNotFoundError("signalist was not found")
-            approved = current.approve_transition(target)
-            result = await transaction.repository.persist_status(signalist_id, approved)
-            await transaction.commit()
-            return result
+            for _ in range(MAX_STATUS_TRANSITION_ATTEMPTS):
+                approved = current.approve_transition(target)
+                result = await transaction.repository.compare_and_swap_status(
+                    signalist_id, current.status, approved
+                )
+                if result is not None:
+                    await transaction.commit()
+                    return result
+                current = await transaction.repository.get_by_id_fresh(signalist_id)
+                if current is None:
+                    raise SignalistNotFoundError("signalist was not found")
+                # Validate the latest committed state before retrying or exhausting.
+                current.approve_transition(target)
+            raise SignalistPersistenceError(
+                "signalist status transition could not be completed"
+            )

@@ -10,7 +10,7 @@ from chainura.telegram.redis_runtime import PollerLease
 
 def settings():
     return TelegramRuntimeSettings(ApplicationSettings(
-        'postgresql+psycopg://u:p@localhost/db',1),'123456:token','redis://localhost/0')
+        'sqlite+aiosqlite:///./data/test.db',1),'123456:token','redis://localhost/0')
 
 class Session:
     def __init__(self,order,error=None):
@@ -160,6 +160,7 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
             async def dispose(self): order.append('engine')
         runtime=Runtime(settings()); redis=Redis(); lease=RenewingLease()
         with patch('chainura.telegram.runtime.create_database_engine',return_value=FakeEngine()), \
+             patch('chainura.telegram.runtime.initialize_database_engine',new=AsyncMock()), \
              patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
              patch('chainura.telegram.runtime.Redis.from_url',return_value=redis), \
              patch('chainura.telegram.runtime.PollerLease',return_value=lease), \
@@ -195,7 +196,7 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
             runtime=Runtime(settings())
             with self.subTest(stage=stage), patch(
                 'chainura.telegram.runtime.create_database_engine',return_value=FakeEngine()
-            ), patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
+            ), patch('chainura.telegram.runtime.initialize_database_engine',new=AsyncMock()), patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
                  patch('chainura.telegram.runtime.Redis.from_url',return_value=Redis()), \
                  patch('chainura.telegram.runtime.PollerLease',return_value=FailingLease()), \
                  patch('chainura.telegram.runtime.Bot',StartupBot), \
@@ -225,6 +226,7 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
             async def dispose(self): order.append('engine')
         runtime=Runtime(settings())
         with patch('chainura.telegram.runtime.create_database_engine',return_value=FakeEngine()), \
+             patch('chainura.telegram.runtime.initialize_database_engine',new=AsyncMock()), \
              patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
              patch('chainura.telegram.runtime.Redis.from_url',return_value=Redis()), \
              patch('chainura.telegram.runtime.PollerLease',return_value=lease), \

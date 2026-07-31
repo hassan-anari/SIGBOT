@@ -8,6 +8,23 @@ No feature, role, workflow, state, or business rule outside this document may be
 
 ---
 
+## Approved Initial Storage Architecture
+
+SQLite is the primary permanent database for local development, automated tests,
+and the initial production deployment. Redis stores ephemeral runtime state only;
+PostgreSQL is not currently required. The initial deployment assumes one active
+application instance, one Redis-leased Telegram poller, and a SQLite file on local
+persistent storage with regular safe backups.
+
+The SQLAlchemy repository, application-service, and Alembic boundaries remain
+separate from domain and Telegram logic so PostgreSQL can be introduced later if
+operational requirements change. PostgreSQL should be reconsidered only for
+multiple application instances or concurrent workers, high write concurrency,
+remote database hosting, replication, large analytical workloads, or requirements
+that exceed a single local database file.
+
+---
+
 # 1. Product Definition
 
 The system is a comprehensive Telegram bot for creating, publishing, monitoring, and reporting trading signals.

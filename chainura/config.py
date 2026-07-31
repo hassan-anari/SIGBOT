@@ -25,12 +25,14 @@ def validate_database_url(value: str) -> str:
         url = make_url(value)
     except (ArgumentError, ValueError, TypeError) as exc:
         raise InvalidApplicationConfigurationError("DATABASE_URL is invalid") from exc
-    if url.drivername != "postgresql+psycopg":
+    if url.drivername != "sqlite+aiosqlite":
         raise InvalidApplicationConfigurationError(
-            "DATABASE_URL must use the postgresql+psycopg driver"
+            "DATABASE_URL must use the sqlite+aiosqlite driver"
         )
-    if not url.database:
-        raise InvalidApplicationConfigurationError("DATABASE_URL must name a database")
+    if not url.database or not url.database.strip("/."):
+        raise InvalidApplicationConfigurationError("DATABASE_URL must name a database file")
+    if url.database == ":memory:" or url.query.get("mode") == "memory":
+        raise InvalidApplicationConfigurationError("DATABASE_URL must use a database file")
     return value
 
 

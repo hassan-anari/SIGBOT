@@ -26,6 +26,10 @@ class SignalistPersistenceError(ApplicationError):
     pass
 
 
+class DatabaseInitializationError(ApplicationError):
+    """SQLite could not be initialized with the required safety settings."""
+
+
 class ActorResolutionError(ApplicationError):
     """A sanitized failure while resolving the current Telegram actor."""
 

@@ -1,1 +1,1 @@
-"""Destructive PostgreSQL integration tests (never part of fast discovery)."""
+"""Isolated file-based SQLite integration tests (outside fast discovery)."""
