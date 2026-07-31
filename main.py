@@ -30,7 +30,7 @@ async def run_symbols(output: Path, max_spread: Decimal) -> None:
     analysis = probe.analyze_prices()
     LOGGER.info(
         "symbols completed common=%s ready=%s healthy=%s degraded=%s "
-        "unresolved=%s insufficient=%s missing=%s output=%s",
+        "unresolved=%s insufficient=%s missing=%s stale=%s output=%s",
         len(probe.common_symbols),
         len(analysis["ready"]),
         len(analysis["healthy"]),
@@ -38,6 +38,7 @@ async def run_symbols(output: Path, max_spread: Decimal) -> None:
         len(analysis["unresolved"]),
         len(analysis["insufficient"]),
         len(analysis["missing"]),
+        len(analysis["stale"]),
         output.resolve(),
     )
     print("Instrument counts:")
@@ -53,6 +54,14 @@ async def run_symbols(output: Path, max_spread: Decimal) -> None:
     print(f"Unresolved symbols: {len(analysis['unresolved'])}")
     print(f"Insufficient symbols: {len(analysis['insufficient'])}")
     print(f"Missing-price symbols: {len(analysis['missing'])}")
+    print(f"Stale-price symbols: {len(analysis['stale'])}")
+    print(
+        "Exchange health: "
+        + ", ".join(
+            f"{exchange}={probe.health[exchange].status.value}"
+            for exchange in ("ourbit", "toobit", "lbank")
+        )
+    )
     print(f"Files written to: {output.resolve()}")
 
 

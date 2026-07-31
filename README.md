@@ -14,6 +14,8 @@
   - دو منبع نزدیک: Average و وضعیت `degraded`
   - کمتر از دو منبع یا منابع ناسازگار: بدون Reference Price
 - ذخیره خروجی‌های بررسی در فایل JSON
+- حذف قیمت‌های قدیمی‌تر از ۱۵ ثانیه از محاسبه در زمان تحلیل
+- تشخیص Snapshot ناقص و نگهداری وضعیت جاری هر صرافی در حافظه
 - ثبت دائمی خطاها و وضعیت اجرا در فایل چرخشی `logs/market.log`
 
 ## وابستگی
@@ -108,7 +110,14 @@ Outlier = lbank
 - `reference_prices.json`: Reference Price، روش و وضعیت هر Symbol
 - `price_mismatches.json`: اختلاف‌های نیازمند بررسی
 - `missing_prices.json`: منبعهای فاقد قیمت
+- `stale_prices.json`: قیمت‌های موجود اما قدیمی، جدا از قیمت‌های مفقود
+- `symbol_collisions.json`: نگاشت‌های Canonical مبهم حذف‌شده در Discovery
 - `lbank_ignored_numeric_symbols.json`: Numeric Symbolهای حذف‌شده LBank
+
+قیمت دقیقاً ۱۵ ثانیه‌ای تازه محسوب می‌شود؛ قیمت قدیمی‌تر در Median، Average،
+Outlier یا Reference Price شرکت نمی‌کند. وضعیت جاری صرافی‌ها (`unknown`،
+`healthy`، `degraded` و `down`) فقط در حافظه نگهداری می‌شود. پاسخ موفق ولی
+ناقص `degraded` است و Tickهای قبلی حذف نمی‌شوند تا با همین قانون زمان منقضی شوند.
 
 ## APIهای فعلی
 

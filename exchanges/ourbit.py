@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from http_client import get_json
@@ -10,7 +11,8 @@ from models import Instrument, PriceTick
 LOGGER = get_logger("exchanges.ourbit")
 from .common import canonical, decimal_value, extract_rows, first, infer_base_from_symbol, upper
 
-TickHandler = Callable[[PriceTick], Awaitable[None]]
+SnapshotHandler = Callable[[str, list[PriceTick], datetime], Awaitable[None]]
+ErrorHandler = Callable[[str, Exception, datetime], Awaitable[None]]
 
 
 class OurbitAdapter:
@@ -99,18 +101,20 @@ class OurbitAdapter:
     async def run(
         self,
         allowed: set[str],
-        handler: TickHandler,
+        snapshot_handler: SnapshotHandler,
+        error_handler: ErrorHandler,
         stop: asyncio.Event,
     ) -> None:
         while not stop.is_set():
             started = asyncio.get_running_loop().time()
+            attempted_at = datetime.now(timezone.utc)
             try:
-                for tick in await self.fetch_prices():
-                    if tick.canonical_symbol in allowed:
-                        await handler(tick)
+                ticks = await self.fetch_prices()
+                await snapshot_handler(self.name, ticks, attempted_at)
             except Exception as exc:
                 print(f"[ourbit] error: {exc}")
                 LOGGER.exception("polling error")
+                await error_handler(self.name, exc, attempted_at)
 
             elapsed = asyncio.get_running_loop().time() - started
             delay = max(0.0, self.poll_seconds - elapsed)

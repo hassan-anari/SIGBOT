@@ -16,6 +16,27 @@ def load(name: str):
 
 
 class AdapterParsingTests(unittest.TestCase):
+    def test_distinct_native_symbols_for_same_canonical_survive_parser(self) -> None:
+        payload = {"data": [
+            {"symbol": "BTC_USDT", "baseCoin": "BTC", "quoteCoin": "USDT"},
+            {"symbol": "BTC-USDT", "baseCoin": "BTC", "quoteCoin": "USDT"},
+            {"symbol": "BTC_USDT", "baseCoin": "BTC", "quoteCoin": "USDT"},
+        ]}
+        instruments = OurbitAdapter.parse_instruments(payload)
+        self.assertEqual(len(instruments), 2)
+        self.assertEqual({item.canonical_symbol for item in instruments}, {"BTCUSDT"})
+
+    def test_non_positive_and_malformed_prices_are_rejected(self) -> None:
+        ticks = OurbitAdapter.parse_prices(
+            {"data": [
+                {"symbol": "BTC", "lastPrice": "0"},
+                {"symbol": "ETH", "lastPrice": "bad"},
+                {"symbol": "SOL", "lastPrice": "100"},
+            ]},
+            {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"},
+        )
+        self.assertEqual([tick.canonical_symbol for tick in ticks], ["SOLUSDT"])
+
     def test_ourbit_instruments_and_prices(self) -> None:
         payload = load("ourbit_ticker.json")
         instruments = OurbitAdapter.parse_instruments(payload)
