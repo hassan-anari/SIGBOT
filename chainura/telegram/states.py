@@ -7,3 +7,5 @@ class AdminDestinationEdit(StatesGroup):
     internal_name=State(); destination_type=State(); access_level=State(); daily_limit=State(); review=State()
 class AdminDestinationPriority(StatesGroup):
     editing=State(); review=State()
+class AdminSignalistArchive(StatesGroup):
+    confirming=State()

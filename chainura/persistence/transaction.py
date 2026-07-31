@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from chainura.persistence.error_translation import persistence_error
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.destination_repository import SqlAlchemyDestinationRepository
+from chainura.persistence.error_translation import destination_persistence_error
+from chainura.errors import DestinationPersistenceError
 
 
 class SqlAlchemySignalistTransaction:
@@ -39,7 +41,12 @@ class SqlAlchemySignalistTransaction:
             await self._session.commit()
         except SQLAlchemyError as exc:
             await self._session.rollback()
-            raise persistence_error(exc) from exc
+            # Commit can flush any repository. Preserve Destination-specific
+            # constraint errors rather than misclassifying them as Signalist errors.
+            translated = destination_persistence_error(exc)
+            if isinstance(translated, DestinationPersistenceError):
+                translated = persistence_error(exc)
+            raise translated from exc
         self._committed = True
 
     async def __aexit__(

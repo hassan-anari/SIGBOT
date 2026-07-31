@@ -9,6 +9,7 @@ from chainura.domain.signalist import Signalist, SignalistStatus
 from chainura.errors import (DestinationPersistenceError, DuplicateDestinationAssignmentError,
     DuplicateDestinationChatIdError, DuplicateDestinationInternalNameError)
 from chainura.persistence.mapping import to_domain as signalist_domain
+from chainura.persistence.error_translation import destination_persistence_error
 from chainura.persistence.models import (DestinationExchangePriorityRecord, DestinationRecord,
     DestinationSignalistRecord, SignalistRecord)
 
@@ -19,12 +20,7 @@ def destination_domain(r: DestinationRecord) -> Destination:
         created_at=r.created_at, updated_at=r.updated_at)
 
 def _error(exc: Exception) -> Exception:
-    raw = str(getattr(exc, "orig", ""))
-    if "destinations.telegram_chat_id" in raw: return DuplicateDestinationChatIdError("chat id exists")
-    if "destinations.internal_name" in raw: return DuplicateDestinationInternalNameError("name exists")
-    if "destination_signalists.destination_id, destination_signalists.signalist_id" in raw:
-        return DuplicateDestinationAssignmentError("assignment exists")
-    return DestinationPersistenceError("destination persistence operation failed")
+    return destination_persistence_error(exc)
 
 class SqlAlchemyDestinationRepository:
     def __init__(self, session: AsyncSession): self._session = session
@@ -58,23 +54,28 @@ class SqlAlchemyDestinationRepository:
         return [destination_domain(x) for x in await self._session.scalars(q)]
     async def update_metadata(self, current: Destination, candidate: Destination) -> Destination | None:
         now=datetime.now(timezone.utc)
-        result=await self._session.execute(update(DestinationRecord).where(
-            DestinationRecord.id==current.id, DestinationRecord.updated_at==current.updated_at).values(
-            internal_name=candidate.internal_name, destination_type=candidate.destination_type,
-            access_level=candidate.access_level, daily_limit=candidate.daily_limit, updated_at=now))
-        try: await self._session.flush()
+        try:
+            result=await self._session.execute(update(DestinationRecord).where(
+                DestinationRecord.id==current.id, DestinationRecord.updated_at==current.updated_at).values(
+                internal_name=candidate.internal_name, destination_type=candidate.destination_type,
+                access_level=candidate.access_level, daily_limit=candidate.daily_limit, updated_at=now))
+            await self._session.flush()
         except (IntegrityError, SQLAlchemyError) as exc: raise _error(exc) from exc
         return await self.get_by_id(current.id, True) if result.rowcount == 1 else None
     async def compare_and_swap_status(self, id: int, expected: DestinationStatus, target: DestinationStatus):
-        result=await self._session.execute(update(DestinationRecord).where(
-            DestinationRecord.id==id, DestinationRecord.status==expected).values(
-            status=target, updated_at=datetime.now(timezone.utc)))
+        try:
+            result=await self._session.execute(update(DestinationRecord).where(
+                DestinationRecord.id==id, DestinationRecord.status==expected).values(
+                status=target, updated_at=datetime.now(timezone.utc)))
+        except SQLAlchemyError as exc: raise _error(exc) from exc
         if result.rowcount not in {0,1}: raise DestinationPersistenceError("unexpected affected rows")
         return await self.get_by_id(id, True) if result.rowcount else None
     async def touch(self, id: int, expected_updated_at: datetime) -> bool:
-        result=await self._session.execute(update(DestinationRecord).where(
-            DestinationRecord.id==id, DestinationRecord.updated_at==expected_updated_at).values(
-            updated_at=datetime.now(timezone.utc)))
+        try:
+            result=await self._session.execute(update(DestinationRecord).where(
+                DestinationRecord.id==id, DestinationRecord.updated_at==expected_updated_at).values(
+                updated_at=datetime.now(timezone.utc)))
+        except SQLAlchemyError as exc: raise _error(exc) from exc
         if result.rowcount not in {0,1}: raise DestinationPersistenceError("unexpected affected rows")
         return result.rowcount == 1
     async def get_priority(self, id: int) -> DestinationExchangePriority:
@@ -82,11 +83,12 @@ class SqlAlchemyDestinationRepository:
             DestinationExchangePriorityRecord.destination_id==id).order_by(DestinationExchangePriorityRecord.position))
         return DestinationExchangePriority(tuple(row.exchange for row in rows))
     async def replace_priority(self, id: int, priority: DestinationExchangePriority) -> None:
-        await self._session.execute(delete(DestinationExchangePriorityRecord).where(
-            DestinationExchangePriorityRecord.destination_id==id))
-        self._session.add_all([DestinationExchangePriorityRecord(destination_id=id, exchange=e, position=i)
-                               for i,e in enumerate(priority.exchanges, 1)])
-        try: await self._session.flush()
+        try:
+            await self._session.execute(delete(DestinationExchangePriorityRecord).where(
+                DestinationExchangePriorityRecord.destination_id==id))
+            self._session.add_all([DestinationExchangePriorityRecord(destination_id=id, exchange=e, position=i)
+                                   for i,e in enumerate(priority.exchanges, 1)])
+            await self._session.flush()
         except (IntegrityError, SQLAlchemyError) as exc: raise _error(exc) from exc
     async def assignment_exists(self, did: int, sid: int) -> bool:
         return await self._session.get(DestinationSignalistRecord, (did,sid)) is not None

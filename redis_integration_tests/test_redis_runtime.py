@@ -49,7 +49,8 @@ class RedisRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await storage.set_data(key,temporary)
         self.assertEqual(await storage.get_data(key),temporary)
         keys=[item async for item in self.redis.scan_iter(match=f'{self.safe.namespace}:*')]
-        self.assertTrue(keys); self.assertTrue(all(await self.redis.ttl(item)>0 for item in keys))
+        ttls=[await self.redis.ttl(item) for item in keys]
+        self.assertTrue(keys); self.assertTrue(all(ttl > 0 for ttl in ttls))
         await storage.set_state(key,None); await storage.set_data(key,{})
         self.assertIsNone(await storage.get_state(key)); self.assertEqual(await storage.get_data(key),{})
         await storage.close(); self.redis=create_client(self.safe)

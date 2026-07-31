@@ -15,7 +15,7 @@ WELCOME_ADMIN = "<b>خوش آمدید.</b>\nشما مدیر اصلی سامان�
 WELCOME_SIGNALIST = "<b>خوش آمدید، {name}.</b>\nحساب سیگنالیست شما فعال است."
 DASHBOARD_ADMIN = "<b>منوی اصلی مدیر</b>\nیکی از گزینه‌های موجود را انتخاب کنید."
 DASHBOARD_SIGNALIST = "<b>منوی اصلی سیگنالیست</b>\nیکی از گزینه‌های موجود را انتخاب کنید."
-HELP_ADMIN = "<b>راهنمای مدیر</b>\nدر این مرحله فقط منوی اصلی و وضعیت دسترسی در دسترس است."
+HELP_ADMIN = "<b>راهنمای مدیر</b>\nمدیریت سیگنالیست‌ها، مقصدها، اولویت صرافی و انتساب‌ها در دسترس است."
 HELP_SIGNALIST = "<b>راهنمای سیگنالیست</b>\nدر این مرحله فقط منوی اصلی و وضعیت حساب در دسترس است."
 STATUS_ADMIN = "<b>وضعیت دسترسی</b>\nنقش: مدیر اصلی\nوضعیت: فعال"
 STATUS_SIGNALIST = "<b>وضعیت حساب</b>\nنام: {name}\nنقش: سیگنالیست\nوضعیت: فعال"
@@ -43,6 +43,8 @@ BUTTON_ASSIGNMENTS = "سیگنالیست‌های مقصد"
 BUTTON_ACTIVATE = "فعال‌سازی"
 BUTTON_DEACTIVATE = "غیرفعال‌سازی"
 BUTTON_ARCHIVE = "بایگانی"
+BUTTON_BACK_STEP = "بازگشت"
+BUTTON_ASSIGNED_DESTINATIONS = "مقصدهای اختصاص‌یافته"
 SIGNALIST_LIST_TITLE = "<b>مدیریت سیگنالیست‌ها</b>\nصفحه {page} از {pages}"
 DESTINATION_LIST_TITLE = "<b>مدیریت مقصدها</b>\nصفحه {page} از {pages}"
 EMPTY_LIST = "موردی برای نمایش وجود ندارد."
@@ -66,8 +68,8 @@ ASSIGNMENT_INELIGIBLE = "سیگنالیست بایگانی‌شده قابل ا�
 SKIP = "رد کردن"
 ASK_DESTINATION_TYPE = "نوع مقصد را انتخاب کنید."
 ASK_DESTINATION_ACCESS = "سطح دسترسی را انتخاب کنید."
-ASK_DESTINATION_TYPE_TEXT = "نوع مقصد را بنویسید: channel یا group"
-ASK_DESTINATION_ACCESS_TEXT = "سطح دسترسی را بنویسید: public یا private"
+ASK_DESTINATION_TYPE_TEXT = "نوع مقصد را بنویسید: کانال یا گروه"
+ASK_DESTINATION_ACCESS_TEXT = "سطح دسترسی را بنویسید: عمومی یا خصوصی"
 ASK_PRIORITY = "صرافی‌ها را به ترتیب انتخاب کنید."
 EDIT_PRIORITY = "اولویت صرافی‌ها را ویرایش کنید."
 PRIORITY_CURRENT = "اولویت فعلی: {value}"
@@ -81,6 +83,9 @@ SHOW_ELIGIBLE = "نمایش واجدان شرایط"
 SHOW_ASSIGNED = "نمایش انتساب‌های فعلی"
 CONFIRM_UNASSIGN = "آیا از حذف این انتساب مطمئن هستید؟"
 CONFIRM_METADATA = "تغییر مشخصات تأیید شود؟"
+CONFIRM_ARCHIVE = "آیا از بایگانی این سیگنالیست مطمئن هستید؟"
+CONFIRM_ARCHIVE_BUTTON = "تأیید بایگانی"
+ASSIGNED_DESTINATIONS_TITLE = "<b>مقصدهای اختصاص‌یافته</b>\nصفحه {page} از {pages}"
 ADD_EXCHANGE = "افزودن {exchange}"
 
 
@@ -106,6 +111,10 @@ def destination_line(item) -> str:
     labels={"active":"فعال","inactive":"غیرفعال"}
     return f"{safe(item.internal_name)} — {safe(labels[item.status.value])} — #{safe(item.id)}"
 
+STATUS_LABELS = {"active":"فعال", "inactive":"غیرفعال", "archived":"بایگانی‌شده"}
+TYPE_LABELS = {"channel":"کانال", "group":"گروه"}
+ACCESS_LABELS = {"public":"عمومی", "private":"خصوصی"}
+
 def priority_current(values) -> str:
     return PRIORITY_CURRENT.format(value=safe("، ".join(values) or EMPTY_VALUE))
 
@@ -114,12 +123,22 @@ def signalist_review(data, username) -> str:
 
 def signalist_detail(item, count) -> str:
     return (f"<b>{safe(item.display_name)}</b>\nشناسه داخلی: {safe(item.id)}\nشناسه تلگرام: {safe(item.telegram_user_id)}\n"
-            f"نام کاربری: {safe(item.telegram_username or NOT_RECORDED)}\nوضعیت: {safe(item.status.value)}\nتعداد مقصدها: {safe(count)}\n"
-            f"ایجاد: {safe(item.created_at)}\nبه‌روزرسانی: {safe(item.updated_at)}")
+            f"نام کاربری: {safe(item.telegram_username or NOT_RECORDED)}\nوضعیت: {safe(STATUS_LABELS[item.status.value])}\nتعداد مقصدها: {safe(count)}\n"
+            f"ایجاد: {safe(item.created_at)}\nبه‌روزرسانی: {safe(item.updated_at)}" +
+            (f"\nبایگانی: {safe(item.archived_at)}" if item.archived_at else ""))
 
 def destination_detail(detail) -> str:
     d=detail.destination
-    return (f"<b>{safe(d.internal_name)}</b>\nشناسه داخلی: {safe(d.id)}\nشناسه چت: {safe(d.telegram_chat_id)}\nنوع: {safe(d.destination_type.value)}\n"
-            f"دسترسی: {safe(d.access_level.value)}\nوضعیت: {safe(d.status.value)}\nسقف روزانه: {safe(d.daily_limit)}\n"
+    return (f"<b>{safe(d.internal_name)}</b>\nشناسه داخلی: {safe(d.id)}\nشناسه چت: {safe(d.telegram_chat_id)}\nنوع: {safe(TYPE_LABELS[d.destination_type.value])}\n"
+            f"دسترسی: {safe(ACCESS_LABELS[d.access_level.value])}\nوضعیت: {safe(STATUS_LABELS[d.status.value])}\nسقف روزانه: {safe(d.daily_limit)}\n"
             f"اولویت: {safe('، '.join(x.value for x in detail.priority.exchanges))}\nسیگنالیست‌ها: {safe(detail.assigned_count)}\n"
             f"ایجاد: {safe(d.created_at)}\nبه‌روزرسانی: {safe(d.updated_at)}")
+
+def destination_review(data) -> str:
+    return (f"<b>بازبینی مقصد</b>\nنام داخلی: {safe(data['internal_name'])}\nشناسه چت: {safe(data['telegram_chat_id'])}\n"
+            f"نوع: {safe(TYPE_LABELS[data['destination_type']])}\nدسترسی: {safe(ACCESS_LABELS[data['access_level']])}\n"
+            f"سقف روزانه: {safe(data['daily_limit'])}\nاولویت: {safe('، '.join(data['exchanges']))}\nوضعیت اولیه: غیرفعال")
+
+def metadata_review(data) -> str:
+    return (f"<b>بازبینی تغییر مشخصات</b>\nنام داخلی: {safe(data['internal_name'])}\nنوع: {safe(TYPE_LABELS[data['destination_type']])}\n"
+            f"دسترسی: {safe(ACCESS_LABELS[data['access_level']])}\nسقف روزانه: {safe(data['daily_limit'])}")
