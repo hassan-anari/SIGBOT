@@ -1,6 +1,6 @@
 # Haz Market Data — REST Probe + File Logging
 
-این پروژه یک Probe ساده برای بررسی عملی بازارهای Futures/Perpetual سه صرافی است. عمداً دیتابیس، Redis، Docker و معماری پیچیده ندارد.
+این پروژه علاوه بر Probe مستقل بازار، پایهٔ پایدار و مستقل از Transport برنامه را برای مدیریت هویت و وضعیت Signalist فراهم می‌کند. CLI بازار همچنان بدون تنظیمات یا اتصال دیتابیس اجرا می‌شود.
 
 ## کار فعلی پروژه
 
@@ -20,7 +20,11 @@
 
 ## وابستگی
 
-هیچ Dependency خارجی وجود ندارد. Python 3.11 یا جدیدتر پیشنهاد می‌شود.
+Python 3.11 یا جدیدتر و برای بخش پایدار برنامه PostgreSQL لازم است. وابستگی‌ها:
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 ```powershell
 python main.py symbols
@@ -32,6 +36,76 @@ python main.py watch --seconds 30
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+این تست‌های سریع آفلاین هستند و به PostgreSQL یا API زندهٔ صرافی متصل نمی‌شوند.
+
+## پایهٔ پایدار برنامه
+
+تنها موجودیت پایدار فعلی `Signalist` است. وضعیت‌های مجاز آن `active`،
+`inactive` و `archived` هستند و Archive به‌صورت Soft Delete انجام می‌شود. Main
+Admin جدول دیتابیس ندارد و شناسهٔ آن از محیط خوانده می‌شود.
+
+دو متغیر برنامه لازم است:
+
+```text
+DATABASE_URL=postgresql+psycopg://app_user:password@localhost/chainura
+MAIN_ADMIN_TELEGRAM_ID=123456789
+```
+
+فایل `.env.example` فقط نمونه است؛ برنامه فایل `.env` را خودکار بارگذاری نمی‌کند.
+مقادیر واقعی را در Environment سیستم قرار دهید و URL کامل را در لاگ ننویسید.
+
+برای توسعه یک دیتابیس محلی بسازید و Migration را اجرا کنید:
+
+```bash
+createdb chainura
+export DATABASE_URL='postgresql+psycopg://app_user:password@localhost/chainura'
+alembic upgrade head
+alembic current
+alembic history
+```
+
+Alembic تنها مکانیزم ساخت Schema است. برای بررسی Downgrade و Re-upgrade روی
+دیتابیس disposable:
+
+```bash
+alembic downgrade base
+alembic upgrade head
+```
+
+### تست PostgreSQL
+
+تست‌های Integration مخرب‌اند و فقط دیتابیسی را می‌پذیرند که نام آن به `_test`
+ختم شود. برای نمونه:
+
+```bash
+createdb chainura_phase2_test
+export TEST_DATABASE_URL='postgresql+psycopg://test_user:test_password@localhost/chainura_phase2_test'
+export DATABASE_URL="$TEST_DATABASE_URL"
+python -m unittest discover -s integration_tests -v
+```
+
+نبودن یا ناامن بودن `TEST_DATABASE_URL` باعث شکست صریح Suite، پیش از هر تغییر
+Schema، می‌شود.
+
+### بررسی معادل CI در محیط محلی
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall .
+python main.py --help
+python main.py symbols --help
+python main.py watch --help
+alembic upgrade head
+alembic current
+alembic downgrade base
+alembic upgrade head
+python -m unittest discover -s integration_tests -v
+git diff --check
+```
+
+دستورهای `main.py` تنظیمات `DATABASE_URL`، `MAIN_ADMIN_TELEGRAM_ID` یا
+`TEST_DATABASE_URL` را بارگذاری نمی‌کنند و Engine دیتابیس نمی‌سازند.
 
 
 ## لاگ دائمی فایل
