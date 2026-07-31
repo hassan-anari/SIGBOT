@@ -2,7 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 from chainura.errors import TelegramRuntimeError
-from chainura.telegram.redis_runtime import PollerLease, UpdateIdempotency, ClaimResult, bot_identity
+from chainura.telegram.redis_runtime import (LEASE_RENEW_SECONDS, LEASE_TTL_MS,
+    RENEW_COMMAND_TIMEOUT_SECONDS, PollerLease, UpdateIdempotency, ClaimResult, bot_identity)
 
 class FakeRedis:
     def __init__(self): self.values={}; self.expiry={}
@@ -26,6 +27,12 @@ class FakeRedis:
         del self.values[keys[0]]; return 1
 
 class RedisRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_renewal_deadline_has_lease_expiry_margin(self):
+        self.assertLess(
+            (LEASE_RENEW_SECONDS + RENEW_COMMAND_TIMEOUT_SECONDS) * 1000,
+            LEASE_TTL_MS,
+        )
+
     async def test_owner_safe_lease(self):
         redis=FakeRedis(); first=PollerLease(redis,'abc'); second=PollerLease(redis,'abc')
         self.assertTrue(await first.acquire()); self.assertFalse(await second.acquire())
@@ -50,3 +57,14 @@ class RedisRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ), self.assertRaises(TelegramRuntimeError):
                 await lease.run_renewal(stop,lost)
             self.assertTrue(lost.is_set())
+
+    async def test_hanging_renewal_times_out_as_fatal_lease_loss(self):
+        lease=PollerLease(FakeRedis(),'abc'); lost=asyncio.Event(); stop=asyncio.Event()
+        never=asyncio.Event()
+        lease.renew=AsyncMock(side_effect=never.wait)
+        with patch('chainura.telegram.redis_runtime.LEASE_RENEW_SECONDS',0), patch(
+            'chainura.telegram.redis_runtime.RENEW_COMMAND_TIMEOUT_SECONDS',.01
+        ), self.assertRaises(TelegramRuntimeError) as caught:
+            await lease.run_renewal(stop,lost)
+        self.assertTrue(lost.is_set())
+        self.assertIsInstance(caught.exception.__cause__, TimeoutError)

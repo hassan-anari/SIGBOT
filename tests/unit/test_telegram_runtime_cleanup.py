@@ -62,6 +62,31 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(order,['lease','storage','bot','engine'])
                 self.assertIs(runtime.state,RuntimeState.STOPPED)
 
+    async def test_each_hanging_cleanup_operation_is_bounded(self):
+        for hanging in ('lease','storage','bot','engine'):
+            order=[]; never=asyncio.Event(); runtime=Runtime(settings())
+            lease=Lease(order); storage=Storage(order); bot=Bot(order); engine=Engine(order)
+            async def hang(name):
+                order.append(name)
+                await never.wait()
+            def hanging_action(name):
+                async def action():
+                    await hang(name)
+                return action
+            if hanging=='lease': lease.release=AsyncMock(side_effect=hanging_action('lease'))
+            if hanging=='storage': storage.close=AsyncMock(side_effect=hanging_action('storage'))
+            if hanging=='bot': bot.session.close=AsyncMock(side_effect=hanging_action('bot'))
+            if hanging=='engine': engine.dispose=AsyncMock(side_effect=hanging_action('engine'))
+            runtime.lease=lease; runtime.storage=storage; runtime.bot=bot; runtime.engine=engine
+            with self.subTest(hanging=hanging), patch(
+                'chainura.telegram.runtime.CLEANUP_OPERATION_TIMEOUT_SECONDS',.01
+            ):
+                await runtime.cleanup()
+                self.assertEqual(order,['lease','storage','bot','engine'])
+                self.assertIs(runtime.state,RuntimeState.STOPPED)
+                self.assertEqual(len([task for task in asyncio.all_tasks()
+                    if task is not asyncio.current_task()]),0)
+
     async def test_failed_renewal_task_does_not_abort_cleanup(self):
         order=[]; runtime=Runtime(settings()); runtime.lease=Lease(order); runtime.storage=Storage(order)
         runtime.bot=Bot(order); runtime.engine=Engine(order)
@@ -146,3 +171,70 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(lease.renewals,1)
         self.assertNotIn('polling',order)
         self.assertEqual(order.count('lease'),1); self.assertEqual(order.count('storage'),1)
+
+    async def test_renewal_failure_during_telegram_startup_is_fatal(self):
+        for stage in ('commands','webhook'):
+            order=[]; trigger=asyncio.Event(); never=asyncio.Event()
+            class Redis:
+                async def ping(self): pass
+            class FailingLease:
+                async def acquire(self): return True
+                async def run_renewal(self,stop,lost):
+                    await trigger.wait(); lost.set(); raise TelegramRuntimeError('safe renewal failure')
+                async def release(self): order.append('lease'); return True
+            class StartupBot:
+                def __init__(self,*args,**kwargs): self.session=Session(order)
+                async def set_my_commands(self,*args):
+                    if stage=='commands': trigger.set(); await never.wait()
+                async def delete_webhook(self,**kwargs):
+                    if stage=='webhook': trigger.set(); await never.wait()
+            class FakeStorage:
+                async def close(self): order.append('storage')
+            class FakeEngine:
+                async def dispose(self): order.append('engine')
+            runtime=Runtime(settings())
+            with self.subTest(stage=stage), patch(
+                'chainura.telegram.runtime.create_database_engine',return_value=FakeEngine()
+            ), patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
+                 patch('chainura.telegram.runtime.Redis.from_url',return_value=Redis()), \
+                 patch('chainura.telegram.runtime.PollerLease',return_value=FailingLease()), \
+                 patch('chainura.telegram.runtime.Bot',StartupBot), \
+                 patch('chainura.telegram.runtime.create_production_storage',return_value=FakeStorage()), \
+                 patch('chainura.telegram.runtime.build_dispatcher',return_value=object()), \
+                 self.assertRaises(TelegramRuntimeError):
+                await runtime.start()
+            self.assertIsNone(runtime.polling_task)
+            self.assertEqual(order,['lease','storage','bot','engine'])
+            self.assertIs(runtime.state,RuntimeState.STOPPED)
+
+    async def test_renewal_timeout_during_command_registration_is_fatal(self):
+        order=[]; never=asyncio.Event()
+        class Redis:
+            async def ping(self): pass
+        lease=PollerLease(object(),'identity')
+        lease.acquire=AsyncMock(return_value=True)
+        lease.renew=AsyncMock(side_effect=never.wait)
+        lease.release=Lease(order).release
+        class StartupBot:
+            def __init__(self,*args,**kwargs): self.session=Session(order)
+            async def set_my_commands(self,*args): await never.wait()
+            async def delete_webhook(self,**kwargs): self.fail('must not run')
+        class FakeStorage:
+            async def close(self): order.append('storage')
+        class FakeEngine:
+            async def dispose(self): order.append('engine')
+        runtime=Runtime(settings())
+        with patch('chainura.telegram.runtime.create_database_engine',return_value=FakeEngine()), \
+             patch('chainura.telegram.runtime.create_session_factory',return_value=lambda:None), \
+             patch('chainura.telegram.runtime.Redis.from_url',return_value=Redis()), \
+             patch('chainura.telegram.runtime.PollerLease',return_value=lease), \
+             patch('chainura.telegram.runtime.Bot',StartupBot), \
+             patch('chainura.telegram.runtime.create_production_storage',return_value=FakeStorage()), \
+             patch('chainura.telegram.runtime.build_dispatcher',return_value=object()), \
+             patch('chainura.telegram.redis_runtime.LEASE_RENEW_SECONDS',0), \
+             patch('chainura.telegram.redis_runtime.RENEW_COMMAND_TIMEOUT_SECONDS',.01), \
+             self.assertRaises(TelegramRuntimeError):
+            await runtime.start()
+        self.assertIsNone(runtime.polling_task)
+        self.assertEqual(order,['lease','storage','bot','engine'])
+        self.assertTrue(runtime.lease_lost.is_set())

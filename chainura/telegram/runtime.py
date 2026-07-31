@@ -32,7 +32,7 @@ from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, Updat
 from chainura.telegram.routers import router
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
-SHUTDOWN_TIMEOUT = 15
+CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
 T = TypeVar("T")
 
 
@@ -125,18 +125,33 @@ class Runtime:
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
             await shutdown_waiter
-        if self.renewal_task in done and self.renewal_task is not None:
+        if (
+            self.renewal_task is not None
+            and self.renewal_task.done()
+            and not self.renewal_stop.is_set()
+        ):
+            cause = self._task_exception(self.renewal_task)
             self._observe_task_failure(self.renewal_task, "poller renewal")
+            failure = TelegramRuntimeError(
+                "poller lease renewal stopped during startup"
+            )
+            if cause is not None:
+                raise failure from cause
+            raise failure
         raise RuntimeShutdownRequested
 
     @staticmethod
-    def _observe_task_failure(task: asyncio.Task[object], component: str) -> None:
+    def _task_exception(task: asyncio.Task[object]) -> BaseException | None:
         if task.cancelled():
-            return
+            return None
         try:
-            exception = task.exception()
+            return task.exception()
         except asyncio.CancelledError:
-            return
+            return None
+
+    @classmethod
+    def _observe_task_failure(cls, task: asyncio.Task[object], component: str) -> None:
+        exception = cls._task_exception(task)
         if exception is not None:
             LOGGER.error("%s task failed category=%s", component,
                          type(exception).__name__)
@@ -219,10 +234,23 @@ class Runtime:
             raise TelegramRuntimeError(fatal_reason)
 
     async def _best_effort(self, action: Awaitable[object], component: str) -> bool:
+        task = asyncio.ensure_future(action)
         try:
-            await action
+            await asyncio.wait_for(
+                asyncio.shield(task), CLEANUP_OPERATION_TIMEOUT_SECONDS
+            )
             return True
+        except TimeoutError:
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+            LOGGER.error("cleanup failed component=%s category=TimeoutError", component)
+            return False
         except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
             return False
         except Exception as exc:
             LOGGER.error("cleanup failed component=%s category=%s", component,
@@ -238,7 +266,7 @@ class Runtime:
 
             if self.dispatcher and self.polling_task and not self.polling_task.done():
                 stopped = await self._best_effort(
-                    asyncio.wait_for(self.dispatcher.stop_polling(), SHUTDOWN_TIMEOUT),
+                    self.dispatcher.stop_polling(),
                     "polling stop",
                 )
                 if not stopped and not self.polling_task.done():
@@ -248,17 +276,12 @@ class Runtime:
 
             self.renewal_stop.set()
             if self.renewal_task:
-                if not self.renewal_task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(self.renewal_task), SHUTDOWN_TIMEOUT)
-                    except TimeoutError:
-                        self.renewal_task.cancel()
-                    except Exception:
-                        pass
-                if not self.renewal_task.done():
-                    await self._best_effort(self.renewal_task, "poller renewal task")
-                else:
+                if self.renewal_task.done():
                     self._observe_task_failure(self.renewal_task, "poller renewal")
+                else:
+                    await self._best_effort(
+                        self.renewal_task, "poller renewal task"
+                    )
 
             if self.lease and not self._lease_released:
                 if await self._best_effort(self.lease.release(), "poller lease release"):

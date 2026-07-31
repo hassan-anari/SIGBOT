@@ -10,6 +10,7 @@ from chainura.errors import TelegramRuntimeError
 
 LEASE_TTL_MS = 30_000
 LEASE_RENEW_SECONDS = 10
+RENEW_COMMAND_TIMEOUT_SECONDS = 5
 PROCESSING_TTL_MS = 60_000
 PROCESSED_TTL_SECONDS = 7 * 24 * 60 * 60
 DIAGNOSTIC_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -72,7 +73,10 @@ class PollerLease:
                     await asyncio.wait_for(stop.wait(), LEASE_RENEW_SECONDS)
                     return
                 except asyncio.TimeoutError:
-                    if not await self.renew():
+                    renewed = await asyncio.wait_for(
+                        self.renew(), RENEW_COMMAND_TIMEOUT_SECONDS
+                    )
+                    if not renewed:
                         raise TelegramRuntimeError("poller lease ownership was lost")
         except asyncio.CancelledError:
             raise
