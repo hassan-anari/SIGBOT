@@ -4,3 +4,4 @@ alembic>=1.14,<2.0
 aiogram>=3.30,<3.31
 redis>=7.4,<8.0
 python-dotenv>=1.2,<2.0
+tzdata>=2025.2,<2027.0

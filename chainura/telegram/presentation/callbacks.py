@@ -28,6 +28,13 @@ def _positive(value: str) -> bool:
     return value.isascii() and value.isdigit() and value == str(int(value)) and int(value) > 0
 
 
+def _negative_chat_id(value: str) -> bool:
+    if not value.isascii() or not value.startswith("-") or not value[1:].isdigit():
+        return False
+    number = int(value)
+    return value == str(number) and -(2**63) <= number < 0
+
+
 def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
     if namespace == "sl":
         if action == "list": return len(args) == 2 and args[0] in FILTER_CODES and _positive(args[1])
@@ -42,6 +49,10 @@ def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
         if action == "create": return not args
         if action == "status": return len(args) == 2 and _positive(args[0]) and args[1] in {"activate", "deactivate"}
         return False
+    if namespace == "de":
+        if action == "access":
+            return len(args) == 2 and _positive(args[0]) and args[1] in {"public", "private"}
+        return False
     if namespace == "dp":
         if action in {"add", "remove"}: return len(args) == 2 and _positive(args[0]) and args[1] in EXCHANGE_CODES
         if action == "move": return len(args) == 3 and _positive(args[0]) and args[1] in EXCHANGE_CODES and args[2] in {"u", "d"}
@@ -53,7 +64,7 @@ def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
         if action == "confirm": return len(args) == 3 and args[0] == "remove" and all(_positive(item) for item in args[1:])
         return False
     if namespace == "nav":
-        if action in {"candidate-confirm", "candidate-retry"}: return len(args) == 1 and args[0].startswith("-100") and args[0][1:].isdigit()
+        if action in {"candidate-confirm", "candidate-retry"}: return len(args) == 1 and _negative_chat_id(args[0])
         if action == "access": return len(args) == 1 and args[0] in {"public", "private"}
         if action == "exchange": return len(args) == 2 and args[0] in {"add", "remove", "up", "down"} and args[1] in EXCHANGE_CODES
         if action == "confirm": return len(args) == 1 and args[0] in FLOW_CODES

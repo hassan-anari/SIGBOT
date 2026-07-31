@@ -37,12 +37,13 @@ DESTINATION_NOT_FOUND="❌ مقصد پیدا نشد.\n\nشناسه چت را ب�
 DESTINATION_PRIVATE="❌ این شناسه مربوط به گفت‌وگوی خصوصی است.\n\nفقط کانال یا گروه قابل ثبت است."
 DESTINATION_NOT_ADMIN="⚠️ ربات در این مقصد مدیر نیست.\n\nابتدا ربات را به‌عنوان مدیر کانال یا گروه اضافه کنید و سپس دوباره تلاش کنید."
 TELEGRAM_TEMPORARY="⚠️ ارتباط با تلگرام موقتاً برقرار نشد.\n\nچند لحظه بعد دوباره تلاش کنید."
+CANDIDATE_CHANGED="⚠️ اطلاعات مقصد در تلگرام تغییر کرده است.\n\nاطلاعات تازه را دوباره تأیید کنید."
 FLOW_CANCELLED="فرایند لغو شد."; FLOW_EXPIRED="این فرایند منقضی شده است؛ دوباره آغاز کنید."
 CREATED_SUCCESS="✅ اطلاعات با موفقیت ثبت شد."; DUPLICATE_SIGNALIST="این شناسه تلگرام قبلاً ثبت شده است."
 DUPLICATE_DESTINATION_NAME="مقصدی با این نام تلگرام قبلاً ثبت شده است."; DUPLICATE_DESTINATION_CHAT="این شناسه چت قبلاً ثبت شده است."
 ASSIGNMENT_DUPLICATE="این سیگنالیست قبلاً به مقصد اختصاص یافته است."; ASSIGNMENT_MISSING="این انتساب قبلاً حذف شده است."
 ASSIGNMENT_INELIGIBLE="سیگنالیست بایگانی‌شده قابل انتساب نیست."; ASK_DESTINATION_ACCESS="سطح دسترسی مقصد را انتخاب کنید."
-ASK_DESTINATION_ACCESS_TEXT="سطح دسترسی را بنویسید: عمومی یا خصوصی"; ASK_PRIORITY="🏦 اولویت صرافی‌ها را تنظیم کنید."
+ASK_PRIORITY="🏦 اولویت صرافی‌ها را تنظیم کنید."
 EDIT_PRIORITY="🏦 اولویت صرافی‌ها را ویرایش کنید."; EMPTY_VALUE="خالی"; TYPE_CHANNEL="📢 کانال"; TYPE_GROUP="👥 گروه"
 ACCESS_PUBLIC="🌐 عمومی"; ACCESS_PRIVATE="🔒 خصوصی"; SHOW_ELIGIBLE="نمایش واجدان شرایط"; SHOW_ASSIGNED="نمایش انتساب‌های فعلی"
 CONFIRM_UNASSIGN="آیا از حذف این انتساب مطمئن هستید؟"; CONFIRM_METADATA="تغییر مشخصات تأیید شود؟"
@@ -56,6 +57,8 @@ def status_signalist(name): return STATUS_SIGNALIST.format(name=safe(name))
 def page_title(template,page,pages,filter_label="همه"): return template.format(page=persian_digits(page),pages=persian_digits(pages),filter=filter_label)
 def signalist_line(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {safe(item.display_name)}"
 def destination_line(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {safe(item.internal_name)}"
+def signalist_button_label(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {item.display_name}"
+def destination_button_label(item): return f"{STATUS_LABELS[item.status.value].split()[0]} {item.internal_name}"
 def priority_current(values): return format_priority(values)
 def signalist_review(data, username=None):
     return f"<b>👤 بررسی اطلاعات سیگنالیست</b>\n\n🆔 شناسه تلگرام: {safe(data['telegram_user_id'])}\n📝 نام نمایشی: {safe(data['display_name'])}\n\nآیا اطلاعات بالا تأیید می‌شود؟"

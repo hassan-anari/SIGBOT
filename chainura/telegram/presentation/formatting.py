@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-TEHRAN = ZoneInfo("Asia/Tehran")
+
+def _load_tehran_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo("Asia/Tehran")
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError(
+            "Asia/Tehran timezone data is unavailable; install the declared tzdata dependency"
+        ) from exc
+
+
+TEHRAN = _load_tehran_timezone()
 PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 NOT_RECORDED = "ثبت نشده"
 

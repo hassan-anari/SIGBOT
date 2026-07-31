@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from secrets import token_urlsafe
 
 from aiogram import F, Router
 from aiogram.filters import BaseFilter, Command
@@ -79,6 +80,15 @@ def destination_access_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def destination_edit_access_keyboard(destination_id: int) -> InlineKeyboardMarkup:
+    return markup([
+        [button(texts.ACCESS_PUBLIC, cb("de", "access", destination_id, "public")),
+         button(texts.ACCESS_PRIVATE, cb("de", "access", destination_id, "private"))],
+        [button(texts.BUTTON_BACK_STEP, cb("nav", "back", "dse", "detail")),
+         button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dse"))],
+    ])
+
+
 async def require_admin(event, actor: Actor, ack: CallbackAcknowledger | None = None) -> bool:
     if actor.kind is ActorKind.MAIN_ADMIN:
         return True
@@ -105,8 +115,15 @@ async def state_matches(state: FSMContext, expected, required: tuple[str, ...] =
     return data if all(key in data for key in required) else None
 
 
+async def operation_matches(state: FSMContext, expected, snapshot: dict, keys: tuple[str, ...]) -> bool:
+    if await state.get_state() != expected.state:
+        return False
+    current = await state.get_data()
+    return all(current.get(key) == snapshot.get(key) for key in keys)
+
+
 def list_keyboard(kind, items, page, filter_code, include_archive=False):
-    rows = [[button(texts.signalist_line(x) if kind == "sl" else texts.destination_line(x),
+    rows = [[button(texts.signalist_button_label(x) if kind == "sl" else texts.destination_button_label(x),
                     cb(kind, "view", x.id))] for x in items]
     filters = [button(texts.BUTTON_ALL, cb(kind, "list", "a", 1)),
                button(texts.BUTTON_ACTIVE, cb(kind, "list", "v", 1)),
@@ -258,12 +275,16 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
         return True
     if action in {"candidate-confirm", "candidate-retry"}:
         data = await state_matches(state, AdminDestinationCreate.candidate_review,
-                                   ("internal_name", "telegram_chat_id", "destination_type"))
+                                   ("flow_token", "internal_name", "telegram_chat_id", "destination_type"))
         chat_id=int(args[0])
         if data is None or data["telegram_chat_id"] != chat_id:
             await expired(query.message); return True
         if action == "candidate-retry":
-            await state.set_data({}) if hasattr(state, "set_data") else await state.clear()
+            flow_token = data["flow_token"]
+            if hasattr(state, "set_data"):
+                await state.set_data({"flow_token": flow_token})
+            else:
+                await state.clear(); await state.update_data(flow_token=flow_token)
             await state.set_state(AdminDestinationCreate.telegram_chat_id)
             await query.message.answer(texts.ASK_DESTINATION_CHAT_ID, reply_markup=controls("dsc")); return True
         await state.set_state(AdminDestinationCreate.access_level)
@@ -290,7 +311,7 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
         flow = args[0]
         requirements = {
             "slc": (AdminSignalistCreate.review, ("telegram_user_id", "display_name")),
-            "dsc": (AdminDestinationCreate.review, ("internal_name", "telegram_chat_id", "destination_type", "access_level", "daily_limit", "exchanges")),
+            "dsc": (AdminDestinationCreate.review, ("flow_token", "internal_name", "telegram_chat_id", "destination_type", "access_level", "daily_limit", "exchanges")),
             "dse": (AdminDestinationEdit.review, ("destination_id", "expected_updated_at", "access_level", "daily_limit")),
         }
         if flow not in requirements: await expired(query.message); return True
@@ -299,15 +320,33 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
         try:
             if flow == "dsc":
                 if destination_inspector is None: await query.message.answer(texts.TELEGRAM_TEMPORARY); return True
+                validation_token = token_urlsafe(18)
+                await state.update_data(validation_token=validation_token)
+                snapshot = dict(data, validation_token=validation_token)
                 try: inspection=await destination_inspector.inspect(data["telegram_chat_id"])
                 except DestinationInspectionError as exc:
+                    if not await operation_matches(state, AdminDestinationCreate.review, snapshot,
+                            ("flow_token", "validation_token", "telegram_chat_id", "internal_name",
+                             "destination_type", "access_level", "daily_limit", "exchanges")):
+                        return True
                     messages={InspectionError.NOT_FOUND:texts.DESTINATION_NOT_FOUND, InspectionError.PRIVATE:texts.DESTINATION_PRIVATE,
                               InspectionError.TEMPORARY:texts.TELEGRAM_TEMPORARY}
                     await query.message.answer(messages[exc.reason]); return True
+                if not await operation_matches(state, AdminDestinationCreate.review, snapshot,
+                        ("flow_token", "validation_token", "telegram_chat_id", "internal_name",
+                         "destination_type", "access_level", "daily_limit", "exchanges")):
+                    return True
                 if not inspection.bot_is_admin:
                     await query.message.answer(texts.DESTINATION_NOT_ADMIN); return True
                 if inspection.title != data["internal_name"] or inspection.destination_type.value != data["destination_type"]:
-                    await query.message.answer(texts.DESTINATION_NOT_FOUND); return True
+                    await state.set_data({"flow_token": data["flow_token"],
+                        "telegram_chat_id": data["telegram_chat_id"], "internal_name": inspection.title,
+                        "destination_type": inspection.destination_type.value})
+                    await state.set_state(AdminDestinationCreate.candidate_review)
+                    await query.message.answer(texts.CANDIDATE_CHANGED)
+                    fresh = await state.get_data()
+                    await query.message.answer(texts.candidate_review(fresh),
+                        reply_markup=candidate_keyboard(data["telegram_chat_id"])); return True
                 await destination_service.create(data["internal_name"], data["telegram_chat_id"],
                     DestinationType(data["destination_type"]), DestinationAccessLevel(data["access_level"]),
                     data["daily_limit"], tuple(Exchange(x) for x in data["exchanges"]))
@@ -348,15 +387,18 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
                        "limit": (AdminDestinationCreate.daily_limit, texts.ASK_DAILY_LIMIT),
                        "priority": (AdminDestinationCreate.priority, texts.ASK_PRIORITY)}
         elif flow == "dse":
-            targets = {"access": (AdminDestinationEdit.access_level, texts.ASK_DESTINATION_ACCESS_TEXT),
+            targets = {"access": (AdminDestinationEdit.access_level, texts.ASK_DESTINATION_ACCESS),
                        "limit": (AdminDestinationEdit.daily_limit, texts.ASK_DAILY_LIMIT)}
         else:
             if step == "detail" and data.get("destination_id"):
                 await state.clear(); await show_destination_detail(query.message, data["destination_id"], destination_service)
             else: await expired(query.message)
             return True
+        if flow == "dse" and step == "detail" and data.get("destination_id"):
+            destination_id=data["destination_id"]; await state.clear()
+            await show_destination_detail(query.message,destination_id,destination_service); return True
         if step == "review":
-            required = ("internal_name", "telegram_chat_id", "destination_type", "access_level", "daily_limit", "exchanges")
+            required = ("flow_token", "internal_name", "telegram_chat_id", "destination_type", "access_level", "daily_limit", "exchanges")
             if flow != "dsc" or not all(key in data for key in required) or not data["exchanges"]:
                 await expired(query.message); return True
             await state.set_state(AdminDestinationCreate.review)
@@ -372,6 +414,9 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
             await query.message.answer(texts.candidate_review(data),reply_markup=candidate_keyboard(data["telegram_chat_id"]))
         elif flow == "dsc" and step == "access":
             await query.message.answer(prompt, reply_markup=destination_access_keyboard())
+        elif flow == "dse" and step == "access":
+            await query.message.answer(texts.ASK_DESTINATION_ACCESS,
+                reply_markup=destination_edit_access_keyboard(data["destination_id"]))
         elif step == "priority": await query.message.answer(prompt, reply_markup=priority_keyboard(data.get("exchanges", [])))
         else: await query.message.answer(prompt, reply_markup=controls(flow))
         return True
@@ -435,7 +480,8 @@ async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAc
             await show_signalist_detail(query.message, sid, signalist_service, admin_signalist_service)
         elif parsed.namespace == "ds" and parsed.action == "list": await show_destinations(query.message, destination_service, args[0], int(args[1]))
         elif parsed.namespace == "ds" and parsed.action == "create":
-            await state.clear(); await state.set_state(AdminDestinationCreate.telegram_chat_id)
+            await state.clear(); await state.update_data(flow_token=token_urlsafe(18))
+            await state.set_state(AdminDestinationCreate.telegram_chat_id)
             await query.message.answer(texts.ASK_DESTINATION_CHAT_ID, reply_markup=controls("dsc"))
         elif parsed.namespace == "ds" and parsed.action == "view": await show_destination_detail(query.message, int(args[0]), destination_service)
         elif parsed.namespace == "ds" and parsed.action == "status":
@@ -446,13 +492,21 @@ async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAc
             destination = await destination_service.get(int(args[0])); await state.clear()
             await state.update_data(destination_id=destination.id, expected_updated_at=destination.updated_at.isoformat())
             await state.set_state(AdminDestinationEdit.access_level)
-            await query.message.answer(texts.ASK_DESTINATION_ACCESS_TEXT, reply_markup=controls("dse"))
+            await query.message.answer(texts.ASK_DESTINATION_ACCESS,
+                reply_markup=destination_edit_access_keyboard(destination.id))
         elif parsed.namespace == "ds" and parsed.action == "priority":
             detail = await destination_service.detail(int(args[0])); selected = [x.value for x in detail.priority.exchanges]
             await state.clear(); await state.update_data(destination_id=detail.destination.id,
                 expected_updated_at=detail.destination.updated_at.isoformat(), exchanges=selected)
             await state.set_state(AdminDestinationPriority.editing)
             await query.message.answer(texts.EDIT_PRIORITY, reply_markup=priority_keyboard(selected, destination_id=detail.destination.id))
+        elif parsed.namespace == "de" and parsed.action == "access":
+            did=int(args[0]); data=await state_matches(state,AdminDestinationEdit.access_level,
+                ("destination_id","expected_updated_at"))
+            if data is None or data["destination_id"] != did:
+                await expired(query.message); return
+            await state.update_data(access_level=args[1]); await state.set_state(AdminDestinationEdit.daily_limit)
+            await query.message.answer(texts.ASK_DAILY_LIMIT,reply_markup=controls("dse","access"))
         elif parsed.namespace == "dp":
             did = int(args[0]); data = await state_matches(state,
                 AdminDestinationPriority.review if parsed.action in {"confirm", "back"} else AdminDestinationPriority.editing,
@@ -490,7 +544,7 @@ async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAc
             did, mode, requested = int(args[0]), args[1], int(args[2])
             page = await (assignment_service.list_assigned if mode == "assigned" else assignment_service.list_eligible)(did, PageRequest(requested))
             body = "\n".join(texts.signalist_line(item) for item in page.items) or texts.EMPTY_LIST
-            rows = [[button(texts.safe(item.display_name), cb("as", "remove" if mode == "assigned" else "add", did, item.id))] for item in page.items]
+            rows = [[button(item.display_name, cb("as", "remove" if mode == "assigned" else "add", did, item.id))] for item in page.items]
             nav = []
             if page.page > 1: nav.append(button(texts.BUTTON_PREVIOUS, cb("as", "list", did, mode, page.page - 1)))
             if page.page < page.pages: nav.append(button(texts.BUTTON_NEXT, cb("as", "list", did, mode, page.page + 1)))
@@ -537,14 +591,26 @@ async def sl_name(message: Message, actor: Actor, state: FSMContext):
 @router.message(AdminDestinationCreate.telegram_chat_id, FormInput())
 async def ds_chat(message: Message, actor: Actor, state: FSMContext, destination_inspector):
     if not await require_admin(message, actor): return
+    data=await state_matches(state,AdminDestinationCreate.telegram_chat_id,("flow_token",))
+    if data is None: await expired(message); return
     try: value = normalize_chat_id(message.text)
     except ValueError: await message.answer(texts.INVALID_CHAT_ID); return
+    flow_token=data["flow_token"]; inspection_token=token_urlsafe(18)
+    await state.update_data(telegram_chat_id=value,inspection_token=inspection_token)
     await state.set_state(AdminDestinationCreate.discovering)
     try: inspection=await destination_inspector.inspect(value)
     except DestinationInspectionError as exc:
+        if not await operation_matches(state,AdminDestinationCreate.discovering,
+                {"flow_token":flow_token,"inspection_token":inspection_token,"telegram_chat_id":value},
+                ("flow_token","inspection_token","telegram_chat_id")):
+            return
         await state.set_state(AdminDestinationCreate.telegram_chat_id)
         messages={InspectionError.NOT_FOUND:texts.DESTINATION_NOT_FOUND, InspectionError.PRIVATE:texts.DESTINATION_PRIVATE, InspectionError.TEMPORARY:texts.TELEGRAM_TEMPORARY}
         await message.answer(messages[exc.reason]); return
+    if not await operation_matches(state,AdminDestinationCreate.discovering,
+            {"flow_token":flow_token,"inspection_token":inspection_token,"telegram_chat_id":value},
+            ("flow_token","inspection_token","telegram_chat_id")):
+        return
     if not inspection.bot_is_admin:
         await state.set_state(AdminDestinationCreate.telegram_chat_id); await message.answer(texts.DESTINATION_NOT_ADMIN); return
     await state.update_data(telegram_chat_id=value,internal_name=inspection.title,destination_type=inspection.destination_type.value)
@@ -559,15 +625,6 @@ async def ds_limit(message: Message, actor: Actor, state: FSMContext):
     except (ValueError, AssertionError): await message.answer(texts.INVALID_INPUT); return
     await state.update_data(daily_limit=value, exchanges=[]); await state.set_state(AdminDestinationCreate.priority)
     await message.answer(texts.ASK_PRIORITY, reply_markup=priority_keyboard([]))
-
-
-@router.message(AdminDestinationEdit.access_level, FormInput())
-async def edit_access(message: Message, actor: Actor, state: FSMContext):
-    if not await require_admin(message, actor): return
-    value = {texts.ACCESS_PUBLIC: "public", texts.ACCESS_PRIVATE: "private"}.get(message.text.strip())
-    if value is None: await message.answer(texts.INVALID_INPUT); return
-    await state.update_data(access_level=value); await state.set_state(AdminDestinationEdit.daily_limit)
-    await message.answer(texts.ASK_DAILY_LIMIT, reply_markup=controls("dse", "access"))
 
 
 @router.message(AdminDestinationEdit.daily_limit, FormInput())

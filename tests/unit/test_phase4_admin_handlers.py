@@ -19,6 +19,7 @@ class FakeState:
     async def set_state(self,state): self.state=state.state if hasattr(state,"state") else state
     async def get_data(self): return dict(self.data)
     async def update_data(self,**values): self.data.update(values)
+    async def set_data(self,values): self.data=dict(values)
     async def clear(self): self.state=None; self.data={}; self.clears+=1
 
 class FakeMessage:
@@ -141,7 +142,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_back_transitions_are_contextual(self):
         cases=[
             (AdminSignalistCreate.display_name,{"telegram_user_id":1},"p4:nav:back:slc:id",AdminSignalistCreate.telegram_user_id),
-            (AdminDestinationCreate.candidate_review,{"internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"},"p4:nav:back:dsc:chat",AdminDestinationCreate.telegram_chat_id),
+            (AdminDestinationCreate.candidate_review,{"flow_token":"f","internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"},"p4:nav:back:dsc:chat",AdminDestinationCreate.telegram_chat_id),
             (AdminDestinationCreate.daily_limit,{"internal_name":"D"},"p4:nav:back:dsc:access",AdminDestinationCreate.access_level),
         ]
         for initial,data,callback,target in cases:
@@ -149,7 +150,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.state,target.state)
 
     async def test_destination_back_keyboards_allow_forward_progress(self):
-        data={"internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"}
+        data={"flow_token":"f","internal_name":"D","telegram_chat_id":-1001,"destination_type":"channel"}
         state=FakeState(AdminDestinationCreate.access_level.state,data)
         query,_=await self.invoke("p4:nav:back:dsc:candidate",state)
         self.assertEqual(state.state,AdminDestinationCreate.candidate_review.state)
@@ -193,7 +194,7 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.state,AdminDestinationPriority.review.state)
 
     async def test_destination_creation_reaches_review_without_persistence(self):
-        state=FakeState(AdminDestinationCreate.priority.state,{"internal_name":"D","telegram_chat_id":-1,
+        state=FakeState(AdminDestinationCreate.priority.state,{"flow_token":"f","internal_name":"D","telegram_chat_id":-1,
             "destination_type":"channel","access_level":"private","daily_limit":1,"exchanges":["ourbit"]})
         query,_=await self.invoke("p4:nav:back:dsc:review",state)
         self.assertEqual(state.state,AdminDestinationCreate.review.state)

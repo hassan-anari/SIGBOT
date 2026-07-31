@@ -30,12 +30,14 @@ class DestinationInspection:
 
 def normalize_chat_id(raw: str) -> int:
     value = raw.strip()
-    if not value or value == "0" or not value.lstrip("-").isascii() or not value.lstrip("-").isdigit():
+    digits = value[1:] if value.startswith("-") else value
+    if (not value or value == "0" or not digits or not digits.isascii()
+            or not digits.isdigit() or value.startswith("--")):
         raise ValueError("invalid chat id")
     if value.startswith("-"):
-        if not value.startswith("-100"):
-            raise ValueError("ambiguous negative chat id")
         normalized = int(value)
+        if value != str(normalized):
+            raise ValueError("chat id is not canonical")
     else:
         normalized = -int(value if value.startswith("100") else "100" + value)
     if normalized < -(MAX_SIGNED_BIGINT + 1) or normalized > MAX_SIGNED_BIGINT or normalized == 0:
