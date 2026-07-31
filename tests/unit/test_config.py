@@ -20,6 +20,14 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(settings.is_main_admin(41))
         self.assertNotIn("password", repr(settings))
 
+    def test_main_admin_comparison_rejects_invalid_integer_like_values(self) -> None:
+        settings = ApplicationSettings.from_mapping(self.VALID)
+        self.assertTrue(settings.is_main_admin(42))
+        self.assertFalse(settings.is_main_admin(41))
+        for candidate in (True, False, "42", 0, -1, 2**63):
+            with self.subTest(candidate=candidate):
+                self.assertFalse(settings.is_main_admin(candidate))  # type: ignore[arg-type]
+
     def test_missing_values(self) -> None:
         for name in self.VALID:
             values = dict(self.VALID); values.pop(name)

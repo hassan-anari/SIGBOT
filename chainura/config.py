@@ -60,7 +60,14 @@ class ApplicationSettings:
         return cls(database_url, admin)
 
     def is_main_admin(self, candidate_telegram_user_id: int) -> bool:
-        return candidate_telegram_user_id == self.main_admin_telegram_id
+        if isinstance(candidate_telegram_user_id, bool) or not isinstance(
+            candidate_telegram_user_id, int
+        ):
+            return False
+        return (
+            0 < candidate_telegram_user_id <= MAX_SIGNED_BIGINT
+            and candidate_telegram_user_id == self.main_admin_telegram_id
+        )
 
 
 def load_application_settings() -> ApplicationSettings:

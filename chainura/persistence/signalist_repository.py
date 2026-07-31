@@ -37,6 +37,18 @@ class SqlAlchemySignalistRepository:
             raise persistence_error(exc) from exc
         return to_domain(record) if record else None
 
+    async def get_by_id_for_transition(self, signalist_id: int) -> Signalist | None:
+        try:
+            result = await self._session.execute(
+                select(SignalistRecord)
+                .where(SignalistRecord.id == signalist_id)
+                .with_for_update()
+            )
+        except SQLAlchemyError as exc:
+            raise persistence_error(exc) from exc
+        record = result.scalar_one_or_none()
+        return to_domain(record) if record else None
+
     async def get_by_telegram_user_id(self, telegram_user_id: int) -> Signalist | None:
         try:
             result = await self._session.execute(

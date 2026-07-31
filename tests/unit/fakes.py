@@ -24,6 +24,9 @@ class FakeRepository:
         if self.fail: raise self.fail
         return self.rows.get(signalist_id)
 
+    async def get_by_id_for_transition(self, signalist_id: int) -> Signalist | None:
+        return await self.get_by_id(signalist_id)
+
     async def get_by_telegram_user_id(self, telegram_user_id: int) -> Signalist | None:
         if self.fail: raise self.fail
         return next((row for row in self.rows.values() if row.telegram_user_id == telegram_user_id), None)

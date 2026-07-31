@@ -4,7 +4,12 @@ import unittest
 
 from chainura.application.signalist_service import SignalistService
 from chainura.domain.signalist import SignalistStatus
-from chainura.errors import DuplicateTelegramUserIdError, InvalidSignalistStatusTransitionError, SignalistNotFoundError
+from chainura.errors import (
+    DuplicateTelegramUserIdError,
+    InvalidSignalistInputError,
+    InvalidSignalistStatusTransitionError,
+    SignalistNotFoundError,
+)
 from tests.unit.fakes import FakeRepository, FakeTransactionFactory
 
 
@@ -56,3 +61,25 @@ class SignalistServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError): await SignalistService(factory).create(1, "x")
         self.assertTrue(factory.created[-1].closed)
         self.assertEqual(factory.created[-1].rollbacks, 1)
+
+    async def test_invalid_internal_ids_open_no_transaction(self) -> None:
+        operations = (self.service.get_by_id, self.service.activate,
+                      self.service.deactivate, self.service.archive)
+        for operation in operations:
+            for value in (True, False, 0, -1, 2**63, "1", 1.5):
+                before = len(self.factory.created)
+                with self.subTest(operation=operation.__name__, value=value), self.assertRaises(InvalidSignalistInputError):
+                    await operation(value)  # type: ignore[arg-type]
+                self.assertEqual(len(self.factory.created), before)
+
+    async def test_invalid_telegram_lookup_and_status_open_no_transaction(self) -> None:
+        for value in (True, False, 0, -1, 2**63, "1", 1.5):
+            before = len(self.factory.created)
+            with self.subTest(value=value), self.assertRaises(InvalidSignalistInputError):
+                await self.service.get_by_telegram_user_id(value)  # type: ignore[arg-type]
+            self.assertEqual(len(self.factory.created), before)
+        for status in ("active", 1, True):
+            before = len(self.factory.created)
+            with self.subTest(status=status), self.assertRaises(InvalidSignalistInputError):
+                await self.service.list(status)  # type: ignore[arg-type]
+            self.assertEqual(len(self.factory.created), before)

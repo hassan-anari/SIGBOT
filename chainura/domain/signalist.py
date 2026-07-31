@@ -18,11 +18,19 @@ class SignalistStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-def _telegram_id(value: int) -> int:
+def validate_telegram_user_id(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidSignalistInputError("telegram_user_id must be an integer")
     if value <= 0 or value > MAX_SIGNED_BIGINT:
         raise InvalidSignalistInputError("telegram_user_id must be a positive 64-bit integer")
+    return value
+
+
+def validate_internal_signalist_id(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidSignalistInputError("signalist_id must be an integer")
+    if value <= 0 or value > MAX_SIGNED_BIGINT:
+        raise InvalidSignalistInputError("signalist_id must be a positive 64-bit integer")
     return value
 
 
@@ -60,7 +68,7 @@ class Signalist:
             raise InvalidSignalistInputError("telegram_username must be a string or None")
         return cls(
             id=None,
-            telegram_user_id=_telegram_id(telegram_user_id),
+            telegram_user_id=validate_telegram_user_id(telegram_user_id),
             display_name=_display_name(display_name),
             telegram_username=telegram_username,
             status=SignalistStatus.ACTIVE,
@@ -93,7 +101,7 @@ class Signalist:
         archived = _aware_utc(archived_at, "archived_at") if archived_at else None
         if (status is SignalistStatus.ARCHIVED) != (archived is not None):
             raise InvalidSignalistInputError("status and archived_at are inconsistent")
-        return cls(id, _telegram_id(telegram_user_id), _display_name(display_name),
+        return cls(id, validate_telegram_user_id(telegram_user_id), _display_name(display_name),
                    telegram_username, status, created, updated, archived)
 
     def approve_transition(self, target: SignalistStatus) -> SignalistStatus:
