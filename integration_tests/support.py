@@ -49,7 +49,7 @@ def migrate(target: str, safe: SafeTestDatabase) -> None:
     if not isinstance(safe, SafeTestDatabase) or safe.path.parent != Path(safe.temporary_directory.name):
         raise UnsafeIntegrationDatabaseError("validated temporary test database is required")
     environment = dict(os.environ, DATABASE_URL=safe.rendered, PYTHON_DOTENV_DISABLED="1")
-    action = "downgrade" if target == "base" else "upgrade"
+    action = "downgrade" if target == "base" or target.startswith("-") else "upgrade"
     subprocess.run(
         ["alembic", action, target],
         cwd=Path(__file__).resolve().parents[1],

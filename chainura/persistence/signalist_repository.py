@@ -68,6 +68,17 @@ class SqlAlchemySignalistRepository:
             raise persistence_error(exc) from exc
         return [to_domain(row) for row in result]
 
+    async def count(self, status: SignalistStatus | None = None) -> int:
+        from sqlalchemy import func
+        statement = select(func.count()).select_from(SignalistRecord)
+        if status is not None: statement = statement.where(SignalistRecord.status == status)
+        return int(await self._session.scalar(statement) or 0)
+
+    async def list_page(self, status: SignalistStatus | None, offset: int, limit: int) -> list[Signalist]:
+        statement = select(SignalistRecord).order_by(SignalistRecord.id.desc()).offset(offset).limit(limit)
+        if status is not None: statement = statement.where(SignalistRecord.status == status)
+        return [to_domain(row) for row in await self._session.scalars(statement)]
+
     async def compare_and_swap_status(
         self, signalist_id: int, expected: SignalistStatus, target: SignalistStatus
     ) -> Signalist | None:

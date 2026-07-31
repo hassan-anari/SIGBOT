@@ -97,11 +97,11 @@ async def status_handler(message: Message, actor: Actor) -> None:
 @router.callback_query()
 async def callback_handler(callback: CallbackQuery, actor: Actor,
                            callback_ack: CallbackAcknowledger) -> None:
+    if not await authorize_callback(callback, actor, callback_ack):
+        return
     action = parse_callback(callback.data)
     if action is None:
         await callback_ack.answer_once(texts.INVALID_CALLBACK)
-        return
-    if not await authorize_callback(callback, actor, callback_ack):
         return
     await callback_ack.answer_once()
     if not isinstance(callback.message, Message):

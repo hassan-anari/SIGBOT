@@ -18,6 +18,24 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_upgrade_downgrade_and_reupgrade(self) -> None:
         migrate("head", self.safe)
+
+    async def test_phase4_downgrade_preserves_signalist(self) -> None:
+        migrate("20260731_01", self.safe)
+        engine = create_safe_engine(self.safe)
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO signalists (telegram_user_id,display_name) VALUES (123,'existing')"))
+        await engine.dispose()
+        migrate("head", self.safe)
+        engine = create_safe_engine(self.safe)
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO destinations (internal_name,telegram_chat_id,destination_type,access_level,daily_limit) VALUES ('d',-1,'channel','private',1)"))
+        await engine.dispose()
+        migrate("-1", self.safe)
+        engine = create_safe_engine(self.safe)
+        async with engine.connect() as connection:
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signalists WHERE telegram_user_id=123")),1)
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='destinations'")),0)
+        await engine.dispose(); migrate("head", self.safe)
         engine = create_safe_engine(self.safe)
         try:
             async with engine.connect() as connection:

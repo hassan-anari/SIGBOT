@@ -60,3 +60,13 @@ Before changing the code:
 - Load `.env` only at executable entry points. Real process environment variables
   override `.env` values.
 - Secrets and SQLite runtime artifacts must never be committed or logged.
+
+## Phase 4 destination rules
+
+- Destinations have only active and inactive states; deletion and archive are prohibited.
+- Destination Chat ID and internal ID are immutable.
+- Exchange priority is a normalized, non-empty ordered subset of Ourbit, Toobit, and LBank.
+- Signalists never receive Destination or assignment information.
+- Admin-management handlers require `MAIN_ADMIN`, not generic authorization.
+- The existing Signalist service remains the sole owner of Signalist transitions.
+- FSM storage contains temporary form state only; permanent management data stays in SQLite.

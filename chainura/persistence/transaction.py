@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from chainura.persistence.error_translation import persistence_error
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
+from chainura.persistence.destination_repository import SqlAlchemyDestinationRepository
+from chainura.persistence.error_translation import commit_persistence_error
 
 
 class SqlAlchemySignalistTransaction:
@@ -15,7 +17,10 @@ class SqlAlchemySignalistTransaction:
         self._sessions = sessions
         self._session: AsyncSession | None = None
         self._committed = False
+        self._error_family = "signalist"
         self.repository: SqlAlchemySignalistRepository
+        self.signalists: SqlAlchemySignalistRepository
+        self.destinations: SqlAlchemyDestinationRepository
 
     async def __aenter__(self) -> Self:
         self._session = self._sessions()
@@ -25,7 +30,12 @@ class SqlAlchemySignalistTransaction:
             await self._session.close()
             raise persistence_error(exc) from exc
         self.repository = SqlAlchemySignalistRepository(self._session)
+        self.signalists = self.repository
+        self.destinations = SqlAlchemyDestinationRepository(self._session)
         return self
+
+    def use_destination_errors(self) -> None:
+        self._error_family = "destination"
 
     async def commit(self) -> None:
         if self._session is None:
@@ -34,7 +44,7 @@ class SqlAlchemySignalistTransaction:
             await self._session.commit()
         except SQLAlchemyError as exc:
             await self._session.rollback()
-            raise persistence_error(exc) from exc
+            raise commit_persistence_error(exc, self._error_family) from exc
         self._committed = True
 
     async def __aexit__(
