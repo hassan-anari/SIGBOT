@@ -1,1 +1,3 @@
-# No external dependencies. Python standard library only.
+SQLAlchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<3.3
+alembic>=1.14,<2.0
