@@ -4,7 +4,9 @@ import unittest
 
 from sqlalchemy.exc import IntegrityError
 
-from chainura.errors import DuplicateTelegramUserIdError, SignalistPersistenceError
+from chainura.errors import (DestinationPersistenceError, DuplicateDestinationAssignmentError,
+    DuplicateDestinationChatIdError, DuplicateDestinationInternalNameError,
+    DuplicateTelegramUserIdError, InvalidExchangePriorityError, SignalistPersistenceError)
 from chainura.persistence.transaction import SqlAlchemySignalistTransaction
 
 
@@ -54,12 +56,13 @@ class TransactionCommitFailureTests(unittest.IsolatedAsyncioTestCase):
     def integrity(constraint: str) -> IntegrityError:
         return IntegrityError("statement hidden by controlled error", {}, DriverError(constraint))
 
-    async def assert_commit_translation(self, constraint: str, expected: type[Exception]) -> None:
+    async def assert_commit_translation(self, constraint: str, expected: type[Exception], *, destination=False) -> None:
         original = self.integrity(constraint)
         session = InstrumentedSession(original)
         transaction = SqlAlchemySignalistTransaction(SessionFactory(session))  # type: ignore[arg-type]
         with self.assertRaises(expected) as caught:
             async with transaction:
+                if destination: transaction.use_destination_errors()
                 await transaction.commit()
         self.assertIs(caught.exception.__cause__, original)
         self.assertEqual(session.commit_calls, 1)
@@ -75,6 +78,21 @@ class TransactionCommitFailureTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_commit_translation(
             "ck_signalists_display_name_nonempty", SignalistPersistenceError
         )
+
+    async def test_unknown_destination_commit_error_stays_destination_specific(self) -> None:
+        await self.assert_commit_translation(
+            "unknown_destination_constraint", DestinationPersistenceError, destination=True
+        )
+
+    async def test_known_destination_commit_constraints_keep_controlled_types(self) -> None:
+        cases = {
+            "uq_destinations_internal_name": DuplicateDestinationInternalNameError,
+            "uq_destinations_telegram_chat_id": DuplicateDestinationChatIdError,
+            "pk_destination_signalists": DuplicateDestinationAssignmentError,
+            "uq_destination_exchange_priorities_destination_position": InvalidExchangePriorityError,
+        }
+        for constraint, expected in cases.items():
+            await self.assert_commit_translation(constraint, expected, destination=True)
 
     async def test_new_transaction_succeeds_after_commit_failure(self) -> None:
         failed = InstrumentedSession(self.integrity("uq_signalists_telegram_user_id"))

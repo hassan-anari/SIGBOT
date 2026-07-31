@@ -62,6 +62,24 @@ def controls(flow: str, back_step: str | None = None) -> InlineKeyboardMarkup:
     return markup([row])
 
 
+def destination_type_keyboard() -> InlineKeyboardMarkup:
+    return markup([
+        [button(texts.TYPE_CHANNEL, cb("nav", "type", "channel")),
+         button(texts.TYPE_GROUP, cb("nav", "type", "group"))],
+        [button(texts.BUTTON_BACK_STEP, cb("nav", "back", "dsc", "chat")),
+         button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsc"))],
+    ])
+
+
+def destination_access_keyboard() -> InlineKeyboardMarkup:
+    return markup([
+        [button(texts.ACCESS_PUBLIC, cb("nav", "access", "public")),
+         button(texts.ACCESS_PRIVATE, cb("nav", "access", "private"))],
+        [button(texts.BUTTON_BACK_STEP, cb("nav", "back", "dsc", "type")),
+         button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsc"))],
+    ])
+
+
 async def require_admin(event, actor: Actor, ack: CallbackAcknowledger | None = None) -> bool:
     if actor.kind is ActorKind.MAIN_ADMIN:
         return True
@@ -239,11 +257,8 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
         data = await state_matches(state, expected, ("internal_name", "telegram_chat_id"))
         if data is None: await expired(query.message); return True
         await state.update_data(destination_type=args[0]); await state.set_state(AdminDestinationCreate.access_level)
-        await query.message.answer(texts.ASK_DESTINATION_ACCESS, reply_markup=markup([[
-            button(texts.ACCESS_PUBLIC, cb("nav", "access", "public")),
-            button(texts.ACCESS_PRIVATE, cb("nav", "access", "private"))],
-            [button(texts.BUTTON_BACK_STEP, cb("nav", "back", "dsc", "type")),
-             button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsc"))]])); return True
+        await query.message.answer(texts.ASK_DESTINATION_ACCESS,
+                                   reply_markup=destination_access_keyboard()); return True
     if action == "access":
         data = await state_matches(state, AdminDestinationCreate.access_level,
                                    ("internal_name", "telegram_chat_id", "destination_type"))
@@ -337,7 +352,11 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
                 button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsc"))]])); return True
         if step not in targets: await expired(query.message); return True
         target, prompt = targets[step]; await state.set_state(target)
-        if step == "priority": await query.message.answer(prompt, reply_markup=priority_keyboard(data.get("exchanges", [])))
+        if flow == "dsc" and step == "type":
+            await query.message.answer(prompt, reply_markup=destination_type_keyboard())
+        elif flow == "dsc" and step == "access":
+            await query.message.answer(prompt, reply_markup=destination_access_keyboard())
+        elif step == "priority": await query.message.answer(prompt, reply_markup=priority_keyboard(data.get("exchanges", [])))
         else: await query.message.answer(prompt, reply_markup=controls(flow))
         return True
     return False
@@ -420,7 +439,7 @@ async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAc
             await query.message.answer(texts.EDIT_PRIORITY, reply_markup=priority_keyboard(selected, destination_id=detail.destination.id))
         elif parsed.namespace == "dp":
             did = int(args[0]); data = await state_matches(state,
-                AdminDestinationPriority.review if parsed.action == "confirm" else AdminDestinationPriority.editing,
+                AdminDestinationPriority.review if parsed.action in {"confirm", "back"} else AdminDestinationPriority.editing,
                 ("destination_id", "expected_updated_at", "exchanges"))
             if data is None or data["destination_id"] != did: await expired(query.message); return
             selected = list(data["exchanges"])
@@ -438,8 +457,12 @@ async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAc
                 await state.set_state(AdminDestinationPriority.review)
                 await query.message.answer(texts.priority_current(selected), reply_markup=markup([[
                     button(texts.BUTTON_CONFIRM, cb("dp", "confirm", did)),
-                    button(texts.BUTTON_BACK_STEP, cb("ds", "priority", did)),
+                    button(texts.BUTTON_BACK_STEP, cb("dp", "back", did)),
                     button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsp"))]]))
+            elif parsed.action == "back":
+                await state.set_state(AdminDestinationPriority.editing)
+                await query.message.answer(texts.EDIT_PRIORITY,
+                    reply_markup=priority_keyboard(selected, destination_id=did))
             else:
                 try:
                     await destination_service.replace_priority(did, tuple(Exchange(x) for x in selected), datetime.fromisoformat(data["expected_updated_at"]))
@@ -516,9 +539,7 @@ async def ds_chat(message: Message, actor: Actor, state: FSMContext):
     try: value = int(message.text); assert value != 0 and -(2**63) <= value <= 2**63 - 1
     except (ValueError, AssertionError): await message.answer(texts.INVALID_INPUT); return
     await state.update_data(telegram_chat_id=value); await state.set_state(AdminDestinationCreate.destination_type)
-    await message.answer(texts.ASK_DESTINATION_TYPE, reply_markup=markup([[
-        button(texts.TYPE_CHANNEL, cb("nav", "type", "channel")), button(texts.TYPE_GROUP, cb("nav", "type", "group"))],
-        [button(texts.BUTTON_BACK_STEP, cb("nav", "back", "dsc", "chat")), button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dsc"))]]))
+    await message.answer(texts.ASK_DESTINATION_TYPE, reply_markup=destination_type_keyboard())
 
 
 @router.message(AdminDestinationCreate.daily_limit, FormInput())

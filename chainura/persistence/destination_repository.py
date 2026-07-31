@@ -47,11 +47,14 @@ class SqlAlchemyDestinationRepository:
     async def count(self, status=None) -> int:
         q=select(func.count()).select_from(DestinationRecord)
         if status is not None: q=q.where(DestinationRecord.status == status)
-        return int(await self._session.scalar(q) or 0)
+        try: return int(await self._session.scalar(q) or 0)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
     async def list_page(self, status, offset: int, limit: int) -> list[Destination]:
         q=select(DestinationRecord).order_by(DestinationRecord.id.desc()).offset(offset).limit(limit)
         if status is not None: q=q.where(DestinationRecord.status == status)
-        return [destination_domain(x) for x in await self._session.scalars(q)]
+        try: rows=await self._session.scalars(q)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
+        return [destination_domain(x) for x in rows]
     async def update_metadata(self, current: Destination, candidate: Destination) -> Destination | None:
         now=datetime.now(timezone.utc)
         try:
@@ -79,8 +82,10 @@ class SqlAlchemyDestinationRepository:
         if result.rowcount not in {0,1}: raise DestinationPersistenceError("unexpected affected rows")
         return result.rowcount == 1
     async def get_priority(self, id: int) -> DestinationExchangePriority:
-        rows=await self._session.scalars(select(DestinationExchangePriorityRecord).where(
-            DestinationExchangePriorityRecord.destination_id==id).order_by(DestinationExchangePriorityRecord.position))
+        try:
+            rows=await self._session.scalars(select(DestinationExchangePriorityRecord).where(
+                DestinationExchangePriorityRecord.destination_id==id).order_by(DestinationExchangePriorityRecord.position))
+        except SQLAlchemyError as exc: raise _error(exc) from exc
         return DestinationExchangePriority(tuple(row.exchange for row in rows))
     async def replace_priority(self, id: int, priority: DestinationExchangePriority) -> None:
         try:
@@ -91,34 +96,48 @@ class SqlAlchemyDestinationRepository:
             await self._session.flush()
         except (IntegrityError, SQLAlchemyError) as exc: raise _error(exc) from exc
     async def assignment_exists(self, did: int, sid: int) -> bool:
-        return await self._session.get(DestinationSignalistRecord, (did,sid)) is not None
+        try: return await self._session.get(DestinationSignalistRecord, (did,sid)) is not None
+        except SQLAlchemyError as exc: raise _error(exc) from exc
     async def add_assignment(self, did: int, sid: int) -> DestinationSignalistAssignment:
         row=DestinationSignalistRecord(destination_id=did, signalist_id=sid); self._session.add(row)
         try: await self._session.flush(); await self._session.refresh(row)
         except (IntegrityError, SQLAlchemyError) as exc: raise _error(exc) from exc
         return DestinationSignalistAssignment(did,sid,row.created_at)
     async def remove_assignment(self, did: int, sid: int) -> bool:
-        result=await self._session.execute(delete(DestinationSignalistRecord).where(
-            DestinationSignalistRecord.destination_id==did, DestinationSignalistRecord.signalist_id==sid))
+        try:
+            result=await self._session.execute(delete(DestinationSignalistRecord).where(
+                DestinationSignalistRecord.destination_id==did, DestinationSignalistRecord.signalist_id==sid))
+        except SQLAlchemyError as exc: raise _error(exc) from exc
+        if result.rowcount not in {0,1}: raise DestinationPersistenceError("unexpected affected rows")
         return result.rowcount == 1
     async def count_assigned(self, did: int) -> int:
-        return int(await self._session.scalar(select(func.count()).select_from(DestinationSignalistRecord).where(
-            DestinationSignalistRecord.destination_id==did)) or 0)
+        try:
+            return int(await self._session.scalar(select(func.count()).select_from(DestinationSignalistRecord).where(
+                DestinationSignalistRecord.destination_id==did)) or 0)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
     async def list_assigned(self, did: int, offset: int, limit: int) -> list[Signalist]:
         q=select(SignalistRecord).join(DestinationSignalistRecord,
             DestinationSignalistRecord.signalist_id==SignalistRecord.id).where(
             DestinationSignalistRecord.destination_id==did).order_by(SignalistRecord.id.desc()).offset(offset).limit(limit)
-        return [signalist_domain(x) for x in await self._session.scalars(q)]
+        try: rows=await self._session.scalars(q)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
+        return [signalist_domain(x) for x in rows]
     def _eligible(self, did: int):
         assigned=select(DestinationSignalistRecord.signalist_id).where(DestinationSignalistRecord.destination_id==did)
         return (SignalistRecord.status.in_([SignalistStatus.ACTIVE,SignalistStatus.INACTIVE]), ~SignalistRecord.id.in_(assigned))
     async def count_eligible(self,did:int)->int:
-        return int(await self._session.scalar(select(func.count()).select_from(SignalistRecord).where(*self._eligible(did))) or 0)
+        try: return int(await self._session.scalar(select(func.count()).select_from(SignalistRecord).where(*self._eligible(did))) or 0)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
     async def list_eligible(self,did:int,offset:int,limit:int)->list[Signalist]:
         q=select(SignalistRecord).where(*self._eligible(did)).order_by(SignalistRecord.id.desc()).offset(offset).limit(limit)
-        return [signalist_domain(x) for x in await self._session.scalars(q)]
+        try: rows=await self._session.scalars(q)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
+        return [signalist_domain(x) for x in rows]
     async def count_for_signalist(self,sid:int)->int:
-        return int(await self._session.scalar(select(func.count()).select_from(DestinationSignalistRecord).where(DestinationSignalistRecord.signalist_id==sid)) or 0)
+        try: return int(await self._session.scalar(select(func.count()).select_from(DestinationSignalistRecord).where(DestinationSignalistRecord.signalist_id==sid)) or 0)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
     async def list_for_signalist(self,sid:int,offset:int,limit:int)->list[Destination]:
         q=select(DestinationRecord).join(DestinationSignalistRecord).where(DestinationSignalistRecord.signalist_id==sid).order_by(DestinationRecord.id.desc()).offset(offset).limit(limit)
-        return [destination_domain(x) for x in await self._session.scalars(q)]
+        try: rows=await self._session.scalars(q)
+        except SQLAlchemyError as exc: raise _error(exc) from exc
+        return [destination_domain(x) for x in rows]

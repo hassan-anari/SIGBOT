@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from chainura.application.access import Actor, ActorKind
 from chainura.application.pagination import Page
 from chainura.domain.signalist import Signalist, SignalistStatus
+from chainura.domain.destination import Destination, DestinationAccessLevel, DestinationStatus, DestinationType, Exchange
 from chainura.telegram import admin_routes
 from chainura.telegram.presentation import texts
 from chainura.telegram.states import (AdminDestinationCreate, AdminDestinationPriority,
@@ -47,14 +48,26 @@ class AdminService:
     create=AsyncMock()
 
 class DestinationService:
+    def __init__(self):
+        self.replace_priority=AsyncMock()
+        self.detail_calls=0
     async def list_page(self,*_): return Page((),1,8,0)
+    async def detail(self,_):
+        self.detail_calls+=1; now=datetime.now(timezone.utc)
+        item=Destination.rehydrate(id=1,internal_name="D",telegram_chat_id=-1,
+            destination_type=DestinationType.CHANNEL,access_level=DestinationAccessLevel.PRIVATE,
+            status=DestinationStatus.INACTIVE,daily_limit=1,created_at=now,updated_at=now)
+        return SimpleNamespace(destination=item,priority=SimpleNamespace(exchanges=(Exchange.OURBIT,)),assigned_count=0)
 class AssignmentService: pass
 
 class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
     actor=Actor(ActorKind.MAIN_ADMIN)
     async def invoke(self,data,state,signalists=None):
+        return await self.invoke_with_destination(data,state,DestinationService(),signalists)
+
+    async def invoke_with_destination(self,data,state,destinations,signalists=None):
         query=FakeQuery(data); ack=FakeAck(); signalists=signalists or SignalistService()
-        await admin_routes.callbacks(query,self.actor,ack,state,signalists,DestinationService(),AssignmentService(),AdminService())
+        await admin_routes.callbacks(query,self.actor,ack,state,signalists,destinations,AssignmentService(),AdminService())
         self.assertEqual(len(ack.calls),1)
         return query,signalists
 
@@ -135,6 +148,20 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
             state=FakeState(initial.state,data); await self.invoke(callback,state)
             self.assertEqual(state.state,target.state)
 
+    async def test_destination_back_keyboards_allow_forward_progress(self):
+        data={"internal_name":"D","telegram_chat_id":-1,"destination_type":"channel"}
+        state=FakeState(AdminDestinationCreate.daily_limit.state,data)
+        access_query,_=await self.invoke("p4:nav:back:dsc:access",state)
+        access_labels={item.text for row in access_query.message.answers[-1][1].inline_keyboard for item in row}
+        self.assertIn(texts.ACCESS_PUBLIC,access_labels); self.assertIn(texts.ACCESS_PRIVATE,access_labels)
+        type_query,_=await self.invoke("p4:nav:back:dsc:type",state)
+        type_labels={item.text for row in type_query.message.answers[-1][1].inline_keyboard for item in row}
+        self.assertIn(texts.TYPE_CHANNEL,type_labels); self.assertIn(texts.TYPE_GROUP,type_labels)
+        await self.invoke("p4:nav:type:group",state)
+        self.assertEqual(state.state,AdminDestinationCreate.access_level.state)
+        await self.invoke("p4:nav:access:private",state)
+        self.assertEqual(state.state,AdminDestinationCreate.daily_limit.state)
+
     async def test_cancel_clears_creation_flows(self):
         for initial,flow in ((AdminSignalistCreate.display_name,"slc"),(AdminDestinationCreate.daily_limit,"dsc")):
             state=FakeState(initial.state,{"temporary":"value"}); await self.invoke(f"p4:nav:cancel:{flow}",state)
@@ -146,6 +173,30 @@ class AdminHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"destination_id":2,"expected_updated_at":now,"exchanges":["ourbit"]})
         query,_=await self.invoke("p4:dp:confirm:1",state)
         self.assertEqual(query.message.answers[-1][0],texts.FLOW_EXPIRED)
+
+    async def test_priority_review_back_preserves_temporary_order(self):
+        now=datetime.now(timezone.utc).isoformat(); destinations=DestinationService()
+        data={"destination_id":1,"expected_updated_at":now,"exchanges":["lbank","ourbit"]}
+        state=FakeState(AdminDestinationPriority.editing.state,data)
+        await self.invoke_with_destination("p4:dp:review:1",state,destinations)
+        self.assertEqual(state.state,AdminDestinationPriority.review.state)
+        query,_=await self.invoke_with_destination("p4:dp:back:1",state,destinations)
+        self.assertEqual(state.state,AdminDestinationPriority.editing.state)
+        self.assertEqual(state.data["exchanges"],["lbank","ourbit"])
+        self.assertEqual(destinations.detail_calls,0); destinations.replace_priority.assert_not_awaited()
+        labels=[item.text for row in query.message.answers[-1][1].inline_keyboard for item in row]
+        self.assertLess(labels.index("lbank"),labels.index("ourbit"))
+        await self.invoke_with_destination("p4:dp:review:1",state,destinations)
+        await self.invoke_with_destination("p4:dp:confirm:1",state,destinations)
+        destinations.replace_priority.assert_awaited_once()
+
+    async def test_priority_review_back_rejects_cross_destination(self):
+        now=datetime.now(timezone.utc).isoformat(); destinations=DestinationService()
+        state=FakeState(AdminDestinationPriority.review.state,
+            {"destination_id":2,"expected_updated_at":now,"exchanges":["ourbit"]})
+        query,_=await self.invoke_with_destination("p4:dp:back:1",state,destinations)
+        self.assertEqual(query.message.answers[-1][0],texts.FLOW_EXPIRED)
+        self.assertEqual(state.state,AdminDestinationPriority.review.state)
 
     async def test_destination_creation_reaches_review_without_persistence(self):
         state=FakeState(AdminDestinationCreate.priority.state,{"internal_name":"D","telegram_chat_id":-1,

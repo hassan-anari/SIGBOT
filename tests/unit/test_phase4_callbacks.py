@@ -10,7 +10,7 @@ class CallbackTests(unittest.TestCase):
             "p4:sl:status:42:archive-request", "p4:sl:status:42:archive-confirm",
             "p4:sl:destinations:42:2", "p4:ds:list:i:2", "p4:ds:view:17",
             "p4:ds:status:17:activate", "p4:ds:edit:17", "p4:ds:priority:17",
-            "p4:dp:move:17:l:u", "p4:dp:review:17", "p4:as:list:17:assigned:1",
+            "p4:dp:move:17:l:u", "p4:dp:review:17", "p4:dp:back:17", "p4:as:list:17:assigned:1",
             "p4:as:add:17:42", "p4:as:confirm:remove:17:42",
             "p4:nav:type:channel", "p4:nav:access:private", "p4:nav:exchange:add:o",
             "p4:nav:confirm:dsc", "p4:nav:cancel:dse", "p4:nav:back:slc:name",

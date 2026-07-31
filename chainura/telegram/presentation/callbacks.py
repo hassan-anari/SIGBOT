@@ -45,7 +45,7 @@ def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
     if namespace == "dp":
         if action in {"add", "remove"}: return len(args) == 2 and _positive(args[0]) and args[1] in EXCHANGE_CODES
         if action == "move": return len(args) == 3 and _positive(args[0]) and args[1] in EXCHANGE_CODES and args[2] in {"u", "d"}
-        if action in {"review", "confirm"}: return len(args) == 1 and _positive(args[0])
+        if action in {"review", "confirm", "back"}: return len(args) == 1 and _positive(args[0])
         return False
     if namespace == "as":
         if action == "list": return len(args) == 3 and _positive(args[0]) and args[1] in {"assigned", "eligible"} and _positive(args[2])

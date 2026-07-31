@@ -14,9 +14,12 @@ class AdminSignalistService:
             telegram_username=telegram_username or None
         return await self.signalists.create(telegram_user_id,display_name,telegram_username)
     async def assignment_count(self,signalist_id:int)->int:
-        async with self.transactions() as tx: return await tx.destinations.count_for_signalist(signalist_id)
+        async with self.transactions() as tx:
+            tx.use_destination_errors()
+            return await tx.destinations.count_for_signalist(signalist_id)
     async def assigned_destinations(self, signalist_id: int, request: PageRequest):
         async with self.transactions() as tx:
+            tx.use_destination_errors()
             total = await tx.destinations.count_for_signalist(signalist_id)
             page = min(request.page, max(1, (total + request.page_size - 1) // request.page_size))
             items = await tx.destinations.list_for_signalist(

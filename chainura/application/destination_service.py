@@ -18,6 +18,7 @@ class DestinationService:
         candidate=Destination.create(name,chat_id,dtype,access,daily_limit)
         priority=DestinationExchangePriority(tuple(exchanges))
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             item=await tx.destinations.add(candidate)
             await tx.destinations.replace_priority(item.id,priority)
             await tx.commit()
@@ -25,23 +26,27 @@ class DestinationService:
     async def get(self,id:int)->Destination:
         if isinstance(id,bool) or not isinstance(id,int) or id<=0: raise InvalidDestinationInputError("invalid destination id")
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             item=await tx.destinations.get_by_id(id)
             if item is None: raise DestinationNotFoundError("destination not found")
             return item
     async def detail(self,id:int)->DestinationDetail:
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             item=await tx.destinations.get_by_id(id)
             if item is None: raise DestinationNotFoundError("destination not found")
             return DestinationDetail(item,await tx.destinations.get_priority(id),await tx.destinations.count_assigned(id))
     async def list_page(self,status:DestinationStatus|None,request:PageRequest)->Page[Destination]:
         if status is not None and not isinstance(status,DestinationStatus): raise InvalidDestinationInputError("invalid status")
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             total=await tx.destinations.count(status); page=min(request.page,max(1,(total+7)//8)); offset=(page-1)*8
             items=await tx.destinations.list_page(status,offset,8)
             return Page(tuple(items),page,8,total)
     async def update_metadata(self,id:int,name:str,dtype:DestinationType,access:DestinationAccessLevel,
                               daily_limit:int,expected_updated_at)->Destination:
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             current=await tx.destinations.get_by_id(id)
             if current is None: raise DestinationNotFoundError("destination not found")
             if current.updated_at != expected_updated_at: raise DestinationPersistenceError("destination changed")
@@ -53,6 +58,7 @@ class DestinationService:
     async def deactivate(self,id:int)->Destination: return await self._transition(id,DestinationStatus.INACTIVE)
     async def _transition(self,id:int,target:DestinationStatus)->Destination:
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             current=await tx.destinations.get_by_id(id)
             if current is None: raise DestinationNotFoundError("destination not found")
             current.approve_transition(target)
@@ -66,6 +72,7 @@ class DestinationService:
     async def replace_priority(self,id:int,exchanges,expected_updated_at)->DestinationDetail:
         priority=DestinationExchangePriority(tuple(exchanges))
         async with self._transactions() as tx:
+            tx.use_destination_errors()
             current=await tx.destinations.get_by_id(id,True)
             if current is None: raise DestinationNotFoundError("destination not found")
             if current.updated_at != expected_updated_at: raise DestinationPersistenceError("destination changed")

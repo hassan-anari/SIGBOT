@@ -42,3 +42,14 @@ def destination_persistence_error(exc: Exception) -> Exception:
         if not isinstance(translated, SignalistPersistenceError):
             return translated
     return DestinationPersistenceError("destination persistence operation failed")
+
+
+def commit_persistence_error(exc: Exception, family: str) -> Exception:
+    """Translate a commit failure without guessing which aggregate initiated it."""
+    if isinstance(exc, IntegrityError):
+        translated = translate_integrity_error(exc)
+        if not isinstance(translated, SignalistPersistenceError):
+            return translated
+    if family == "destination":
+        return DestinationPersistenceError("destination persistence operation failed")
+    return SignalistPersistenceError("signalist persistence operation failed")
