@@ -234,6 +234,20 @@ For a Composite signal, the system selects the first available exchange accordin
 
 If no compatible version exists, that destination does not receive the message.
 
+## 8.3. Phase 4 Registration and Presentation
+
+- Main Admin creates a Signalist using only the numeric Telegram user ID and display
+  name. Telegram username is not collected or displayed.
+- A Destination is registered from a normalized Telegram Chat ID. Its title and
+  channel/group type are discovered from Telegram; private chats are unsupported.
+- The bot must already be the destination owner or an administrator. This status is
+  checked during discovery and again immediately before persistence, outside the
+  database transaction. No test message is sent.
+- Destination access level and daily signal limit remain manually configured. The
+  daily limit is configuration-only in Phase 4.
+- Telegram-visible dates use the Jalali calendar and Tehran local time, while stored
+  timestamps remain aware UTC. Internal database IDs are not presented to users.
+
 Even if a signal is sent to no destination, it is still:
 
 - Recorded.

@@ -12,7 +12,8 @@ class CallbackTests(unittest.TestCase):
             "p4:ds:status:17:activate", "p4:ds:edit:17", "p4:ds:priority:17",
             "p4:dp:move:17:l:u", "p4:dp:review:17", "p4:dp:back:17", "p4:as:list:17:assigned:1",
             "p4:as:add:17:42", "p4:as:confirm:remove:17:42",
-            "p4:nav:type:channel", "p4:nav:access:private", "p4:nav:exchange:add:o",
+            "p4:nav:candidate-confirm:-100123", "p4:nav:candidate-confirm:-123456789",
+            "p4:de:access:7:private", "p4:nav:access:private", "p4:nav:exchange:add:o",
             "p4:nav:confirm:dsc", "p4:nav:cancel:dse", "p4:nav:back:slc:name",
         ]
         for value in values:
@@ -27,7 +28,8 @@ class CallbackTests(unittest.TestCase):
                   "p4:nav:back:dsc", "p4:sl:view", "p4:sl:view:1:extra",
                   "p4:sl:view:0", "p4:sl:view:-1", "p4:sl:view:01",
                   "p4:sl:list:a:0", "p4:sl:list:a:01", "p4:dp:move:1:x:u",
-                  "p4:sl:view:۱", "p4:sl:view:" + "1" * 70]
+                  "p4:nav:candidate-confirm:-0123", "p4:nav:candidate-confirm:123",
+                  "p4:de:access:7:secret", "p4:sl:view:۱", "p4:sl:view:" + "1" * 70]
         for value in values:
             self.assertIsNone(parse_phase4(value), value)
 

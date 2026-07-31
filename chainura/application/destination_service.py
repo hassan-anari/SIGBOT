@@ -54,6 +54,11 @@ class DestinationService:
             result=await tx.destinations.update_metadata(current,candidate)
             if result is None: raise DestinationPersistenceError("destination changed")
             await tx.commit(); return result
+    async def update_configuration(self,id:int,access:DestinationAccessLevel,daily_limit:int,
+                                   expected_updated_at)->Destination:
+        current=await self.get(id)
+        return await self.update_metadata(id,current.internal_name,current.destination_type,
+                                          access,daily_limit,expected_updated_at)
     async def activate(self,id:int)->Destination: return await self._transition(id,DestinationStatus.ACTIVE)
     async def deactivate(self,id:int)->Destination: return await self._transition(id,DestinationStatus.INACTIVE)
     async def _transition(self,id:int,target:DestinationStatus)->Destination:
