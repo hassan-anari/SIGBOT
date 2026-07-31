@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import unittest
+from pathlib import Path
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from aiogram.methods import GetMe
 from chainura.domain.destination import DestinationType
 from chainura.telegram.destination_inspector import (DestinationInspectionError,
     InspectionError, TelegramDestinationInspector, normalize_chat_id)
+from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.formatting import (format_datetime,
     format_priority, gregorian_to_jalali)
 
@@ -22,27 +24,33 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(gregorian_to_jalali(2024, 3, 20), (1403, 1, 1))
 
     def test_tehran_midnight_digits_and_precision(self):
-        result = format_datetime(datetime(2026, 7, 30, 21, 30, 59, 123, timezone.utc))
+        result = format_datetime(datetime(2026, 7, 30, 21, 30, 59, 123, timezone.utc),
+                                 "{date}، ساعت {time}")
         self.assertEqual(result, "۱۴۰۵/۰۵/۰۹، ساعت ۰۱:۰۰")
         self.assertNotIn("59", result); self.assertNotIn("+", result)
 
     def test_none_and_naive(self):
-        self.assertEqual(format_datetime(None), "ثبت نشده")
-        with self.assertRaises(ValueError): format_datetime(datetime(2026, 1, 1))
+        self.assertIsNone(format_datetime(None, "{date} {time}"))
+        self.assertEqual(texts.datetime_value(None), "ثبت نشده")
+        with self.assertRaises(ValueError): format_datetime(datetime(2026, 1, 1), "{date} {time}")
+        formatting_source=(Path(__file__).parents[2] / "chainura" / "telegram" /
+                           "presentation" / "formatting.py").read_text(encoding="utf-8")
+        self.assertNotIn("ثبت نشده",formatting_source)
 
     def test_tzdata_fallback_when_system_database_is_disabled(self):
         environment = dict(os.environ, PYTHONTZPATH="")
         code = ("from datetime import datetime,timezone; "
                 "from chainura.telegram.presentation.formatting import TEHRAN,format_datetime; "
                 "assert TEHRAN.key == 'Asia/Tehran'; "
-                "assert format_datetime(datetime(2026,7,30,21,30,tzinfo=timezone.utc)) == "
+                "assert format_datetime(datetime(2026,7,30,21,30,tzinfo=timezone.utc),"
+                "'{date}، ساعت {time}') == "
                 "'۱۴۰۵/۰۵/۰۹، ساعت ۰۱:۰۰'")
         result = subprocess.run([sys.executable, "-c", code], env=environment,
                                 capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_vertical_branded_priority(self):
-        self.assertEqual(format_priority(["lbank", "ourbit"]),
+        self.assertEqual(format_priority(["lbank", "ourbit"], "🏦 اولویت صرافی‌ها:", "ثبت نشده"),
                          "🏦 اولویت صرافی‌ها:\n۱. LBank\n۲. Ourbit")
 
 

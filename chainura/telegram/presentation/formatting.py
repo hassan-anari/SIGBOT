@@ -15,7 +15,6 @@ def _load_tehran_timezone() -> ZoneInfo:
 
 TEHRAN = _load_tehran_timezone()
 PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-NOT_RECORDED = "ثبت نشده"
 
 
 def persian_digits(value: object) -> str:
@@ -45,20 +44,23 @@ def gregorian_to_jalali(year: int, month: int, day: int) -> tuple[int, int, int]
     return jy, jm, jd
 
 
-def format_datetime(value: datetime | None) -> str:
+def format_datetime(value: datetime | None, template: str) -> str | None:
     if value is None:
-        return NOT_RECORDED
+        return None
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
     local = value.astimezone(TEHRAN)
     jy, jm, jd = gregorian_to_jalali(local.year, local.month, local.day)
-    return persian_digits(f"{jy:04d}/{jm:02d}/{jd:02d}، ساعت {local.hour:02d}:{local.minute:02d}")
+    return template.format(
+        date=persian_digits(f"{jy:04d}/{jm:02d}/{jd:02d}"),
+        time=persian_digits(f"{local.hour:02d}:{local.minute:02d}"),
+    )
 
 
 EXCHANGE_NAMES = {"ourbit": "Ourbit", "toobit": "Toobit", "lbank": "LBank"}
 
 
-def format_priority(values) -> str:
+def format_priority(values, heading: str, empty_placeholder: str) -> str:
     rows = [f"{persian_digits(index)}. {EXCHANGE_NAMES[getattr(value, 'value', value)]}"
             for index, value in enumerate(values, 1)]
-    return "🏦 اولویت صرافی‌ها:\n" + ("\n".join(rows) if rows else NOT_RECORDED)
+    return heading + "\n" + ("\n".join(rows) if rows else empty_placeholder)

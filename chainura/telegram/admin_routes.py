@@ -146,8 +146,8 @@ async def show_signalists(message, service, filter_code="a", page_no=1):
     statuses = {"a": None, "v": SignalistStatus.ACTIVE, "i": SignalistStatus.INACTIVE,
                 "r": SignalistStatus.ARCHIVED}
     page = await service.list_page(statuses[filter_code], PageRequest(page_no))
-    labels={"a":"همه","v":"🟢 فعال","i":"🟡 غیرفعال","r":"🔴 بایگانی‌شده"}
-    content=texts.page_title(texts.SIGNALIST_LIST_TITLE, page.page, page.pages, labels[filter_code])
+    content=texts.page_title(texts.SIGNALIST_LIST_TITLE, page.page, page.pages,
+                             texts.SIGNALIST_FILTER_LABELS[filter_code])
     if not page.items: content += "\n\n" + texts.EMPTY_LIST
     await message.answer(content,
                          reply_markup=list_keyboard("sl", page.items, page, filter_code, True))
@@ -156,8 +156,8 @@ async def show_signalists(message, service, filter_code="a", page_no=1):
 async def show_destinations(message, service, filter_code="a", page_no=1):
     statuses = {"a": None, "v": DestinationStatus.ACTIVE, "i": DestinationStatus.INACTIVE}
     page = await service.list_page(statuses[filter_code], PageRequest(page_no))
-    labels={"a":"همه","v":"🟢 فعال","i":"🟡 غیرفعال"}
-    content=texts.page_title(texts.DESTINATION_LIST_TITLE, page.page, page.pages, labels[filter_code])
+    content=texts.page_title(texts.DESTINATION_LIST_TITLE, page.page, page.pages,
+                             texts.DESTINATION_FILTER_LABELS[filter_code])
     if not page.items: content += "\n\n" + texts.EMPTY_LIST
     await message.answer(content,
                          reply_markup=list_keyboard("ds", page.items, page, filter_code))

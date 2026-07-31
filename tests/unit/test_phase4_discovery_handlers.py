@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 from chainura.application.access import Actor, ActorKind
 from chainura.domain.destination import DestinationType
-from chainura.errors import DuplicateDestinationChatIdError, DuplicateDestinationInternalNameError
+from chainura.errors import (ApplicationError, DuplicateDestinationChatIdError,
+    DuplicateDestinationInternalNameError)
 from chainura.telegram import admin_routes
 from chainura.telegram.destination_inspector import (DestinationInspection,
     DestinationInspectionError, InspectionError)
@@ -184,3 +185,45 @@ class PlainButtonLabelTests(unittest.TestCase):
             self.assertIn(name,texts.signalist_button_label(item))
             if any(char in name for char in '<&"'):
                 self.assertNotIn(name,texts.destination_line(item))
+
+
+class StaleActionCatalogTests(unittest.IsolatedAsyncioTestCase):
+    def test_catalog_owns_controlled_stale_copy(self):
+        self.assertEqual(texts.STALE_ACTION,
+                         "اطلاعات تغییر کرده است؛ نمای فعلی تازه‌سازی شد.")
+
+    async def test_destination_create_and_edit_application_errors_are_controlled(self):
+        state=FakeState(AdminDestinationCreate.review.state,creation_data())
+        destinations=RecordingDestinationService()
+        destinations.create.side_effect=ApplicationError("technical")
+        query,_=await invoke("p4:nav:confirm:dsc",state,destinations,Inspector())
+        self.assertEqual(query.message.answers[-1][0],texts.STALE_ACTION)
+
+        stamp=datetime.now(timezone.utc).isoformat()
+        state=FakeState(AdminDestinationEdit.review.state,
+            {"destination_id":7,"expected_updated_at":stamp,"access_level":"private","daily_limit":5})
+        destinations=RecordingDestinationService()
+        destinations.update_configuration.side_effect=ApplicationError("technical")
+        query,_=await invoke("p4:nav:confirm:dse",state,destinations)
+        self.assertEqual(query.message.answers[0][0],texts.STALE_ACTION)
+
+    async def test_priority_assignment_and_status_errors_are_controlled(self):
+        stamp=datetime.now(timezone.utc).isoformat()
+        destinations=RecordingDestinationService()
+        destinations.replace_priority.side_effect=ApplicationError("technical")
+        state=FakeState("AdminDestinationPriority:review",
+            {"destination_id":1,"expected_updated_at":stamp,"exchanges":["ourbit"]})
+        query,_=await invoke("p4:dp:confirm:1",state,destinations)
+        self.assertEqual(query.message.answers[0][0],texts.STALE_ACTION)
+
+        assignment=AssignmentService(); assignment.assign=AsyncMock(side_effect=ApplicationError("technical"))
+        query=FakeQuery("p4:as:add:1:2"); ack=FakeAck()
+        await admin_routes.callbacks(query,ACTOR,ack,FakeState(),SignalistService(),
+            RecordingDestinationService(),assignment,AdminService(),None)
+        self.assertEqual(query.message.answers[-1][0],texts.STALE_ACTION)
+
+        signalists=SignalistService(); signalists.deactivate.side_effect=ApplicationError("technical")
+        query=FakeQuery("p4:sl:status:1:deactivate"); ack=FakeAck()
+        await admin_routes.callbacks(query,ACTOR,ack,FakeState(),signalists,
+            RecordingDestinationService(),AssignmentService(),AdminService(),None)
+        self.assertEqual(query.message.answers[-1][0],texts.STALE_ACTION)
