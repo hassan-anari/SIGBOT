@@ -95,3 +95,60 @@ class ServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._assert_stale_transition_cannot_overwrite_archive(
             SignalistStatus.ACTIVE, SignalistStatus.INACTIVE
         )
+
+    async def _assert_archive_retries_after_concurrent_transition(
+        self, initial: SignalistStatus, winner: SignalistStatus
+    ) -> None:
+        row = await self.service.create(400, "Archive retry")
+        if initial is SignalistStatus.INACTIVE:
+            row = await self.service.deactivate(row.id)  # type: ignore[arg-type]
+
+        initial_read = asyncio.Event()
+        release_archive = asyncio.Event()
+        commits = 0
+
+        class CoordinatedRepository:
+            def __init__(self, wrapped): self._wrapped = wrapped
+            def __getattr__(self, name): return getattr(self._wrapped, name)
+            async def get_by_id(self, signalist_id):
+                result = await self._wrapped.get_by_id(signalist_id)
+                initial_read.set()
+                await release_archive.wait()
+                return result
+
+        class CoordinatedTransaction:
+            def __init__(self, wrapped): self._wrapped = wrapped
+            async def __aenter__(self):
+                await self._wrapped.__aenter__()
+                self.repository = CoordinatedRepository(self._wrapped.repository)
+                return self
+            async def commit(self):
+                nonlocal commits
+                commits += 1
+                await self._wrapped.commit()
+            async def __aexit__(self, *args): await self._wrapped.__aexit__(*args)
+
+        archive_service = SignalistService(
+            lambda: CoordinatedTransaction(self.factory())
+        )
+        archive_task = asyncio.create_task(archive_service.archive(row.id))  # type: ignore[arg-type]
+        await initial_read.wait()
+        if winner is SignalistStatus.INACTIVE:
+            await self.service.deactivate(row.id)  # type: ignore[arg-type]
+        else:
+            await self.service.activate(row.id)  # type: ignore[arg-type]
+        release_archive.set()
+        archived = await archive_task
+        self.assertIs(archived.status, SignalistStatus.ARCHIVED)
+        self.assertEqual(commits, 1)
+        self.assertIs((await self.service.get_by_id(row.id)).status, SignalistStatus.ARCHIVED)  # type: ignore[arg-type]
+
+    async def test_archive_retries_after_concurrent_deactivation(self) -> None:
+        await self._assert_archive_retries_after_concurrent_transition(
+            SignalistStatus.ACTIVE, SignalistStatus.INACTIVE
+        )
+
+    async def test_archive_retries_after_concurrent_activation(self) -> None:
+        await self._assert_archive_retries_after_concurrent_transition(
+            SignalistStatus.INACTIVE, SignalistStatus.ACTIVE
+        )

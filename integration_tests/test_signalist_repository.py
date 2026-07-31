@@ -9,6 +9,7 @@ from chainura.domain.signalist import Signalist, SignalistStatus
 from chainura.errors import DuplicateTelegramUserIdError
 from chainura.persistence.database import create_session_factory
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
+from chainura.persistence.models import SignalistRecord
 from integration_tests.support import create_safe_engine, migrate, require_safe_test_database, truncate_signalists
 
 
@@ -76,3 +77,46 @@ class RepositoryTests(unittest.IsolatedAsyncioTestCase):
         async with sessions() as session:
             persisted = await SqlAlchemySignalistRepository(session).get_by_id(row.id)  # type: ignore[arg-type]
             self.assertEqual(persisted.telegram_user_id, 400)  # type: ignore[union-attr]
+
+    async def test_fresh_read_replaces_strong_identity_map_state(self) -> None:
+        row = await self.create(500)
+        async with self.sessions() as stale_session:
+            strong_record = await stale_session.get(SignalistRecord, row.id)
+            self.assertIs(strong_record.status, SignalistStatus.ACTIVE)  # type: ignore[union-attr]
+            await stale_session.commit()
+
+            async with self.sessions() as writer:
+                await writer.begin()
+                updated = await SqlAlchemySignalistRepository(writer).compare_and_swap_status(
+                    row.id, SignalistStatus.ACTIVE, SignalistStatus.INACTIVE  # type: ignore[arg-type]
+                )
+                await writer.commit()
+            self.assertIs(updated.status, SignalistStatus.INACTIVE)  # type: ignore[union-attr]
+            self.assertIs(strong_record.status, SignalistStatus.ACTIVE)  # type: ignore[union-attr]
+
+            fresh = await SqlAlchemySignalistRepository(stale_session).get_by_id_fresh(row.id)  # type: ignore[arg-type]
+            self.assertIs(fresh.status, SignalistStatus.INACTIVE)  # type: ignore[union-attr]
+            self.assertIs(strong_record.status, SignalistStatus.INACTIVE)  # type: ignore[union-attr]
+
+    async def test_successful_cas_returns_fresh_utc_persisted_values(self) -> None:
+        row = await self.create(600, "Persisted fields")
+        async with self.sessions() as session:
+            repository = SqlAlchemySignalistRepository(session)
+            strong_record = await session.get(SignalistRecord, row.id)
+            previous_updated_at = row.updated_at
+            inactive = await repository.compare_and_swap_status(
+                row.id, SignalistStatus.ACTIVE, SignalistStatus.INACTIVE  # type: ignore[arg-type]
+            )
+            self.assertIs(inactive.status, SignalistStatus.INACTIVE)  # type: ignore[union-attr]
+            self.assertEqual(inactive.display_name, "Persisted fields")  # type: ignore[union-attr]
+            self.assertIsNone(inactive.archived_at)  # type: ignore[union-attr]
+            self.assertEqual(inactive.updated_at.tzinfo, timezone.utc)  # type: ignore[union-attr]
+            self.assertGreater(inactive.updated_at, previous_updated_at)  # type: ignore[arg-type,union-attr]
+            self.assertIs(strong_record.status, SignalistStatus.INACTIVE)  # type: ignore[union-attr]
+            archived = await repository.compare_and_swap_status(
+                row.id, SignalistStatus.INACTIVE, SignalistStatus.ARCHIVED  # type: ignore[arg-type]
+            )
+            self.assertIs(archived.status, SignalistStatus.ARCHIVED)  # type: ignore[union-attr]
+            self.assertEqual(archived.archived_at.tzinfo, timezone.utc)  # type: ignore[union-attr]
+            self.assertEqual(archived.archived_at, archived.updated_at)  # type: ignore[union-attr]
+            await session.commit()

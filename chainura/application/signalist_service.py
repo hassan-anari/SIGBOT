@@ -11,7 +11,10 @@ from chainura.errors import (
     DuplicateTelegramUserIdError,
     InvalidSignalistInputError,
     SignalistNotFoundError,
+    SignalistPersistenceError,
 )
+
+MAX_STATUS_TRANSITION_ATTEMPTS = 3
 
 
 class SignalistService:
@@ -72,16 +75,19 @@ class SignalistService:
             current = await transaction.repository.get_by_id(signalist_id)
             if current is None:
                 raise SignalistNotFoundError("signalist was not found")
-            approved = current.approve_transition(target)
-            result = await transaction.repository.compare_and_swap_status(
-                signalist_id, current.status, approved
-            )
-            if result is None:
-                latest = await transaction.repository.get_by_id(signalist_id)
-                if latest is None:
+            for _ in range(MAX_STATUS_TRANSITION_ATTEMPTS):
+                approved = current.approve_transition(target)
+                result = await transaction.repository.compare_and_swap_status(
+                    signalist_id, current.status, approved
+                )
+                if result is not None:
+                    await transaction.commit()
+                    return result
+                current = await transaction.repository.get_by_id_fresh(signalist_id)
+                if current is None:
                     raise SignalistNotFoundError("signalist was not found")
-                # Produce the controlled domain error using the latest committed state.
-                latest.approve_transition(target)
-                raise RuntimeError("status transition compare-and-swap failed unexpectedly")
-            await transaction.commit()
-            return result
+                # Validate the latest committed state before retrying or exhausting.
+                current.approve_transition(target)
+            raise SignalistPersistenceError(
+                "signalist status transition could not be completed"
+            )
