@@ -12,16 +12,20 @@ from chainura.domain.destination import (
     Exchange,
 )
 from chainura.domain.signalist import Signalist, SignalistStatus
+from chainura.telegram.destination_inspector import normalize_chat_id
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.formatting import LRI, PDI, RLM, bidi_ascii_id
 
 
 ID_ON_LABEL_LINE = re.compile(r"🆔[^\n]*:\s*-?[0-9]+")
 PERSIAN_DIGITS = set("۰۱۲۳۴۵۶۷۸۹")
+DIRECTIONAL_CONTROLS = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
-def semantic_id(rendered: str) -> str:
-    return rendered.removeprefix("<code>").removesuffix("</code>").replace(LRI, "").replace(PDI, "")
+def code_content(rendered: str) -> str:
+    start = rendered.index("<code>") + len("<code>")
+    end = rendered.index("</code>", start)
+    return rendered[start:end]
 
 
 class BidiAsciiIdTests(unittest.TestCase):
@@ -32,12 +36,23 @@ class BidiAsciiIdTests(unittest.TestCase):
             with self.subTest(value=value):
                 rendered = bidi_ascii_id(value)
                 expected = str(value)
-                self.assertEqual(rendered, f"<code>{LRI}{expected}{PDI}</code>")
-                self.assertEqual(semantic_id(rendered), expected)
-                self.assertTrue(semantic_id(rendered).isascii())
+                extracted = code_content(rendered)
+                self.assertEqual(rendered, f"{LRI}<code>{expected}</code>{PDI}")
+                self.assertEqual(extracted, expected)
+                self.assertTrue(extracted.isascii())
+                self.assertEqual(int(extracted), int(expected))
+                self.assertTrue(DIRECTIONAL_CONTROLS.isdisjoint(extracted))
                 self.assertFalse(PERSIAN_DIGITS.intersection(rendered))
                 if expected.startswith("-"):
-                    self.assertEqual(semantic_id(rendered).index("-"), 0)
+                    self.assertEqual(extracted.index("-"), 0)
+
+    def test_copied_ids_are_accepted_without_cleanup(self):
+        for value in (-1003147975662, -987654321):
+            with self.subTest(value=value):
+                copied = code_content(bidi_ascii_id(value))
+                self.assertEqual(normalize_chat_id(copied), value)
+        copied_user_id = code_content(bidi_ascii_id(123456789))
+        self.assertEqual(copied_user_id, "123456789")
 
     def test_invalid_or_non_ascii_dynamic_values_are_rejected(self):
         for value in (True, None, "۱۲۳", "+123", "01", "-0", "1<script>",
@@ -47,7 +62,7 @@ class BidiAsciiIdTests(unittest.TestCase):
 
     def test_validated_dynamic_value_is_html_escaped_before_insertion(self):
         with patch("chainura.telegram.presentation.formatting.escape", wraps=lambda value, quote: value) as escaped:
-            self.assertEqual(semantic_id(bidi_ascii_id("-100123")), "-100123")
+            self.assertEqual(code_content(bidi_ascii_id("-100123")), "-100123")
         escaped.assert_called_once_with("-100123", quote=True)
 
 
@@ -94,7 +109,7 @@ class Phase4ScreenRenderingTests(unittest.TestCase):
         }
 
     def assert_id_block(self, rendered: str, label: str, identifier: str, internal_id: int):
-        block = f"{RLM}🆔 {label}:\n<code>{LRI}{identifier}{PDI}</code>"
+        block = f"{RLM}🆔 {label}:\n{LRI}<code>{identifier}</code>{PDI}"
         self.assertIn(block, rendered)
         self.assertNotRegex(rendered, ID_ON_LABEL_LINE)
         self.assertNotIn(f"{identifier.lstrip('-')}-", rendered)
@@ -105,7 +120,7 @@ class Phase4ScreenRenderingTests(unittest.TestCase):
         self.assertEqual(
             rendered,
             f"<b>👤 بررسی اطلاعات سیگنالیست</b>\n\n"
-            f"{RLM}🆔 شناسه تلگرام:\n<code>{LRI}123456789{PDI}</code>\n\n"
+            f"{RLM}🆔 شناسه تلگرام:\n{LRI}<code>123456789</code>{PDI}\n\n"
             "📝 نام نمایشی: رضا - اوربیت\n\nآیا اطلاعات بالا تأیید می‌شود؟",
         )
         self.assert_id_block(rendered, "شناسه تلگرام", "123456789", 918273)

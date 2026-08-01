@@ -41,7 +41,7 @@ def bidi_ascii_id(value: int | str) -> str:
         raise ValueError("identifier must be a canonical ASCII numeric value")
     if not _MIN_SIGNED_BIGINT <= numeric_value <= _MAX_SIGNED_BIGINT:
         raise ValueError("identifier must fit in a signed 64-bit integer")
-    return f"<code>{LRI}{escape(ascii_value, quote=True)}{PDI}</code>"
+    return f"{LRI}<code>{escape(ascii_value, quote=True)}</code>{PDI}"
 
 
 def gregorian_to_jalali(year: int, month: int, day: int) -> tuple[int, int, int]:
