@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -15,10 +17,31 @@ def _load_tehran_timezone() -> ZoneInfo:
 
 TEHRAN = _load_tehran_timezone()
 PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+RLM = "\u200f"
+LRI = "\u2066"
+PDI = "\u2069"
+_ASCII_NUMERIC_ID = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+_MIN_SIGNED_BIGINT = -(2**63)
+_MAX_SIGNED_BIGINT = 2**63 - 1
 
 
 def persian_digits(value: object) -> str:
     return str(value).translate(PERSIAN_DIGITS)
+
+
+def bidi_ascii_id(value: int | str) -> str:
+    """Render a validated signed 64-bit ASCII identifier for Telegram HTML."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("identifier must be an integer or ASCII numeric string")
+    ascii_value = str(int(value)) if isinstance(value, int) else value
+    if not _ASCII_NUMERIC_ID.fullmatch(ascii_value) or not ascii_value.isascii():
+        raise ValueError("identifier must be a canonical ASCII numeric value")
+    numeric_value = int(ascii_value)
+    if ascii_value != str(numeric_value):
+        raise ValueError("identifier must be a canonical ASCII numeric value")
+    if not _MIN_SIGNED_BIGINT <= numeric_value <= _MAX_SIGNED_BIGINT:
+        raise ValueError("identifier must fit in a signed 64-bit integer")
+    return f"<code>{LRI}{escape(ascii_value, quote=True)}{PDI}</code>"
 
 
 def gregorian_to_jalali(year: int, month: int, day: int) -> tuple[int, int, int]:
