@@ -1,7 +1,7 @@
 from __future__ import annotations
 from html import escape
-from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, format_datetime,
-    format_priority, persian_digits)
+from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii_id,
+    format_datetime, format_priority, persian_digits)
 
 MENU_MAIN="🏠 منوی اصلی"; MENU_ADMIN_STATUS="🛡 وضعیت دسترسی"; MENU_SIGNALIST_STATUS="👤 وضعیت حساب"
 MENU_HELP="❓ راهنما"; MENU_ADMIN_SIGNALISTS="👥 مدیریت سیگنالیست‌ها"; MENU_ADMIN_DESTINATIONS="📡 مدیریت مقصدها"
@@ -28,13 +28,13 @@ BUTTON_CONFIRM_DESTINATION="✅ تأیید مقصد"; BUTTON_REENTER_CHAT="🔄 
 BUTTON_UP="▲"; BUTTON_DOWN="▼"
 SIGNALIST_LIST_TITLE="<b>👥 مدیریت سیگنالیست‌ها</b>\n\n📄 صفحه {page} از {pages}\nفیلتر: {filter}\n\nیکی از سیگنالیست‌ها را انتخاب کنید."
 DESTINATION_LIST_TITLE="<b>📡 مدیریت مقصدها</b>\n\n📄 صفحه {page} از {pages}\nفیلتر: {filter}\n\nیکی از مقصدها را انتخاب کنید."
-EMPTY_LIST="موردی برای نمایش وجود ندارد."; ASK_SIGNALIST_ID="🆔 شناسه عددی تلگرام سیگنالیست را وارد کنید."
+EMPTY_LIST="موردی برای نمایش وجود ندارد."; ASK_SIGNALIST_ID=RLM+"🆔 شناسه عددی تلگرام سیگنالیست را وارد کنید."
 ASK_SIGNALIST_NAME="📝 نام نمایشی سیگنالیست را وارد کنید."
-ASK_DESTINATION_CHAT_ID="🆔 شناسه چت کانال یا گروه را وارد کنید."
+ASK_DESTINATION_CHAT_ID=RLM+"🆔 شناسه چت کانال یا گروه را وارد کنید."
 ASK_DAILY_LIMIT="📊 سقف سیگنال روزانه را به‌صورت عدد مثبت وارد کنید."
 INVALID_INPUT="مقدار واردشده معتبر نیست؛ دوباره تلاش کنید."; INVALID_CHAT_ID="❌ شناسه چت معتبر نیست.\n\nشناسه را بررسی کنید و دوباره تلاش کنید."
 STALE_ACTION="اطلاعات تغییر کرده است؛ نمای فعلی تازه‌سازی شد."
-DESTINATION_NOT_FOUND="❌ مقصد پیدا نشد.\n\nشناسه چت را بررسی کنید و دوباره تلاش کنید."
+DESTINATION_NOT_FOUND="❌ مقصد پیدا نشد یا ربات به آن دسترسی ندارد.\n\nلطفاً بررسی کنید ربات عضو کانال یا گروه باشد و دسترسی مدیر داشته باشد، سپس دوباره تلاش کنید."
 DESTINATION_PRIVATE="❌ این شناسه مربوط به گفت‌وگوی خصوصی است.\n\nفقط کانال یا گروه قابل ثبت است."
 DESTINATION_NOT_ADMIN="⚠️ ربات در این مقصد مدیر نیست.\n\nابتدا ربات را به‌عنوان مدیر کانال یا گروه اضافه کنید و سپس دوباره تلاش کنید."
 TELEGRAM_TEMPORARY="⚠️ ارتباط با تلگرام موقتاً برقرار نشد.\n\nچند لحظه بعد دوباره تلاش کنید."
@@ -68,17 +68,18 @@ def destination_button_label(item): return f"{STATUS_LABELS[item.status.value].s
 def datetime_value(value): return format_datetime(value, DATETIME_TEMPLATE) or NOT_RECORDED
 def priority_value(values): return format_priority(values, PRIORITY_HEADING, NOT_RECORDED)
 def priority_current(values): return priority_value(values)
+def telegram_id_block(label, value): return f"{RLM}🆔 {label}:\n{bidi_ascii_id(value)}"
 def signalist_review(data, username=None):
-    return f"<b>👤 بررسی اطلاعات سیگنالیست</b>\n\n🆔 شناسه تلگرام: {safe(data['telegram_user_id'])}\n📝 نام نمایشی: {safe(data['display_name'])}\n\nآیا اطلاعات بالا تأیید می‌شود؟"
+    return f"<b>👤 بررسی اطلاعات سیگنالیست</b>\n\n{telegram_id_block('شناسه تلگرام', data['telegram_user_id'])}\n\n📝 نام نمایشی: {safe(data['display_name'])}\n\nآیا اطلاعات بالا تأیید می‌شود؟"
 def signalist_detail(item,count):
-    value=f"<b>👤 {safe(item.display_name)}</b>\n\n{STATUS_LABELS[item.status.value].split()[0]} وضعیت: {STATUS_LABELS[item.status.value].split(maxsplit=1)[1]}\n🆔 شناسه تلگرام: {item.telegram_user_id}\n📍 مقصدهای متصل: {persian_digits(count)}\n\n📅 ایجاد: {datetime_value(item.created_at)}\n🔄 آخرین تغییر: {datetime_value(item.updated_at)}"
+    value=f"<b>👤 {safe(item.display_name)}</b>\n\n{STATUS_LABELS[item.status.value].split()[0]} وضعیت: {STATUS_LABELS[item.status.value].split(maxsplit=1)[1]}\n{telegram_id_block('شناسه تلگرام', item.telegram_user_id)}\n\n📍 مقصدهای متصل: {persian_digits(count)}\n\n📅 ایجاد: {datetime_value(item.created_at)}\n🔄 آخرین تغییر: {datetime_value(item.updated_at)}"
     return value+(f"\n🗃 بایگانی: {datetime_value(item.archived_at)}" if item.archived_at else "")
 def destination_detail(detail):
     d=detail.destination
-    return f"<b>📡 {safe(d.internal_name)}</b>\n\n🆔 شناسه چت:\n{d.telegram_chat_id}\n\n{TYPE_LABELS[d.destination_type.value].split()[0]} نوع: {TYPE_LABELS[d.destination_type.value].split(maxsplit=1)[1]}\n{ACCESS_LABELS[d.access_level.value].split()[0]} دسترسی: {ACCESS_LABELS[d.access_level.value].split(maxsplit=1)[1]}\n{STATUS_LABELS[d.status.value].split()[0]} وضعیت: {STATUS_LABELS[d.status.value].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(d.daily_limit)}\n👥 سیگنالیست‌های متصل: {persian_digits(detail.assigned_count)}\n\n{priority_value(detail.priority.exchanges)}\n\n📅 ایجاد: {datetime_value(d.created_at)}\n🔄 آخرین تغییر: {datetime_value(d.updated_at)}"
+    return f"<b>📡 {safe(d.internal_name)}</b>\n\n{telegram_id_block('شناسه چت', d.telegram_chat_id)}\n\n{TYPE_LABELS[d.destination_type.value].split()[0]} نوع: {TYPE_LABELS[d.destination_type.value].split(maxsplit=1)[1]}\n{ACCESS_LABELS[d.access_level.value].split()[0]} دسترسی: {ACCESS_LABELS[d.access_level.value].split(maxsplit=1)[1]}\n{STATUS_LABELS[d.status.value].split()[0]} وضعیت: {STATUS_LABELS[d.status.value].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(d.daily_limit)}\n👥 سیگنالیست‌های متصل: {persian_digits(detail.assigned_count)}\n\n{priority_value(detail.priority.exchanges)}\n\n📅 ایجاد: {datetime_value(d.created_at)}\n🔄 آخرین تغییر: {datetime_value(d.updated_at)}"
 def candidate_review(data):
-    return f"<b>✅ مقصد پیدا شد</b>\n\n📡 نام: {safe(data['internal_name'])}\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n🆔 شناسه چت: {data['telegram_chat_id']}\n\nآیا این همان مقصد موردنظر است؟"
+    return f"<b>✅ مقصد پیدا شد</b>\n\n📡 نام: {safe(data['internal_name'])}\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n\n{telegram_id_block('شناسه چت', data['telegram_chat_id'])}\n\nآیا این همان مقصد موردنظر است؟"
 def destination_review(data):
-    return f"<b>📋 بررسی نهایی مقصد</b>\n\n📡 نام: {safe(data['internal_name'])}\n🆔 شناسه چت: {data['telegram_chat_id']}\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n🟡 وضعیت اولیه: غیرفعال\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\n{priority_value(data['exchanges'])}\n\nآیا اطلاعات بالا ثبت شود؟"
+    return f"<b>📋 بررسی نهایی مقصد</b>\n\n📡 نام: {safe(data['internal_name'])}\n\n{telegram_id_block('شناسه چت', data['telegram_chat_id'])}\n\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n🟡 وضعیت اولیه: غیرفعال\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\n{priority_value(data['exchanges'])}\n\nآیا اطلاعات بالا ثبت شود؟"
 def metadata_review(data): return f"<b>📋 بررسی ویرایش مقصد</b>\n\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\nتغییرات تأیید شود؟"
 def archive_confirmation(name): return f"<b>⚠️ بایگانی سیگنالیست</b>\n\nاین عملیات برگشت‌پذیر نیست.\n\nآیا از بایگانی «{safe(name)}» مطمئن هستید؟"

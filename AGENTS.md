@@ -79,3 +79,15 @@ Before changing the code:
   the existing Bot instance to confirm administrator status.
 - Telegram inspection occurs outside database transactions, and automated tests
   must never call live Telegram.
+
+## Persian Telegram bidirectional-text rules
+
+- Persian Telegram messages are RTL. All ASCII identifiers, symbols, prices,
+  percentages, leverage values, Entry values, TP/SL values, and other LTR numeric
+  data must use explicit Unicode directional isolation.
+- Telegram IDs and Chat IDs must be displayed on a separate line inside `<code>`.
+  Identifiers must remain ASCII and copyable.
+- Never rely on Telegram's automatic BiDi rendering for mixed Persian and numeric
+  content. This applies in Phase 5 to symbol names, Entry, stop loss, take-profit
+  levels, leverage, prices, percentages, Telegram IDs, and Chat IDs; it does not
+  authorize implementing those Phase 5 fields early.

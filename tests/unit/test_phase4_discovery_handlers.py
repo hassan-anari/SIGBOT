@@ -124,6 +124,21 @@ class DiscoveryHandlerTests(unittest.IsolatedAsyncioTestCase):
             inspector.release.set(); await task
             destinations.create.assert_not_awaited(); self.assertIsNone(state.state)
 
+    async def test_final_revalidation_errors_never_attempt_persistence(self):
+        cases = (
+            (Inspector(error=InspectionError.NOT_FOUND), texts.DESTINATION_NOT_FOUND),
+            (Inspector(error=InspectionError.TEMPORARY), texts.TELEGRAM_TEMPORARY),
+            (Inspector(DestinationInspection(-100123, "مقصد", DestinationType.CHANNEL, False)),
+             texts.DESTINATION_NOT_ADMIN),
+        )
+        for inspector, expected in cases:
+            with self.subTest(expected=expected):
+                state = FakeState(AdminDestinationCreate.review.state, creation_data())
+                destinations = RecordingDestinationService()
+                query, _ = await invoke("p4:nav:confirm:dsc", state, destinations, inspector)
+                destinations.create.assert_not_awaited()
+                self.assertEqual(query.message.answers[-1][0], expected)
+
     async def test_two_final_confirmations_make_at_most_one_persistence_attempt(self):
         state=FakeState(AdminDestinationCreate.review.state,creation_data())
         first=BlockingInspector(); second=BlockingInspector(); destinations=RecordingDestinationService()
