@@ -42,3 +42,4 @@ class SignalCreate(StatesGroup):
     take_profits = State()
     stop_loss = State()
     review = State()
+    finalizing = State()

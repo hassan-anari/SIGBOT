@@ -79,6 +79,12 @@ class Service:
   maps=((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')) if c.selected_exchange is None else ((Exchange.LBANK,c.native_symbol),)
   return ReferencePriceResult(Decimal('100'),source,prices,True,c.canonical_symbol,maps)
  async def create_validated(self,c,r): self.created.append(c); return SimpleNamespace(id=1)
+class BlockingPersistenceService(Service):
+ def __init__(self,fail=False): super().__init__(); self.persist_arrived=asyncio.Event(); self.persist_release=asyncio.Event(); self.fail=fail
+ async def create_validated(self,c,r):
+  self.persist_arrived.set(); await self.persist_release.wait()
+  if self.fail: raise SignalCreationError('controlled')
+  self.created.append(c); return SimpleNamespace(id=1)
 
 class WizardTests(unittest.IsolatedAsyncioTestCase):
  async def cb(self,state,kind,ref='-',page=0,catalog=None,service=None,flow=None):
@@ -88,6 +94,8 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
  async def start(self):
   state=State(); message=Message(texts.MENU_CREATE_SIGNAL); await signal_routes.start_signal(message,actor(),state)
   self.assertEqual(state.state,SignalCreate.shared_search.state); self.assertNotIn(state.data['creation_token'],message.answers[-1][0]); return state
+ async def review(self):
+  state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state; return state
  async def test_complete_shared_wizard_and_no_destination_disclosure(self):
   state=await self.start(); catalog=Catalog(); service=Service()
   await signal_routes.shared_query(Message('BTC'),actor(),state,catalog)
@@ -204,6 +212,28 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
   state=await self.start(); c=Catalog(); await self.cb(state,'out',catalog=c); await self.cb(state,'ex','lbank',catalog=c); await signal_routes.native_query(Message('DOGE'),actor(),state,c); blocking=BlockingFailCatalog('ns')
   task=asyncio.create_task(self.cb(state,'ns','0',1,catalog=blocking)); await blocking.arrived.wait(); await self.cb(state,'back','exchange',catalog=c); await self.cb(state,'ex','ourbit',catalog=c); current=state.data.copy(); blocking.release.set(); query=await task
   self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.native_search.state); self.assertEqual(state.data,current); self.assertEqual(state.data['selected_exchange'],'ourbit')
+ async def test_start_wins_before_finalizing_claim(self):
+  state=await self.review(); service=Service(); arrived=asyncio.Event(); release=asyncio.Event(); service.gate=(arrived,release)
+  task=asyncio.create_task(self.cb(state,'confirm',service=service)); await arrived.wait(); await admin_routes.global_start(Message('/start'),actor(),state); release.set(); query=await task
+  self.assertEqual(service.created,[]); self.assertIsNone(state.state); self.assertEqual(query.message.answers,[])
+ async def test_finalizing_claim_blocks_cancel_and_commits_once(self):
+  state=await self.review(); service=BlockingPersistenceService(); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await service.persist_arrived.wait()
+  self.assertEqual(state.state,SignalCreate.finalizing.state); cancel=await self.cb(state,'cancel',service=service); self.assertEqual(cancel.message.answers[-1][0],texts.SIGNAL_FINALIZING); self.assertNotIn(texts.FLOW_CANCELLED,[x[0] for x in cancel.message.answers])
+  service.persist_release.set(); query=await task; self.assertEqual(len(service.created),1); self.assertIsNone(state.state); self.assertEqual(query.message.answers[-1][0],texts.SIGNAL_RECORDED_SUCCESS)
+ async def test_competing_confirmations_claim_and_persist_once(self):
+  state=await self.review(); service=BlockingPersistenceService(); first=asyncio.create_task(self.cb(state,'confirm',service=service)); await service.persist_arrived.wait(); second=await self.cb(state,'confirm',service=service)
+  self.assertEqual(second.message.answers,[]); self.assertEqual(state.state,SignalCreate.finalizing.state); service.persist_release.set(); await first; self.assertEqual(len(service.created),1)
+ async def test_persistence_failure_returns_to_review_and_reuses_creation_token(self):
+  state=await self.review(); creation=state.data['creation_token']; failing=BlockingPersistenceService(fail=True); task=asyncio.create_task(self.cb(state,'confirm',service=failing)); await failing.persist_arrived.wait(); failing.persist_release.set(); query=await task
+  self.assertEqual(state.state,SignalCreate.review.state); self.assertEqual(state.data['creation_token'],creation); self.assertEqual(query.message.answers[-1][0],texts.TEMPORARY_ERROR)
+  succeeding=BlockingPersistenceService(); retry=asyncio.create_task(self.cb(state,'confirm',service=succeeding)); await succeeding.persist_arrived.wait(); self.assertEqual(succeeding.created,[]); succeeding.persist_release.set(); await retry
+  self.assertEqual(len(succeeding.created),1); self.assertEqual(succeeding.created[0].creation_token,creation); self.assertIsNone(state.state)
+ async def test_obsolete_persistence_failure_is_silent(self):
+  state=await self.review(); failing=BlockingPersistenceService(fail=True); task=asyncio.create_task(self.cb(state,'confirm',service=failing)); await failing.persist_arrived.wait()
+  async with signal_routes.phase5_lock(Message()):
+   await state.set_state(SignalCreate.shared_search); await state.set_data({'flow_token':'new-flow','creation_token':'new-token','signalist_id':7})
+  current=state.data.copy(); failing.persist_release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.shared_search.state); self.assertEqual(state.data,current)
 
 class CallbackSchemaTests(unittest.TestCase):
  def test_ascii_typed_and_bounded(self):
