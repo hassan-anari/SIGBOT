@@ -33,26 +33,52 @@ class CreateSignalCommand:
     native_symbol: str | None; direction: TradeDirection; entry_price: Decimal
     leverage: int; take_profits: tuple[Decimal, ...]; stop_loss: Decimal
 
+@dataclass(frozen=True, slots=True)
+class EntryValidationRequest:
+    mode: SignalMode
+    canonical_symbol: str
+    selected_exchange: Exchange | None
+    native_symbol: str | None
+    entry_price: Decimal
+
 class SignalService:
     def __init__(self, transactions, reference_prices: ReferencePriceProvider, clock=lambda: datetime.now(timezone.utc)):
         self._transactions=transactions; self._prices=reference_prices; self._clock=clock
 
-    async def validate_entry(self, command: CreateSignalCommand) -> ReferencePriceResult:
+    async def validate_entry(self, request: EntryValidationRequest | CreateSignalCommand) -> ReferencePriceResult:
+        validation = (request if isinstance(request, EntryValidationRequest) else
+                      EntryValidationRequest(request.mode, request.canonical_symbol,
+                          request.selected_exchange, request.native_symbol,
+                          request.entry_price))
         try:
-            result=await self._prices.get_reference_price(mode=command.mode,
-                canonical_symbol=command.canonical_symbol, selected_exchange=command.selected_exchange,
-                native_symbol=command.native_symbol)
+            result=await self._prices.get_reference_price(mode=validation.mode,
+                canonical_symbol=validation.canonical_symbol, selected_exchange=validation.selected_exchange,
+                native_symbol=validation.native_symbol)
         except Exception as exc:
             raise ReferencePriceUnavailableError("reference price is temporarily unavailable") from exc
         if not result.healthy or not _positive_decimal(result.reference_price):
             raise ReferencePriceUnavailableError("a healthy current reference price is required")
-        self._validate_result(command, result)
-        if not entry_is_within_tolerance(command.entry_price, result.reference_price):
+        self._validate_result(validation, result)
+        if not entry_is_within_tolerance(validation.entry_price, result.reference_price):
             raise EntryOutsideToleranceError("entry differs from reference by more than 0.05 percent")
         return result
 
+    async def get_by_creation_token(self, creation_token: str,
+                                    signalist_id: int) -> Signal | None:
+        """Read an idempotent result without accessing market providers."""
+        try:
+            async with self._transactions() as tx:
+                signal = await tx.signals.get_by_creation_token(creation_token)
+        except SignalCreationError:
+            raise
+        except Exception as exc:
+            raise SignalCreationError("signal could not be read") from exc
+        if signal is None or signal.signalist_id != signalist_id:
+            return None
+        return signal
+
     @staticmethod
-    def _validate_result(command: CreateSignalCommand, result: ReferencePriceResult) -> None:
+    def _validate_result(command: EntryValidationRequest | CreateSignalCommand, result: ReferencePriceResult) -> None:
         prices = result.source_prices
         mappings = result.native_symbols
         if not isinstance(prices, tuple) or not isinstance(mappings, tuple):

@@ -13,12 +13,15 @@ class SqlAlchemySignalRepository:
         try:
             row = (await self._session.scalars(select(SignalRecord).where(SignalRecord.creation_token == token))).one_or_none()
             return await self._load(row) if row else None
-        except SQLAlchemyError as exc: raise SignalCreationError("signal storage is unavailable") from exc
+        except SignalCreationError: raise
+        except Exception as exc: raise SignalCreationError("signal storage is unavailable") from exc
 
     async def get_by_id(self, signal_id: int):
-        try: row = await self._session.get(SignalRecord, signal_id)
-        except SQLAlchemyError as exc: raise SignalCreationError("signal storage is unavailable") from exc
-        return await self._load(row) if row else None
+        try:
+            row = await self._session.get(SignalRecord, signal_id)
+            return await self._load(row) if row else None
+        except SignalCreationError: raise
+        except Exception as exc: raise SignalCreationError("signal storage is unavailable") from exc
 
     async def add(self, signal: Signal):
         row = SignalRecord(signalist_id=signal.signalist_id, creation_token=signal.creation_token,
@@ -49,6 +52,9 @@ class SqlAlchemySignalRepository:
             signal.created_at, signal.updated_at)
 
     async def _load(self, row):
-        tps = tuple((await self._session.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id == row.id).order_by(SignalTakeProfitRecord.position))).all())
-        maps = tuple((await self._session.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id == row.id).order_by(SignalExchangeSymbolRecord.exchange))).all())
-        return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at)
+        try:
+            tps = tuple((await self._session.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id == row.id).order_by(SignalTakeProfitRecord.position))).all())
+            maps = tuple((await self._session.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id == row.id).order_by(SignalExchangeSymbolRecord.exchange))).all())
+            return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at)
+        except SignalCreationError: raise
+        except Exception as exc: raise SignalCreationError("signal aggregate could not be loaded") from exc

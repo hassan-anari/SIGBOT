@@ -190,9 +190,10 @@ async def show_destination_detail(message, destination_id, destination_service):
 
 # These global handlers are deliberately registered before every state-input handler.
 @router.message(Command("start"))
-async def global_start(message: Message, actor: Actor, state: FSMContext):
-    from chainura.telegram.signal_routes import phase5_lock
+async def global_start(message: Message, actor: Actor, state: FSMContext, signal_service=None):
+    from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
     from chainura.telegram.states import SignalCreate
+    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
     async with phase5_lock(message):
         if await state.get_state() == SignalCreate.finalizing.state:
             finalizing=True
@@ -218,9 +219,10 @@ async def global_help(message: Message, actor: Actor):
 
 
 @router.message(F.text == texts.MENU_MAIN)
-async def global_main(message: Message, actor: Actor, state: FSMContext):
-    from chainura.telegram.signal_routes import phase5_lock
+async def global_main(message: Message, actor: Actor, state: FSMContext, signal_service=None):
+    from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
     from chainura.telegram.states import SignalCreate
+    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
     async with phase5_lock(message):
         if await state.get_state() == SignalCreate.finalizing.state:
             finalizing=True
@@ -233,9 +235,11 @@ async def global_main(message: Message, actor: Actor, state: FSMContext):
     await show_menu(message, actor)
 
 
-@router.message(F.text == texts.MENU_ADMIN_STATUS)
-async def global_status(message: Message, actor: Actor, state: FSMContext):
-    await state.clear()
+@router.message(F.text.in_({texts.MENU_ADMIN_STATUS, texts.MENU_SIGNALIST_STATUS}))
+async def global_status(message: Message, actor: Actor, state: FSMContext, signal_service=None):
+    from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
+    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
+    async with phase5_lock(message): await state.clear()
     await show_status(message, actor)
 
 

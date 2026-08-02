@@ -14,6 +14,8 @@ from chainura.telegram import signal_routes
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.signal_callbacks import SignalCallback,signal_callback
 from chainura.telegram.states import SignalCreate
+from chainura.telegram.phase5_coordination import (FinalizationClaim,
+    identity_from_message, phase5_coordination)
 from chainura.errors import (EntryOutsideToleranceError,
     InconsistentReferencePriceError, ReferencePriceUnavailableError,
     SignalCreationError, SymbolCatalogError)
@@ -31,7 +33,9 @@ class Message:
  def __init__(self,text=''): self.text=text; self.answers=[]; self.chat=SimpleNamespace(id=1); self.from_user=SimpleNamespace(id=2)
  async def answer(self,text,reply_markup=None): self.answers.append((text,reply_markup))
 class Query:
- def __init__(self): self.message=Message(); self.data=''
+ def __init__(self,user_id=2):
+  self.message=Message(); self.message.from_user=SimpleNamespace(id=999,is_bot=True)
+  self.from_user=SimpleNamespace(id=user_id,is_bot=False); self.data=''
 class Ack:
  def __init__(self): self.calls=[]
  async def answer_once(self,text=None): self.calls.append(text)
@@ -68,7 +72,7 @@ class BlockingFailCatalog(Catalog):
   if self.operation=='ns': return await self._fail()
   return await super().get_exchange_contract(e,s)
 class Service:
- def __init__(self): self.validations=0; self.created=[]; self.gate=None
+ def __init__(self): self.validations=0; self.created=[]; self.gate=None; self.stored=None; self.read_error=None
  async def validate_entry(self,c):
   self.validations+=1
   if self.gate: self.gate[0].set(); await self.gate[1].wait()
@@ -79,17 +83,24 @@ class Service:
   maps=((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')) if c.selected_exchange is None else ((Exchange.LBANK,c.native_symbol),)
   return ReferencePriceResult(Decimal('100'),source,prices,True,c.canonical_symbol,maps)
  async def create_validated(self,c,r): self.created.append(c); return SimpleNamespace(id=1)
+ async def get_by_creation_token(self,token,signalist_id):
+  if self.read_error: raise self.read_error
+  return self.stored
 class BlockingPersistenceService(Service):
  def __init__(self,fail=False): super().__init__(); self.persist_arrived=asyncio.Event(); self.persist_release=asyncio.Event(); self.fail=fail
  async def create_validated(self,c,r):
   self.persist_arrived.set(); await self.persist_release.wait()
   if self.fail: raise SignalCreationError('controlled')
   self.created.append(c); return SimpleNamespace(id=1)
+class BlockingInactiveService(BlockingPersistenceService):
+ async def create_validated(self,c,r):
+  from chainura.errors import SignalistCannotCreateSignalError
+  self.persist_arrived.set(); await self.persist_release.wait(); raise SignalistCannotCreateSignalError('controlled')
 
 class WizardTests(unittest.IsolatedAsyncioTestCase):
- async def cb(self,state,kind,ref='-',page=0,catalog=None,service=None,flow=None):
+ async def cb(self,state,kind,ref='-',page=0,catalog=None,service=None,flow=None,actor_value=None):
   q=Query(); a=Ack(); data=SignalCallback(kind=kind,flow=flow or state.data['flow_token'],ref=ref,page=page)
-  await signal_routes.signal_callback_handler(q,data,actor(),state,a,catalog or Catalog(),service or Service())
+  await signal_routes.signal_callback_handler(q,data,actor_value or actor(),state,a,catalog or Catalog(),service or Service())
   self.assertEqual(len(a.calls),1); return q
  async def start(self):
   state=State(); message=Message(texts.MENU_CREATE_SIGNAL); await signal_routes.start_signal(message,actor(),state)
@@ -234,6 +245,35 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
    await state.set_state(SignalCreate.shared_search); await state.set_data({'flow_token':'new-flow','creation_token':'new-token','signalist_id':7})
   current=state.data.copy(); failing.persist_release.set(); query=await task
   self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.shared_search.state); self.assertEqual(state.data,current)
+ async def test_orphan_finalizing_with_signal_clears_and_reports_success(self):
+  state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; service=Service(); service.stored=SimpleNamespace(id=1); message=Message()
+  outcome=await signal_routes.reconcile_finalizing(message,message,state,service)
+  self.assertEqual(outcome,'success'); self.assertIsNone(state.state); self.assertEqual(message.answers[-1][0],texts.SIGNAL_RECORDED_SUCCESS)
+ async def test_orphan_finalizing_without_signal_restores_complete_review(self):
+  state=await self.review(); original=state.data.copy(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='obsolete'; message=Message()
+  outcome=await signal_routes.reconcile_finalizing(message,message,state,Service())
+  self.assertEqual(outcome,'review'); self.assertEqual(state.state,SignalCreate.review.state); self.assertEqual(state.data['creation_token'],original['creation_token']); self.assertNotIn('final_validation_token',state.data); self.assertEqual(state.data['take_profits'],original['take_profits'])
+ async def test_live_finalizing_and_temporary_reconciliation_failure(self):
+  state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; message=Message(); identity=identity_from_message(message); claim=FinalizationClaim(identity,state.data['flow_token'],state.data['creation_token'],'final',state.data['canonical_symbol'])
+  phase5_coordination.register_claim(claim)
+  try:
+   self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,Service()),'live'); self.assertEqual(message.answers[-1][0],texts.SIGNAL_FINALIZING)
+  finally: phase5_coordination.remove_claim(claim)
+  service=Service(); service.read_error=SignalCreationError('controlled'); message=Message(); self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,service),'error'); self.assertEqual(state.state,SignalCreate.finalizing.state); self.assertEqual(message.answers[-1][0],texts.TEMPORARY_ERROR)
+ async def test_old_page_shared_and_native_selections_are_discarded(self):
+  state=await self.start(); await signal_routes.shared_query(Message('many'),actor(),state,Catalog()); blocking=BlockingFailCatalog('ss'); task=asyncio.create_task(self.cb(state,'ss','0',1,catalog=blocking)); await blocking.arrived.wait(); await self.cb(state,'sp',page=2); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.shared_search.state); self.assertEqual(state.data['search_page'],2)
+  state=await self.start(); c=Catalog(); await self.cb(state,'out',catalog=c); await self.cb(state,'ex','lbank',catalog=c); await signal_routes.native_query(Message('many'),actor(),state,c); blocking=BlockingFailCatalog('ns'); task=asyncio.create_task(self.cb(state,'ns','0',1,catalog=blocking)); await blocking.arrived.wait(); await self.cb(state,'np',page=2,catalog=c); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.native_search.state); self.assertEqual(state.data['search_page'],2)
+ async def test_complete_short_wizard(self):
+  state=await self.start(); c=Catalog(); service=Service(); await signal_routes.shared_query(Message('BTC'),actor(),state,c); await self.cb(state,'ss','0',1,c,service); await self.cb(state,'dir','short',catalog=c,service=service); await signal_routes.entry_input(Message('100'),actor(),state,service); await signal_routes.leverage_input(Message('3'),actor(),state); await signal_routes.tp_input(Message('99'),actor(),state); await signal_routes.tp_input(Message('98'),actor(),state); await self.cb(state,'tp','finish',catalog=c,service=service); await signal_routes.sl_input(Message('101'),actor(),state); await self.cb(state,'confirm',catalog=c,service=service)
+  self.assertEqual(len(service.created),1); self.assertEqual(tuple(str(x) for x in service.created[0].take_profits),('99','98')); self.assertIsNone(state.state)
+ async def test_deactivation_during_validation_and_finalizing(self):
+  state=await self.review(); service=Service(); arrived=asyncio.Event(); release=asyncio.Event(); service.gate=(arrived,release); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await arrived.wait(); await self.cb(state,'confirm',service=service,actor_value=actor(SignalistStatus.INACTIVE)); release.set(); await task; self.assertEqual(service.created,[]); self.assertIsNone(state.state)
+  state=await self.review(); service=BlockingInactiveService(); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await service.persist_arrived.wait(); stale=await self.cb(state,'confirm',service=service,actor_value=actor(SignalistStatus.INACTIVE)); self.assertEqual(state.state,SignalCreate.finalizing.state); self.assertEqual(stale.message.answers[-1][0],texts.SIGNAL_FINALIZING); service.persist_release.set(); query=await task; self.assertIsNone(state.state); self.assertEqual(query.message.answers[-1][0],texts.INACTIVE)
+ async def test_signalist_status_is_top_level_across_creation_states(self):
+  for value in (SignalCreate.shared_search,SignalCreate.native_search,SignalCreate.entry,SignalCreate.leverage,SignalCreate.take_profits,SignalCreate.stop_loss,SignalCreate.review):
+   state=await self.review(); state.state=value.state; message=Message(texts.MENU_SIGNALIST_STATUS); await admin_routes.global_status(message,actor(),state,Service()); self.assertIsNone(state.state); self.assertIn('وضعیت حساب',message.answers[-1][0])
 
 class CallbackSchemaTests(unittest.TestCase):
  def test_ascii_typed_and_bounded(self):
