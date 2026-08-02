@@ -162,13 +162,16 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         expected=SignalCreate.shared_search if kind=="sp" else SignalCreate.native_search
         if await state.get_state()!=expected.state or callback_data.page < 1: return
         query=data.get("shared_query" if kind=="sp" else "native_query"); token=_token(); await state.update_data(search_token=token)
+        context = ({"shared_query":query} if kind=="sp" else
+                   {"selected_exchange":data["selected_exchange"], "native_query":query})
         try:
             result=await symbol_catalog.search_shared(query,callback_data.page) if kind=="sp" else await symbol_catalog.search_exchange(Exchange(data["selected_exchange"]),query,callback_data.page)
         except ApplicationError:
+            if not await _owned(state,expected,flow,("search_token",token),context):
+                return
             markup = signal_shared_navigation(flow) if kind == "sp" else signal_native_navigation(flow)
             await callback.message.answer(texts.SIGNAL_PROVIDER_FAILURE, reply_markup=markup)
             return
-        context={"selected_exchange":data["selected_exchange"]} if kind=="np" else {"shared_query":query}
         if not await _owned(state,expected,flow,("search_token",token),context): return
         await state.update_data(search_results=[_item(x) for x in result.items],search_page=result.page,search_pages=result.pages)
         await callback.message.answer(texts.signal_search_title(result.page,result.pages),reply_markup=signal_results(result.items,result.page,result.pages,flow,native=kind=="np")); return
@@ -178,14 +181,26 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         if callback_data.page != data.get("search_page"): return
         try: selected=data["search_results"][int(callback_data.ref)]
         except (KeyError,ValueError,IndexError): return
-        token=_token(); await state.update_data(search_token=token)
+        token=_token()
+        if kind == "ss":
+            context = {"shared_query":data.get("shared_query"),
+                       "verification_symbol":selected["canonical_symbol"]}
+            await state.update_data(search_token=token,
+                                    verification_symbol=selected["canonical_symbol"])
+        else:
+            context = {"selected_exchange":data["selected_exchange"],
+                       "native_query":data.get("native_query"),
+                       "verification_native":selected["native_symbol"]}
+            await state.update_data(search_token=token,
+                                    verification_native=selected["native_symbol"])
         try:
             verified=await symbol_catalog.get_shared(selected["canonical_symbol"]) if kind=="ss" else await symbol_catalog.get_exchange_contract(Exchange(data["selected_exchange"]),selected["native_symbol"])
         except ApplicationError:
+            if not await _owned(state,expected,flow,("search_token",token),context):
+                return
             markup = signal_shared_navigation(flow) if kind == "ss" else signal_native_navigation(flow)
             await callback.message.answer(texts.SIGNAL_PROVIDER_FAILURE, reply_markup=markup)
             return
-        context={"selected_exchange":data["selected_exchange"]} if kind=="ns" else {"shared_query":data.get("shared_query")}
         if verified is None or not await _owned(state,expected,flow,("search_token",token),context): return
         selected=_item(verified)
         if kind=="ss": selected.update(mode="composite",selected_exchange=None,native_symbol=None)

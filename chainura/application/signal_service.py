@@ -93,8 +93,11 @@ class SignalService:
     async def create_validated(self, command: CreateSignalCommand,
                                result: ReferencePriceResult) -> Signal:
         """Persist a just-validated result; callers must stale-check after their await."""
+        if result.healthy is not True or not _positive_decimal(result.reference_price):
+            raise ReferencePriceUnavailableError(
+                "a healthy current reference price is required")
         self._validate_result(command, result)
-        if not _positive_decimal(result.reference_price) or not entry_is_within_tolerance(command.entry_price, result.reference_price):
+        if not entry_is_within_tolerance(command.entry_price, result.reference_price):
             raise EntryOutsideToleranceError("entry differs from reference by more than 0.05 percent")
         async with self._transactions() as lookup:
             existing = await lookup.signals.get_by_creation_token(command.creation_token)

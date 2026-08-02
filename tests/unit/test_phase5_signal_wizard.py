@@ -51,6 +51,22 @@ class EmptyCatalog(Catalog):
 class FailingCatalog(Catalog):
  async def search_shared(self,q,page=1): raise SymbolCatalogError('controlled')
  async def search_exchange(self,e,q,page=1): raise SymbolCatalogError('controlled')
+class BlockingFailCatalog(Catalog):
+ def __init__(self,operation):
+  super().__init__(); self.operation=operation; self.arrived=asyncio.Event(); self.release=asyncio.Event()
+ async def _fail(self): self.arrived.set(); await self.release.wait(); raise SymbolCatalogError('controlled')
+ async def search_shared(self,q,page=1):
+  if self.operation=='sp': return await self._fail()
+  return await super().search_shared(q,page)
+ async def search_exchange(self,e,q,page=1):
+  if self.operation=='np': return await self._fail()
+  return await super().search_exchange(e,q,page)
+ async def get_shared(self,s):
+  if self.operation=='ss': return await self._fail()
+  return await super().get_shared(s)
+ async def get_exchange_contract(self,e,s):
+  if self.operation=='ns': return await self._fail()
+  return await super().get_exchange_contract(e,s)
 class Service:
  def __init__(self): self.validations=0; self.created=[]; self.gate=None
  async def validate_entry(self,c):
@@ -172,6 +188,22 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
   state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state
   query=await self.cb(state,'confirm',service=PersistFailService())
   self.assertEqual(query.message.answers[-1][0],texts.TEMPORARY_ERROR); self.assertEqual(state.state,SignalCreate.review.state)
+ async def test_stale_shared_pagination_failure_after_cancel_is_silent(self):
+  state=await self.start(); await signal_routes.shared_query(Message('many'),actor(),state,Catalog()); blocking=BlockingFailCatalog('sp')
+  task=asyncio.create_task(self.cb(state,'sp',page=2,catalog=blocking)); await blocking.arrived.wait(); await self.cb(state,'cancel'); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertIsNone(state.state)
+ async def test_stale_native_pagination_failure_after_start_is_silent(self):
+  state=await self.start(); c=Catalog(); await self.cb(state,'out',catalog=c); await self.cb(state,'ex','lbank',catalog=c); await signal_routes.native_query(Message('many'),actor(),state,c); blocking=BlockingFailCatalog('np')
+  task=asyncio.create_task(self.cb(state,'np',page=2,catalog=blocking)); await blocking.arrived.wait(); await admin_routes.global_start(Message('/start'),actor(),state); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertIsNone(state.state)
+ async def test_stale_shared_verification_failure_after_new_search_is_silent(self):
+  state=await self.start(); await signal_routes.shared_query(Message('BTC'),actor(),state,Catalog()); blocking=BlockingFailCatalog('ss')
+  task=asyncio.create_task(self.cb(state,'ss','0',1,catalog=blocking)); await blocking.arrived.wait(); await signal_routes.shared_query(Message('new'),actor(),state,Catalog()); current=state.data.copy(); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.shared_search.state); self.assertEqual(state.data,current)
+ async def test_stale_native_verification_failure_after_exchange_change_is_silent(self):
+  state=await self.start(); c=Catalog(); await self.cb(state,'out',catalog=c); await self.cb(state,'ex','lbank',catalog=c); await signal_routes.native_query(Message('DOGE'),actor(),state,c); blocking=BlockingFailCatalog('ns')
+  task=asyncio.create_task(self.cb(state,'ns','0',1,catalog=blocking)); await blocking.arrived.wait(); await self.cb(state,'back','exchange',catalog=c); await self.cb(state,'ex','ourbit',catalog=c); current=state.data.copy(); blocking.release.set(); query=await task
+  self.assertEqual(query.message.answers,[]); self.assertEqual(state.state,SignalCreate.native_search.state); self.assertEqual(state.data,current); self.assertEqual(state.data['selected_exchange'],'ourbit')
 
 class CallbackSchemaTests(unittest.TestCase):
  def test_ascii_typed_and_bounded(self):
