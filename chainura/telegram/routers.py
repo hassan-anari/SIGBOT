@@ -5,15 +5,12 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
-from aiogram.fsm.context import FSMContext
-from uuid import uuid4
 
 from chainura.application.access import Actor, ActorKind
 from chainura.telegram.middlewares import CallbackAcknowledger
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.callbacks import CallbackAction, parse_callback
 from chainura.telegram.presentation.keyboards import admin_menu, remove_menu, signalist_menu, status_navigation
-from chainura.telegram.states import SignalCreate
 
 router = Router(name="phase3-shell")
 
@@ -95,17 +92,6 @@ async def menu_handler(message: Message, actor: Actor) -> None:
 async def status_handler(message: Message, actor: Actor) -> None:
     if await authorize_message(message, actor):
         await show_status(message, actor)
-
-
-@router.message(F.text == texts.MENU_CREATE_SIGNAL)
-async def create_signal_start(message: Message, actor: Actor, state: FSMContext) -> None:
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST:
-        await deny_message(message, actor)
-        return
-    await state.clear()
-    await state.set_state(SignalCreate.shared_search)
-    await state.set_data({"flow_token": uuid4().hex, "creation_token": uuid4().hex})
-    await message.answer(texts.ASK_SHARED_SYMBOL)
 
 
 @router.callback_query()

@@ -68,3 +68,11 @@ class SignalistCannotCreateSignalError(SignalCreationError):
 
 class RendererNotConfiguredError(ApplicationError):
     pass
+
+
+class DuplicateSignalCreationTokenError(SignalCreationError):
+    """The one known idempotency uniqueness constraint was raced."""
+
+
+class SymbolCatalogError(ApplicationError):
+    """A verified market symbol catalog is temporarily unavailable."""

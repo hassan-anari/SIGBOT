@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from chainura.domain.signal import Signal
-from chainura.errors import SignalCreationError
+from chainura.errors import DuplicateSignalCreationTokenError, SignalCreationError
 from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecord,
                                           SignalTakeProfitRecord)
 
@@ -34,7 +34,14 @@ class SqlAlchemySignalRepository:
             self._session.add_all([SignalTakeProfitRecord(signal_id=row.id, position=i, price=p) for i,p in enumerate(signal.take_profits,1)])
             self._session.add_all([SignalExchangeSymbolRecord(signal_id=row.id, exchange=e, native_symbol=s) for e,s in signal.exchange_symbols])
             await self._session.flush()
-        except (IntegrityError, SQLAlchemyError) as exc: raise SignalCreationError("signal could not be recorded") from exc
+        except IntegrityError as exc:
+            raw = str(exc.orig)
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if constraint == "uq_signals_creation_token" or "signals.creation_token" in raw:
+                raise DuplicateSignalCreationTokenError("creation token already exists") from exc
+            raise SignalCreationError("signal could not be recorded") from exc
+        except SQLAlchemyError as exc:
+            raise SignalCreationError("signal could not be recorded") from exc
         return Signal(row.id, signal.signalist_id, signal.creation_token, signal.mode, signal.canonical_symbol,
             signal.base_asset, signal.quote_asset, signal.selected_exchange, signal.direction,
             signal.entry_price, signal.leverage, signal.take_profits, signal.stop_loss,

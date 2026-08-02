@@ -35,6 +35,10 @@ from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, Updat
                                              bot_identity)
 from chainura.telegram.routers import router
 from chainura.telegram.admin_routes import router as admin_router
+from chainura.telegram.signal_routes import router as signal_router
+from chainura.application.signal_service import SignalService
+from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
+from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
@@ -70,6 +74,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.update.outer_middleware(production_fsm)
     dispatcher.update.outer_middleware(ActorResolutionMiddleware(resolver))
     dispatcher.include_router(admin_router)
+    dispatcher.include_router(signal_router)
     dispatcher.include_router(router)
     for name, service in services.items(): dispatcher[name] = service
     return dispatcher
@@ -194,11 +199,16 @@ class Runtime:
             idempotency = UpdateIdempotency(self.redis, identity)
             destination_service = DestinationService(transactions)
             assignment_service = DestinationAssignmentService(transactions)
+            market_probe = MarketProbe()
+            symbol_catalog = SymbolCatalogProvider(market_probe)
+            signal_service = SignalService(
+                transactions, MarketReferencePriceProvider(market_probe))
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
                 signalist_service=service, destination_service=destination_service,
                 assignment_service=assignment_service,
+                signal_service=signal_service, symbol_catalog=symbol_catalog,
                 admin_signalist_service=admin_signalist_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()

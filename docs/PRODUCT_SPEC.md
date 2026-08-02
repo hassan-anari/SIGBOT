@@ -698,3 +698,10 @@ Phase 5A records only complete, active Signals; drafts and pending Signals remai
 Entry is the exact Decimal entered by the Signalist. It is checked with `abs(entry - reference) / reference * 100 <= 0.05`, then freshly revalidated immediately before the short atomic persistence transaction. A random opaque creation token makes final confirmation idempotent. The transaction rechecks active Signalist status and stores the Signal, ordered TPs, and native exchange mappings atomically. There is no publication in Phase 5A.
 
 The public rendering contract is separate from signal creation and has no production image compositor. For the initial open card, Entry is the user value, display price equals final Reference Price, PnL is `0.00%`, and elapsed duration is zero. TP and SL are retained for a future caption and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M` initially), Toobit displays the externally supplied render time in Asia/Tehran, and LBank provisionally displays it in UTC. Renderers receive all clock values; they do not read a clock. Coordinates, fonts, templates, and final layout tuning remain outside this phase.
+
+## Phase 5A finalized image specifications
+
+The immutable initial-card canvas specifications are Ourbit 1080×1148 PNG,
+Toobit 942×1010 PNG, and LBank 830×1005 PNG. Long and Short use the same
+exchange-specific dimensions. These specifications do not authorize production
+coordinates, fonts, templates, or image composition in Phase 5A.

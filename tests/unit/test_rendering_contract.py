@@ -23,3 +23,14 @@ class RenderingTests(unittest.TestCase):
   self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.OURBIT],TimeDisplayStrategy.ELAPSED)
   self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.TOOBIT],TimeDisplayStrategy.TEHRAN_WALL_CLOCK)
   self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.LBANK],TimeDisplayStrategy.UTC_WALL_CLOCK)
+
+class HardenedRenderingTests(unittest.TestCase):
+ def test_exact_exchange_specs_are_public_and_immutable(self):
+  self.assertEqual((EXCHANGE_IMAGE_SPECS[Exchange.OURBIT].width,EXCHANGE_IMAGE_SPECS[Exchange.OURBIT].height),(1080,1148))
+  self.assertEqual((EXCHANGE_IMAGE_SPECS[Exchange.TOOBIT].width,EXCHANGE_IMAGE_SPECS[Exchange.TOOBIT].height),(942,1010))
+  self.assertEqual((EXCHANGE_IMAGE_SPECS[Exchange.LBANK].width,EXCHANGE_IMAGE_SPECS[Exchange.LBANK].height),(830,1005))
+  with self.assertRaises(TypeError): EXCHANGE_IMAGE_SPECS[Exchange.OURBIT]=None
+ def test_payload_rejects_float_and_invalid_identity(self):
+  from dataclasses import replace
+  for changes in ({'signal_id':0},{'entry_price':1.0},{'leverage':True},{'take_profits':(1.1,)},{'elapsed_seconds':True},{'coin_logo_path':'x'}):
+   with self.assertRaises(Exception): replace(payload(),**changes)

@@ -88,3 +88,47 @@ def destination_review(data):
     return f"<b>📋 بررسی نهایی مقصد</b>\n\n📡 نام: {safe(data['internal_name'])}\n\n{telegram_id_block('شناسه چت', data['telegram_chat_id'])}\n\n{TYPE_LABELS[data['destination_type']].split()[0]} نوع: {TYPE_LABELS[data['destination_type']].split(maxsplit=1)[1]}\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n🟡 وضعیت اولیه: غیرفعال\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\n{priority_value(data['exchanges'])}\n\nآیا اطلاعات بالا ثبت شود؟"
 def metadata_review(data): return f"<b>📋 بررسی ویرایش مقصد</b>\n\n{ACCESS_LABELS[data['access_level']].split()[0]} دسترسی: {ACCESS_LABELS[data['access_level']].split(maxsplit=1)[1]}\n📊 سقف سیگنال روزانه: {persian_digits(data['daily_limit'])}\n\nتغییرات تأیید شود؟"
 def archive_confirmation(name): return f"<b>⚠️ بایگانی سیگنالیست</b>\n\nاین عملیات برگشت‌پذیر نیست.\n\nآیا از بایگانی «{safe(name)}» مطمئن هستید؟"
+
+# Phase 5A signal creation
+SIGNAL_SEARCH_OUTSIDE="🔎 جست‌وجو خارج از فهرست مشترک"
+SIGNAL_SELECT_EXCHANGE="صرافی قرارداد را انتخاب کنید."
+SIGNAL_ASK_NATIVE="نماد یا نام دارایی را برای جست‌وجوی قرارداد وارد کنید."
+SIGNAL_EMPTY_SEARCH="قرارداد منطبقی پیدا نشد؛ عبارت دیگری وارد کنید."
+SIGNAL_SELECT_RESULT="قرارداد دقیق را انتخاب کنید."
+SIGNAL_SELECT_DIRECTION="جهت معامله را انتخاب کنید."
+SIGNAL_LONG="🟢 لانگ"; SIGNAL_SHORT="🔴 شورت"
+SIGNAL_ASK_ENTRY="قیمت ورود را با ارقام انگلیسی وارد کنید."
+SIGNAL_ENTRY_VALID="✅ قیمت ورود معتبر است."
+SIGNAL_ASK_LEVERAGE="اهرم را به‌صورت عدد صحیح مثبت انگلیسی وارد کنید."
+SIGNAL_ASK_TP="قیمت تارگت را با ارقام انگلیسی وارد کنید."
+SIGNAL_TP_ADD="➕ افزودن تارگت بعدی"; SIGNAL_TP_FINISH="✅ پایان ثبت تارگت‌ها"
+SIGNAL_ASK_SL="قیمت حد ضرر را با ارقام انگلیسی وارد کنید."
+SIGNAL_INVALID_DIRECTIONAL_PRICE="قیمت با جهت، ترتیب تارگت‌ها یا قیمت ورود سازگار نیست."
+SIGNAL_REVIEW_TITLE="<b>📋 بررسی نهایی سیگنال</b>"
+SIGNAL_CONFIRM="✅ تأیید و ثبت"
+SIGNAL_CANCEL="❌ لغو"
+SIGNAL_BACK="⬅️ بازگشت"
+SIGNAL_STALE="این دکمه مربوط به فرایند قبلی است."
+SIGNAL_PROVIDER_FAILURE="⚠️ دریافت اطلاعات بازار ممکن نیست؛ کمی بعد دوباره تلاش کنید."
+SIGNAL_FINISH_TP_BLOCKED="ابتدا دست‌کم یک تارگت معتبر ثبت کنید."
+SIGNAL_MODE_COMPOSITE="مشترک"; SIGNAL_MODE_SINGLE="تک‌صرافی"
+SIGNAL_DIRECTION_LONG="لانگ"; SIGNAL_DIRECTION_SHORT="شورت"
+SIGNAL_PAGE="صفحه {page} از {pages}"
+SIGNAL_TPS_HEADING="تارگت‌های ثبت‌شده:"
+
+def signal_search_title(page, pages):
+    return SIGNAL_SELECT_RESULT+"\n"+SIGNAL_PAGE.format(page=persian_digits(page),pages=persian_digits(pages))
+
+def signal_tp_list(values):
+    from chainura.telegram.presentation.formatting import format_ordered_take_profits
+    return SIGNAL_TPS_HEADING+"\n"+format_ordered_take_profits(values)
+
+def signal_review(data):
+    from decimal import Decimal
+    from chainura.telegram.presentation.formatting import format_decimal, format_leverage, format_ordered_take_profits, format_symbol
+    mode=SIGNAL_MODE_COMPOSITE if data["mode"]=="composite" else SIGNAL_MODE_SINGLE
+    direction=SIGNAL_DIRECTION_LONG if data["direction"]=="long" else SIGNAL_DIRECTION_SHORT
+    rows=[SIGNAL_REVIEW_TITLE,"", "نماد:",format_symbol(data["canonical_symbol"]),"",f"حالت: {mode}"]
+    if data["mode"]=="single_exchange": rows += ["صرافی:",safe(EXCHANGE_NAMES[data["selected_exchange"]])]
+    rows += ["",f"جهت: {direction}","","ورود:",format_decimal(Decimal(data["entry_price"])),"","اهرم:",format_leverage(data["leverage"]),"","تارگت‌ها:",format_ordered_take_profits(tuple(Decimal(x) for x in data["take_profits"])),"","حد ضرر:",format_decimal(Decimal(data["stop_loss"])),"","قیمت مرجع:",format_decimal(Decimal(data["reference_price"])),"",f"منبع قیمت: {safe(data['price_source_type'])}"]
+    return "\n".join(rows)

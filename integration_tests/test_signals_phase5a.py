@@ -11,7 +11,7 @@ from chainura.persistence.signalist_repository import SqlAlchemySignalistReposit
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
 from integration_tests.support import create_safe_engine,migrate,require_safe_test_database
 class Prices:
- async def get_reference_price(self,**kw): return ReferencePriceResult(Decimal('100.00'),PriceSourceType.COMPOSITE,{Exchange.OURBIT:Decimal('100'),Exchange.TOOBIT:Decimal('100')},True,'BTCUSDT',{Exchange.OURBIT:'BTCUSDT',Exchange.TOOBIT:'BTCUSDT'})
+ async def get_reference_price(self,**kw): return ReferencePriceResult(Decimal('100.00'),PriceSourceType.COMPOSITE,((Exchange.OURBIT,Decimal('100')),(Exchange.TOOBIT,Decimal('100'))),True,'BTCUSDT',((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')))
 class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
  @classmethod
  def setUpClass(cls): cls.safe=require_safe_test_database(); migrate('head',cls.safe)
@@ -30,3 +30,30 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
   one=await self.service.create(self.command()); two=await self.service.create(self.command())
   self.assertEqual(one.id,two.id); self.assertEqual(one.entry_price,Decimal('100.000')); self.assertEqual(one.take_profits,(Decimal('101.010'),Decimal('102.020')))
   async with self.engine.connect() as c: self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
+
+class GatePrices(Prices):
+ def __init__(self):
+  import asyncio
+  self.arrived=0; self.both=asyncio.Event(); self.release=asyncio.Event(); self.fail=False
+ async def get_reference_price(self,**kw):
+  if self.fail: raise RuntimeError('provider secret')
+  self.arrived+=1
+  if self.arrived==2: self.both.set()
+  await self.release.wait()
+  return await super().get_reference_price(**kw)
+
+class ConcurrentSignalPersistenceTests(SignalPersistenceTests):
+ async def test_concurrent_same_token_is_one_aggregate(self):
+  import asyncio
+  gate=GatePrices(); service=SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),gate,lambda:datetime(2026,8,1,tzinfo=timezone.utc))
+  first=asyncio.create_task(service.create(self.command())); second=asyncio.create_task(service.create(self.command()))
+  await gate.both.wait(); gate.release.set(); one,two=await asyncio.gather(first,second)
+  self.assertEqual(one.id,two.id)
+  async with self.engine.connect() as c:
+   self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
+   self.assertEqual(await c.scalar(text('select count(*) from signal_take_profits')),2)
+   self.assertEqual(await c.scalar(text('select count(*) from signal_exchange_symbols')),3)
+ async def test_existing_token_skips_failed_provider(self):
+  gate=GatePrices(); gate.release.set(); service=SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),gate,lambda:datetime(2026,8,1,tzinfo=timezone.utc))
+  one=await service.create(self.command()); gate.fail=True; two=await service.create(self.command())
+  self.assertEqual(one.id,two.id)
