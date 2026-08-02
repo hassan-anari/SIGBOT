@@ -12,11 +12,15 @@ from chainura.application.signal_service import CreateSignalCommand
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import (PriceSourceType, SignalMode, TradeDirection,
     parse_leverage, parse_price)
-from chainura.errors import ApplicationError, InvalidSignalInputError
+from chainura.errors import (ApplicationError, EntryOutsideToleranceError,
+    InconsistentReferencePriceError, InvalidSignalInputError,
+    ReferencePriceUnavailableError)
 from chainura.telegram.middlewares import CallbackAcknowledger
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.keyboards import (remove_menu, signal_directions,
-    signal_exchanges, signal_form_navigation, signal_results, signal_review_actions, signal_tp_actions, signalist_menu)
+    signal_exchanges, signal_form_navigation, signal_native_navigation,
+    signal_results, signal_review_actions, signal_shared_navigation,
+    signal_tp_actions, signalist_menu)
 from chainura.telegram.presentation.signal_callbacks import SignalCallback
 from chainura.telegram.states import SignalCreate
 
@@ -48,7 +52,8 @@ async def start_signal(message:Message,actor:Actor,state:FSMContext):
         await state.set_data({"flow_token":flow,"creation_token":creation,
                               "signalist_id":actor.signalist.id})
         if not await _owned(state,SignalCreate.shared_search,flow): return
-    await message.answer(texts.ASK_SHARED_SYMBOL)
+    await message.answer(texts.ASK_SHARED_SYMBOL,
+                         reply_markup=signal_shared_navigation(flow))
 
 @router.message(SignalCreate.shared_search, F.text, ~F.text.startswith("/"), F.text != texts.MENU_MAIN, F.text != texts.MENU_CREATE_SIGNAL)
 async def shared_query(message:Message,actor:Actor,state:FSMContext,symbol_catalog):
@@ -57,11 +62,15 @@ async def shared_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
     await state.update_data(search_token=token,shared_query=query)
     try: result=await symbol_catalog.search_shared(query,1)
     except ApplicationError:
-        if await _owned(state,SignalCreate.shared_search,flow,("search_token",token),{"shared_query":query}): await message.answer(texts.SIGNAL_PROVIDER_FAILURE)
+        if await _owned(state,SignalCreate.shared_search,flow,("search_token",token),{"shared_query":query}):
+            await message.answer(texts.SIGNAL_PROVIDER_FAILURE,
+                                 reply_markup=signal_shared_navigation(flow))
         return
     if not await _owned(state,SignalCreate.shared_search,flow,("search_token",token),{"shared_query":query}): return
     items=[_item(x) for x in result.items]; await state.update_data(search_results=items,search_page=result.page,search_pages=result.pages)
-    if not items: await message.answer(texts.SIGNAL_EMPTY_SEARCH); return
+    if not items:
+        await message.answer(texts.SIGNAL_EMPTY_SEARCH,
+                             reply_markup=signal_shared_navigation(flow)); return
     await message.answer(texts.signal_search_title(result.page,result.pages),reply_markup=signal_results(result.items,result.page,result.pages,flow))
 
 @router.message(SignalCreate.native_search, F.text, ~F.text.startswith("/"), F.text != texts.MENU_MAIN, F.text != texts.MENU_CREATE_SIGNAL)
@@ -71,11 +80,15 @@ async def native_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
     await state.update_data(search_token=token,native_query=query)
     try: result=await symbol_catalog.search_exchange(Exchange(exchange),query,1)
     except (ApplicationError,ValueError):
-        if await _owned(state,SignalCreate.native_search,flow,("search_token",token),{"selected_exchange":exchange,"native_query":query}): await message.answer(texts.SIGNAL_PROVIDER_FAILURE)
+        if await _owned(state,SignalCreate.native_search,flow,("search_token",token),{"selected_exchange":exchange,"native_query":query}):
+            await message.answer(texts.SIGNAL_PROVIDER_FAILURE,
+                                 reply_markup=signal_native_navigation(flow))
         return
     if not await _owned(state,SignalCreate.native_search,flow,("search_token",token),{"selected_exchange":exchange,"native_query":query}): return
     items=[_item(x) for x in result.items]; await state.update_data(search_results=items,search_page=result.page,search_pages=result.pages)
-    if not items: await message.answer(texts.SIGNAL_EMPTY_SEARCH); return
+    if not items:
+        await message.answer(texts.SIGNAL_EMPTY_SEARCH,
+                             reply_markup=signal_native_navigation(flow)); return
     await message.answer(texts.signal_search_title(result.page,result.pages),reply_markup=signal_results(result.items,result.page,result.pages,flow,native=True))
 
 @router.message(SignalCreate.entry, F.text, ~F.text.startswith("/"))
@@ -86,8 +99,14 @@ async def entry_input(message:Message,actor:Actor,state:FSMContext,signal_servic
     data=await state.get_data(); flow=data["flow_token"]; token=_token(); await state.update_data(entry_validation_token=token,entry_price=str(entry))
     command=_command({**data,"entry_price":str(entry),"leverage":1,"take_profits":[str(entry+Decimal("1"))],"stop_loss":str(entry-Decimal("1")) if entry>1 else str(entry/2)})
     try: result=await signal_service.validate_entry(command)
-    except ApplicationError:
+    except EntryOutsideToleranceError:
         if await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}): await message.answer(texts.ENTRY_OUT_OF_TOLERANCE)
+        return
+    except ReferencePriceUnavailableError:
+        if await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}): await message.answer(texts.REFERENCE_UNAVAILABLE)
+        return
+    except (InconsistentReferencePriceError, ApplicationError):
+        if await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}): await message.answer(texts.TEMPORARY_ERROR)
         return
     if not await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}): return
     await state.update_data(reference_price=str(result.reference_price),price_source_type=result.price_source_type.value)
@@ -138,14 +157,17 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if kind=="ex" and await state.get_state()==SignalCreate.exchange_selection.state:
         try: exchange=Exchange(callback_data.ref)
         except ValueError: return
-        await state.update_data(mode="single_exchange",selected_exchange=exchange.value,search_results=[]); await state.set_state(SignalCreate.native_search); await callback.message.answer(texts.SIGNAL_ASK_NATIVE); return
+        await state.update_data(mode="single_exchange",selected_exchange=exchange.value,search_results=[]); await state.set_state(SignalCreate.native_search); await callback.message.answer(texts.SIGNAL_ASK_NATIVE,reply_markup=signal_native_navigation(flow)); return
     if kind in {"sp","np"}:
         expected=SignalCreate.shared_search if kind=="sp" else SignalCreate.native_search
         if await state.get_state()!=expected.state or callback_data.page < 1: return
         query=data.get("shared_query" if kind=="sp" else "native_query"); token=_token(); await state.update_data(search_token=token)
         try:
             result=await symbol_catalog.search_shared(query,callback_data.page) if kind=="sp" else await symbol_catalog.search_exchange(Exchange(data["selected_exchange"]),query,callback_data.page)
-        except ApplicationError: return
+        except ApplicationError:
+            markup = signal_shared_navigation(flow) if kind == "sp" else signal_native_navigation(flow)
+            await callback.message.answer(texts.SIGNAL_PROVIDER_FAILURE, reply_markup=markup)
+            return
         context={"selected_exchange":data["selected_exchange"]} if kind=="np" else {"shared_query":query}
         if not await _owned(state,expected,flow,("search_token",token),context): return
         await state.update_data(search_results=[_item(x) for x in result.items],search_page=result.page,search_pages=result.pages)
@@ -159,7 +181,10 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         token=_token(); await state.update_data(search_token=token)
         try:
             verified=await symbol_catalog.get_shared(selected["canonical_symbol"]) if kind=="ss" else await symbol_catalog.get_exchange_contract(Exchange(data["selected_exchange"]),selected["native_symbol"])
-        except ApplicationError: return
+        except ApplicationError:
+            markup = signal_shared_navigation(flow) if kind == "ss" else signal_native_navigation(flow)
+            await callback.message.answer(texts.SIGNAL_PROVIDER_FAILURE, reply_markup=markup)
+            return
         context={"selected_exchange":data["selected_exchange"]} if kind=="ns" else {"shared_query":data.get("shared_query")}
         if verified is None or not await _owned(state,expected,flow,("search_token",token),context): return
         selected=_item(verified)
@@ -177,8 +202,14 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if kind=="confirm" and await state.get_state()==SignalCreate.review.state:
         token=_token(); await state.update_data(final_validation_token=token); command=_command(await state.get_data())
         try: result=await signal_service.validate_entry(command)
-        except ApplicationError:
+        except EntryOutsideToleranceError:
+            if await _owned(state,SignalCreate.review,flow,("final_validation_token",token)): await callback.message.answer(texts.FINAL_ENTRY_OUT_OF_TOLERANCE)
+            return
+        except ReferencePriceUnavailableError:
             if await _owned(state,SignalCreate.review,flow,("final_validation_token",token)): await callback.message.answer(texts.REFERENCE_UNAVAILABLE)
+            return
+        except (InconsistentReferencePriceError, ApplicationError):
+            if await _owned(state,SignalCreate.review,flow,("final_validation_token",token)): await callback.message.answer(texts.TEMPORARY_ERROR)
             return
         if not await _owned(state,SignalCreate.review,flow,("final_validation_token",token),{"canonical_symbol":command.canonical_symbol}): return
         try: await signal_service.create_validated(command,result)
@@ -188,6 +219,8 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if kind=="back":
         allowed={
             "shared":SignalCreate.exchange_selection.state,
+            "exchange":SignalCreate.native_search.state,
+            "native-shared":SignalCreate.native_search.state,
             "symbol":SignalCreate.direction.state,
             "direction":SignalCreate.entry.state,
             "entry":SignalCreate.leverage.state,
@@ -199,10 +232,12 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             await _back(callback.message,state,data,callback_data.ref,flow)
 
 async def _back(message,state,data,target,flow):
-    if target=="shared": await state.set_state(SignalCreate.shared_search); await state.update_data(selected_exchange=None); await message.answer(texts.ASK_SHARED_SYMBOL)
+    if target=="shared": await state.set_state(SignalCreate.shared_search); await state.update_data(selected_exchange=None); await message.answer(texts.ASK_SHARED_SYMBOL,reply_markup=signal_shared_navigation(flow))
+    elif target=="exchange": await state.set_state(SignalCreate.exchange_selection); await message.answer(texts.SIGNAL_SELECT_EXCHANGE,reply_markup=signal_exchanges(flow))
+    elif target=="native-shared": await state.set_state(SignalCreate.shared_search); await state.update_data(selected_exchange=None,search_results=[]); await message.answer(texts.ASK_SHARED_SYMBOL,reply_markup=signal_shared_navigation(flow))
     elif target=="symbol":
-        if data.get("mode")=="single_exchange": await state.set_state(SignalCreate.native_search); await message.answer(texts.SIGNAL_ASK_NATIVE)
-        else: await state.set_state(SignalCreate.shared_search); await message.answer(texts.ASK_SHARED_SYMBOL)
+        if data.get("mode")=="single_exchange": await state.set_state(SignalCreate.native_search); await message.answer(texts.SIGNAL_ASK_NATIVE,reply_markup=signal_native_navigation(flow))
+        else: await state.set_state(SignalCreate.shared_search); await message.answer(texts.ASK_SHARED_SYMBOL,reply_markup=signal_shared_navigation(flow))
     elif target=="direction": await state.set_state(SignalCreate.direction); await message.answer(texts.SIGNAL_SELECT_DIRECTION,reply_markup=signal_directions(flow))
     elif target=="entry": await state.set_state(SignalCreate.entry); await message.answer(texts.SIGNAL_ASK_ENTRY,reply_markup=signal_form_navigation(flow,"direction"))
     elif target=="leverage": await state.set_state(SignalCreate.leverage); await message.answer(texts.SIGNAL_ASK_LEVERAGE,reply_markup=signal_form_navigation(flow,"entry"))

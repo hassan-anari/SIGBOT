@@ -48,22 +48,36 @@ class SymbolCatalogProvider:
     def __init__(self, probe: MarketProbe) -> None:
         self._probe = probe
         self._discovery_lock = asyncio.Lock()
+        self._shared_ready = False
+        self._exchange_ready: set[Exchange] = set()
 
     async def _ensure_discovered(self) -> None:
-        if self._probe.instruments:
+        if self._shared_ready:
             return
         async with self._discovery_lock:
-            if not self._probe.instruments:
-                try:
-                    await self._probe.discover()
-                except Exception as exc:
-                    raise SymbolCatalogError("symbol catalog is unavailable") from exc
+            if self._shared_ready:
+                return
+            try:
+                await self._probe.discover()
+            except Exception as exc:
+                # MarketProbe may retain successful partial responses. They are not a
+                # completed shared catalog and the next request must retry discovery.
+                self._probe.common_symbols = set()
+                self._exchange_ready.clear()
+                raise SymbolCatalogError("symbol catalog is unavailable") from exc
+            required = {exchange.value for exchange in Exchange}
+            if not required.issubset(self._probe.instruments):
+                self._probe.common_symbols = set()
+                self._exchange_ready.clear()
+                raise SymbolCatalogError("symbol catalog is incomplete")
+            self._shared_ready = True
+            self._exchange_ready.update(Exchange)
 
     async def _ensure_exchange(self, exchange: Exchange) -> None:
-        if exchange.value in self._probe.instruments:
+        if exchange in self._exchange_ready:
             return
         async with self._discovery_lock:
-            if exchange.value in self._probe.instruments:
+            if exchange in self._exchange_ready:
                 return
             adapter = next((x for x in self._probe.adapters if x.name == exchange.value), None)
             if adapter is None:
@@ -81,6 +95,7 @@ class SymbolCatalogProvider:
                 key=lambda row:(row.canonical_symbol,row.exchange_symbol))
             adapter.symbol_map = {row.exchange_symbol:row.canonical_symbol
                                   for row in self._probe.instruments[exchange.value]}
+            self._exchange_ready.add(exchange)
 
     async def search_shared(self, query: str, page: int = 1) -> SymbolSearchPage:
         await self._ensure_discovered()
@@ -112,9 +127,10 @@ class SymbolCatalogProvider:
 
 
 class MarketReferencePriceProvider:
-    def __init__(self, probe: MarketProbe) -> None:
+    def __init__(self, probe: MarketProbe,
+                 catalog: SymbolCatalogProvider | None = None) -> None:
         self._probe = probe
-        self._catalog = SymbolCatalogProvider(probe)
+        self._catalog = catalog or SymbolCatalogProvider(probe)
 
     async def get_reference_price(self, *, mode: SignalMode, canonical_symbol: str,
             selected_exchange: Exchange | None, native_symbol: str | None) -> ReferencePriceResult:

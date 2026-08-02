@@ -58,6 +58,18 @@ class EntryValidationError(ApplicationError):
     """Entry cannot be validated against a healthy current reference price."""
 
 
+class ReferencePriceUnavailableError(EntryValidationError):
+    """No healthy current reference price is available."""
+
+
+class EntryOutsideToleranceError(EntryValidationError):
+    """Entry exceeds the approved tolerance against the reference price."""
+
+
+class InconsistentReferencePriceError(EntryValidationError):
+    """A provider returned a malformed or context-inconsistent result."""
+
+
 class SignalCreationError(ApplicationError):
     """Signal creation failed without exposing persistence/provider details."""
 

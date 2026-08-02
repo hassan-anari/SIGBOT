@@ -8,8 +8,9 @@ from chainura.domain.destination import Exchange
 from chainura.domain.signal import (PriceSourceType, Signal, SignalLifecycleStatus,
     SignalMode, TradeDirection, entry_is_within_tolerance)
 from chainura.domain.signalist import SignalistStatus
-from chainura.errors import (DuplicateSignalCreationTokenError, EntryValidationError, SignalCreationError,
-    SignalistCannotCreateSignalError)
+from chainura.errors import (DuplicateSignalCreationTokenError, EntryOutsideToleranceError,
+    EntryValidationError, InconsistentReferencePriceError, ReferencePriceUnavailableError,
+    SignalCreationError, SignalistCannotCreateSignalError)
 
 @dataclass(frozen=True, slots=True)
 class ReferencePriceResult:
@@ -42,12 +43,12 @@ class SignalService:
                 canonical_symbol=command.canonical_symbol, selected_exchange=command.selected_exchange,
                 native_symbol=command.native_symbol)
         except Exception as exc:
-            raise EntryValidationError("reference price is temporarily unavailable") from exc
+            raise ReferencePriceUnavailableError("reference price is temporarily unavailable") from exc
         if not result.healthy or not _positive_decimal(result.reference_price):
-            raise EntryValidationError("a healthy current reference price is required")
+            raise ReferencePriceUnavailableError("a healthy current reference price is required")
         self._validate_result(command, result)
         if not entry_is_within_tolerance(command.entry_price, result.reference_price):
-            raise EntryValidationError("entry differs from reference by more than 0.05 percent")
+            raise EntryOutsideToleranceError("entry differs from reference by more than 0.05 percent")
         return result
 
     @staticmethod
@@ -55,7 +56,7 @@ class SignalService:
         prices = result.source_prices
         mappings = result.native_symbols
         if not isinstance(prices, tuple) or not isinstance(mappings, tuple):
-            raise EntryValidationError("reference result must be immutable")
+            raise InconsistentReferencePriceError("reference result must be immutable")
         exchanges = tuple(item[0] for item in prices)
         mapping_exchanges = tuple(item[0] for item in mappings)
         supported = set(Exchange)
@@ -63,13 +64,13 @@ class SignalService:
                 or len(set(mapping_exchanges)) != len(mapping_exchanges)
                 or any(e not in supported or not isinstance(s,str) or not s or not s.isascii() for e,s in mappings)
                 or not isinstance(result.canonical_symbol,str) or not result.canonical_symbol or not result.canonical_symbol.isascii()):
-            raise EntryValidationError("reference result is inconsistent")
+            raise InconsistentReferencePriceError("reference result is inconsistent")
         if command.mode is SignalMode.COMPOSITE:
             if (command.selected_exchange is not None or result.price_source_type is not PriceSourceType.COMPOSITE
                     or result.canonical_symbol != command.canonical_symbol
                     or len(prices) < 2 or not set(exchanges).issubset(set(mapping_exchanges))
                     or set(mapping_exchanges) != set(Exchange)):
-                raise EntryValidationError("composite reference result is inconsistent")
+                raise InconsistentReferencePriceError("composite reference result is inconsistent")
         else:
             expected = {Exchange.OURBIT:PriceSourceType.OURBIT_ONLY, Exchange.TOOBIT:PriceSourceType.TOOBIT_ONLY, Exchange.LBANK:PriceSourceType.LBANK_ONLY}
             selected = command.selected_exchange
@@ -77,7 +78,7 @@ class SignalService:
                     or result.canonical_symbol != command.canonical_symbol
                     or exchanges != (selected,) or mapping_exchanges != (selected,)
                     or command.native_symbol != mappings[0][1]):
-                raise EntryValidationError("single-exchange reference result is inconsistent")
+                raise InconsistentReferencePriceError("single-exchange reference result is inconsistent")
 
     async def create(self, command: CreateSignalCommand) -> Signal:
         # A successful retry is independent of current market availability.
@@ -94,7 +95,7 @@ class SignalService:
         """Persist a just-validated result; callers must stale-check after their await."""
         self._validate_result(command, result)
         if not _positive_decimal(result.reference_price) or not entry_is_within_tolerance(command.entry_price, result.reference_price):
-            raise EntryValidationError("entry differs from reference by more than 0.05 percent")
+            raise EntryOutsideToleranceError("entry differs from reference by more than 0.05 percent")
         async with self._transactions() as lookup:
             existing = await lookup.signals.get_by_creation_token(command.creation_token)
             if existing is not None:

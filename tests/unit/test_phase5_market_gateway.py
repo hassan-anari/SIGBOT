@@ -7,8 +7,9 @@ from chainura.domain.destination import Exchange
 from chainura.domain.signal import SignalMode
 from models import Instrument,PriceTick
 class Adapter:
- def __init__(self,name,ticks): self.name=name; self.ticks=ticks
+ def __init__(self,name,ticks,instruments=()): self.name=name; self.ticks=ticks; self.instruments=instruments; self.symbol_map={}
  async def fetch_prices(self): return self.ticks
+ async def fetch_instruments(self): return list(self.instruments)
 class Probe:
  def __init__(self):
   self.instruments={
@@ -16,6 +17,7 @@ class Probe:
    'toobit':[Instrument('toobit','BTCUSDT','BTCUSDT','BTC')],
    'lbank':[Instrument('lbank','btc_usdt','BTCUSDT','BTC'),Instrument('lbank','doge_usdt','DOGEUSDT','DOGE')]}
   self.common_symbols={'BTCUSDT'}; self.adapters=[]; self.latest={}; self.clock=lambda:datetime.now(timezone.utc)
+ async def discover(self): return None
  def _mapping_for(self,e): return {x.canonical_symbol:x.exchange_symbol for x in self.instruments[e]}
  async def fetch_once(self): pass
  def _analyze_symbol(self,s,now): return {'reference_price':Decimal('100'),'status':'healthy','prices':{'ourbit':Decimal('99'),'toobit':Decimal('100'),'lbank':Decimal('101')},'reason':None}
@@ -29,6 +31,49 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
   result=await MarketReferencePriceProvider(Probe()).get_reference_price(mode=SignalMode.COMPOSITE,canonical_symbol='BTCUSDT',selected_exchange=None,native_symbol=None)
   self.assertEqual(result.reference_price,Decimal('100')); self.assertEqual(len(result.source_prices),3); self.assertEqual(len(result.native_symbols),3)
  async def test_single_reuses_selected_exchange_adapter(self):
-  p=Probe(); tick=PriceTick('lbank','doge_usdt','DOGEUSDT',Decimal('.2'),datetime.now(timezone.utc),'fake'); p.adapters=[Adapter('lbank',[tick])]
+  p=Probe(); tick=PriceTick('lbank','doge_usdt','DOGEUSDT',Decimal('.2'),datetime.now(timezone.utc),'fake'); p.adapters=[Adapter('lbank',[tick],p.instruments['lbank'])]
   result=await MarketReferencePriceProvider(p).get_reference_price(mode=SignalMode.SINGLE_EXCHANGE,canonical_symbol='DOGEUSDT',selected_exchange=Exchange.LBANK,native_symbol='doge_usdt')
   self.assertEqual(result.reference_price,Decimal('.2')); self.assertEqual(result.native_symbols,((Exchange.LBANK,'doge_usdt'),))
+
+class RetryProbe:
+ def __init__(self):
+  self.calls=0; self.instruments={}; self.common_symbols=set()
+  self.valid={
+   'ourbit':[Instrument('ourbit','BTCUSDT','BTCUSDT','BTC')],
+   'toobit':[Instrument('toobit','BTCUSDT','BTCUSDT','BTC')],
+   'lbank':[Instrument('lbank','btc_usdt','BTCUSDT','BTC')]}
+  self.adapters=[Adapter(name,[],rows) for name,rows in self.valid.items()]
+ async def discover(self):
+  self.calls+=1
+  if self.calls==1:
+   self.instruments={'ourbit':self.valid['ourbit'],'toobit':self.valid['toobit']}
+   self.common_symbols={'STALEUSDT'}
+   raise RuntimeError('partial provider failure')
+  self.instruments={name:list(rows) for name,rows in self.valid.items()}
+  self.common_symbols={'BTCUSDT'}
+ def _mapping_for(self,name): return {x.canonical_symbol:x.exchange_symbol for x in self.instruments.get(name,())}
+
+class CatalogReadinessTests(unittest.IsolatedAsyncioTestCase):
+ async def test_partial_shared_failure_retries_without_restart(self):
+  from chainura.errors import SymbolCatalogError
+  probe=RetryProbe(); catalog=SymbolCatalogProvider(probe)
+  with self.assertRaises(SymbolCatalogError): await catalog.search_shared('btc')
+  self.assertEqual(probe.calls,1); self.assertEqual(probe.common_symbols,set())
+  result=await catalog.search_shared('btc')
+  self.assertEqual(probe.calls,2); self.assertEqual(result.items[0].canonical_symbol,'BTCUSDT')
+  self.assertEqual(set(probe.instruments),{'ourbit','toobit','lbank'})
+ async def test_nonempty_partial_mapping_is_not_ready(self):
+  from chainura.errors import SymbolCatalogError
+  probe=RetryProbe(); probe.instruments={'ourbit':probe.valid['ourbit']}
+  catalog=SymbolCatalogProvider(probe)
+  with self.assertRaises(SymbolCatalogError): await catalog.search_shared('btc')
+  self.assertEqual(probe.calls,1)
+ async def test_exchange_search_revalidates_partial_shared_rows(self):
+  from chainura.errors import SymbolCatalogError
+  probe=RetryProbe(); catalog=SymbolCatalogProvider(probe)
+  with self.assertRaises(SymbolCatalogError): await catalog.search_shared('btc')
+  # Simulate an unprocessed partial row left by the failed shared discovery.
+  probe.instruments['lbank']=[Instrument('lbank','unprocessed','BADUSDT','BAD')]
+  result=await catalog.search_exchange(Exchange.LBANK,'btc')
+  self.assertEqual(tuple(x.native_symbol for x in result.items),('btc_usdt',))
+  self.assertNotIn('unprocessed',probe.adapters[2].symbol_map)

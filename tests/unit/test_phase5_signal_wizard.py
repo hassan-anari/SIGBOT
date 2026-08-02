@@ -14,7 +14,9 @@ from chainura.telegram import signal_routes
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.signal_callbacks import SignalCallback,signal_callback
 from chainura.telegram.states import SignalCreate
-from chainura.errors import EntryValidationError
+from chainura.errors import (EntryOutsideToleranceError,
+    InconsistentReferencePriceError, ReferencePriceUnavailableError,
+    SignalCreationError, SymbolCatalogError)
 from chainura.telegram import admin_routes
 
 class State:
@@ -43,13 +45,19 @@ class Catalog:
  async def get_shared(self,s): return next((x for x in self.shared if x.canonical_symbol==s),None)
  async def search_exchange(self,e,q,page=1): return SymbolSearchPage(tuple(self.native),page,2 if q=='many' else 1)
  async def get_exchange_contract(self,e,s): return next((x for x in self.native if x.exchange==e and x.native_symbol==s),None)
+class EmptyCatalog(Catalog):
+ async def search_shared(self,q,page=1): return SymbolSearchPage((),1,1)
+ async def search_exchange(self,e,q,page=1): return SymbolSearchPage((),1,1)
+class FailingCatalog(Catalog):
+ async def search_shared(self,q,page=1): raise SymbolCatalogError('controlled')
+ async def search_exchange(self,e,q,page=1): raise SymbolCatalogError('controlled')
 class Service:
  def __init__(self): self.validations=0; self.created=[]; self.gate=None
  async def validate_entry(self,c):
   self.validations+=1
   if self.gate: self.gate[0].set(); await self.gate[1].wait()
   if abs(c.entry_price-Decimal("100"))/Decimal("100")*Decimal("100") > Decimal("0.05"):
-   raise EntryValidationError("outside")
+   raise EntryOutsideToleranceError("outside")
   source=PriceSourceType.COMPOSITE if c.selected_exchange is None else PriceSourceType.LBANK_ONLY
   prices=((Exchange.OURBIT,Decimal('100')),(Exchange.TOOBIT,Decimal('100'))) if c.selected_exchange is None else ((Exchange.LBANK,Decimal('100')),)
   maps=((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')) if c.selected_exchange is None else ((Exchange.LBANK,c.native_symbol),)
@@ -75,7 +83,9 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
   await self.cb(state,'tp','finish',catalog=catalog,service=service)
   await signal_routes.sl_input(Message('99'),actor(),state)
   review=state.data.copy(); self.assertEqual(state.state,SignalCreate.review.state)
-  self.assertNotIn('مقصد',texts.signal_review(review))
+  rendered=texts.signal_review(review)
+  self.assertNotIn('مقصد',rendered); self.assertIn('مرجع مشترک',rendered)
+  self.assertNotIn('composite',rendered); self.assertNotIn('_only',rendered)
   result=await self.cb(state,'confirm',catalog=catalog,service=service)
   self.assertEqual(len(service.created),1); self.assertIsNone(state.state); self.assertEqual(result.message.answers[-1][0],texts.SIGNAL_RECORDED_SUCCESS)
  async def test_outside_exchange_native_pagination_and_short(self):
@@ -125,8 +135,55 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
  async def test_start_and_main_menu_invalidate_flow(self):
   state=await self.start(); old=state.data['flow_token']; await admin_routes.global_start(Message('/start'),actor(),state); self.assertIsNone(state.state)
   state=await self.start(); state.state=SignalCreate.native_search.state; await admin_routes.global_main(Message(texts.MENU_MAIN),actor(),state); self.assertIsNone(state.state); self.assertNotEqual(old,state.data.get('flow_token'))
+ async def test_empty_shared_result_exposes_and_enters_outside_flow(self):
+  state=await self.start(); message=Message('none'); await signal_routes.shared_query(message,actor(),state,EmptyCatalog())
+  labels=_labels(message.answers[-1][1]); self.assertIn(texts.SIGNAL_SEARCH_OUTSIDE,labels); self.assertIn(texts.SIGNAL_CANCEL,labels)
+  await self.cb(state,'out',catalog=EmptyCatalog()); self.assertEqual(state.state,SignalCreate.exchange_selection.state)
+ async def test_initial_shared_screen_exposes_outside_flow(self):
+  state=State(); message=Message(texts.MENU_CREATE_SIGNAL); await signal_routes.start_signal(message,actor(),state)
+  self.assertIn(texts.SIGNAL_SEARCH_OUTSIDE,_labels(message.answers[-1][1])); self.assertIn(texts.SIGNAL_CANCEL,_labels(message.answers[-1][1]))
+ async def test_native_screens_always_offer_both_back_paths_and_cancel(self):
+  for catalog in (EmptyCatalog(),FailingCatalog()):
+   state=await self.start(); await self.cb(state,'out',catalog=catalog); prompt=await self.cb(state,'ex','lbank',catalog=catalog)
+   self.assertEqual(set(_labels(prompt.message.answers[-1][1])),{texts.SIGNAL_BACK_EXCHANGE,texts.SIGNAL_BACK_SHARED,texts.SIGNAL_CANCEL})
+   message=Message('none'); await signal_routes.native_query(message,actor(),state,catalog)
+   self.assertTrue({texts.SIGNAL_BACK_EXCHANGE,texts.SIGNAL_BACK_SHARED,texts.SIGNAL_CANCEL}.issubset(_labels(message.answers[-1][1])))
+  state=await self.start(); c=Catalog(); await self.cb(state,'out',catalog=c); await self.cb(state,'ex','lbank',catalog=c); message=Message('DOGE'); await signal_routes.native_query(message,actor(),state,c)
+  self.assertTrue({texts.SIGNAL_BACK_EXCHANGE,texts.SIGNAL_BACK_SHARED,texts.SIGNAL_CANCEL}.issubset(_labels(message.answers[-1][1])))
+  await self.cb(state,'back','exchange',catalog=c); self.assertEqual(state.state,SignalCreate.exchange_selection.state)
+  await self.cb(state,'ex','lbank',catalog=c); await self.cb(state,'back','native-shared',catalog=c); self.assertEqual(state.state,SignalCreate.shared_search.state)
+ async def test_typed_initial_entry_errors_have_distinct_copy(self):
+  for error,copy in ((EntryOutsideToleranceError('x'),texts.ENTRY_OUT_OF_TOLERANCE),(ReferencePriceUnavailableError('x'),texts.REFERENCE_UNAVAILABLE),(InconsistentReferencePriceError('x'),texts.TEMPORARY_ERROR)):
+   state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long'); state.state=SignalCreate.entry.state
+   service=ErrorService(error); message=Message('100'); await signal_routes.entry_input(message,actor(),state,service)
+   self.assertEqual(message.answers[-1][0],copy); self.assertEqual(state.state,SignalCreate.entry.state)
+ async def test_typed_final_errors_stay_in_review_and_never_persist(self):
+  for error,copy in ((EntryOutsideToleranceError('x'),texts.FINAL_ENTRY_OUT_OF_TOLERANCE),(ReferencePriceUnavailableError('x'),texts.REFERENCE_UNAVAILABLE),(InconsistentReferencePriceError('x'),texts.TEMPORARY_ERROR)):
+   state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state
+   service=ErrorService(error); query=await self.cb(state,'confirm',service=service)
+   self.assertEqual(query.message.answers[-1][0],copy); self.assertEqual(state.state,SignalCreate.review.state); self.assertEqual(service.created,[])
+ async def test_all_price_sources_are_localized_in_review(self):
+  base=dict(mode='composite',canonical_symbol='BTCUSDT',selected_exchange=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100')
+  for source,label in texts.PRICE_SOURCE_LABELS.items():
+   data={**base,'price_source_type':source}
+   if source!='composite': data.update(mode='single_exchange',selected_exchange=source.removesuffix('_only'))
+   rendered=texts.signal_review(data); self.assertIn(label,rendered); self.assertNotIn(source,rendered); self.assertNotIn('_only',rendered)
+ async def test_final_persistence_failure_is_sanitized_and_retryable(self):
+  state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state
+  query=await self.cb(state,'confirm',service=PersistFailService())
+  self.assertEqual(query.message.answers[-1][0],texts.TEMPORARY_ERROR); self.assertEqual(state.state,SignalCreate.review.state)
 
 class CallbackSchemaTests(unittest.TestCase):
  def test_ascii_typed_and_bounded(self):
   value=signal_callback('confirm','abcdef1234'); self.assertTrue(value.isascii()); self.assertLessEqual(len(value.encode()),64)
   parsed=SignalCallback.unpack(value); self.assertEqual(parsed.kind,'confirm')
+
+class ErrorService(Service):
+ def __init__(self,error): super().__init__(); self.error=error
+ async def validate_entry(self,c): raise self.error
+
+class PersistFailService(Service):
+ async def create_validated(self,c,r): raise SignalCreationError('database detail')
+
+def _labels(markup):
+ return {button.text for row in markup.inline_keyboard for button in row}

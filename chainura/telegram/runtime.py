@@ -202,7 +202,7 @@ class Runtime:
             market_probe = MarketProbe()
             symbol_catalog = SymbolCatalogProvider(market_probe)
             signal_service = SignalService(
-                transactions, MarketReferencePriceProvider(market_probe))
+                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog))
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,

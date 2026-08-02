@@ -108,13 +108,22 @@ SIGNAL_REVIEW_TITLE="<b>📋 بررسی نهایی سیگنال</b>"
 SIGNAL_CONFIRM="✅ تأیید و ثبت"
 SIGNAL_CANCEL="❌ لغو"
 SIGNAL_BACK="⬅️ بازگشت"
+SIGNAL_BACK_EXCHANGE="⬅️ بازگشت به انتخاب صرافی"
+SIGNAL_BACK_SHARED="↩️ بازگشت به جست‌وجوی مشترک"
 SIGNAL_STALE="این دکمه مربوط به فرایند قبلی است."
 SIGNAL_PROVIDER_FAILURE="⚠️ دریافت اطلاعات بازار ممکن نیست؛ کمی بعد دوباره تلاش کنید."
+FINAL_ENTRY_OUT_OF_TOLERANCE="❌ قیمت ورود دیگر در محدوده مجاز ۰٫۰۵٪ قیمت مرجع نیست."
 SIGNAL_FINISH_TP_BLOCKED="ابتدا دست‌کم یک تارگت معتبر ثبت کنید."
 SIGNAL_MODE_COMPOSITE="مشترک"; SIGNAL_MODE_SINGLE="تک‌صرافی"
 SIGNAL_DIRECTION_LONG="لانگ"; SIGNAL_DIRECTION_SHORT="شورت"
 SIGNAL_PAGE="صفحه {page} از {pages}"
 SIGNAL_TPS_HEADING="تارگت‌های ثبت‌شده:"
+PRICE_SOURCE_LABELS={
+    "composite":"مرجع مشترک",
+    "ourbit_only":"فقط Ourbit",
+    "toobit_only":"فقط Toobit",
+    "lbank_only":"فقط LBank",
+}
 
 def signal_search_title(page, pages):
     return SIGNAL_SELECT_RESULT+"\n"+SIGNAL_PAGE.format(page=persian_digits(page),pages=persian_digits(pages))
@@ -130,5 +139,5 @@ def signal_review(data):
     direction=SIGNAL_DIRECTION_LONG if data["direction"]=="long" else SIGNAL_DIRECTION_SHORT
     rows=[SIGNAL_REVIEW_TITLE,"", "نماد:",format_symbol(data["canonical_symbol"]),"",f"حالت: {mode}"]
     if data["mode"]=="single_exchange": rows += ["صرافی:",safe(EXCHANGE_NAMES[data["selected_exchange"]])]
-    rows += ["",f"جهت: {direction}","","ورود:",format_decimal(Decimal(data["entry_price"])),"","اهرم:",format_leverage(data["leverage"]),"","تارگت‌ها:",format_ordered_take_profits(tuple(Decimal(x) for x in data["take_profits"])),"","حد ضرر:",format_decimal(Decimal(data["stop_loss"])),"","قیمت مرجع:",format_decimal(Decimal(data["reference_price"])),"",f"منبع قیمت: {safe(data['price_source_type'])}"]
+    rows += ["",f"جهت: {direction}","","ورود:",format_decimal(Decimal(data["entry_price"])),"","اهرم:",format_leverage(data["leverage"]),"","تارگت‌ها:",format_ordered_take_profits(tuple(Decimal(x) for x in data["take_profits"])),"","حد ضرر:",format_decimal(Decimal(data["stop_loss"])),"","قیمت مرجع:",format_decimal(Decimal(data["reference_price"])),"",f"منبع قیمت: {safe(PRICE_SOURCE_LABELS[data['price_source_type']])}"]
     return "\n".join(rows)
