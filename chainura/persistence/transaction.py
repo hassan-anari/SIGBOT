@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from chainura.persistence.error_translation import persistence_error
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.destination_repository import SqlAlchemyDestinationRepository
+from chainura.persistence.signal_repository import SqlAlchemySignalRepository
 from chainura.persistence.error_translation import commit_persistence_error
 
 
@@ -21,6 +22,7 @@ class SqlAlchemySignalistTransaction:
         self.repository: SqlAlchemySignalistRepository
         self.signalists: SqlAlchemySignalistRepository
         self.destinations: SqlAlchemyDestinationRepository
+        self.signals: SqlAlchemySignalRepository
 
     async def __aenter__(self) -> Self:
         self._session = self._sessions()
@@ -32,6 +34,7 @@ class SqlAlchemySignalistTransaction:
         self.repository = SqlAlchemySignalistRepository(self._session)
         self.signalists = self.repository
         self.destinations = SqlAlchemyDestinationRepository(self._session)
+        self.signals = SqlAlchemySignalRepository(self._session)
         return self
 
     def use_destination_errors(self) -> None:

@@ -17,7 +17,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
 
 def signalist_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=texts.MENU_MAIN)],
+        keyboard=[[KeyboardButton(text=texts.MENU_CREATE_SIGNAL)],
+                  [KeyboardButton(text=texts.MENU_MAIN)],
                   [KeyboardButton(text=texts.MENU_SIGNALIST_STATUS), KeyboardButton(text=texts.MENU_HELP)]],
         resize_keyboard=True,
         is_persistent=True,

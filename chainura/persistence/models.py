@@ -9,7 +9,9 @@ from chainura.domain.signalist import SignalistStatus
 from chainura.domain.destination import (DestinationAccessLevel, DestinationStatus,
                                           DestinationType, Exchange)
 from chainura.persistence.base import Base
-from chainura.persistence.types import UTCDateTime
+from chainura.persistence.types import UTCDateTime, ExactDecimal
+from chainura.domain.signal import (PriceSourceType, SignalLifecycleStatus, SignalMode,
+                                    TradeDirection)
 
 SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
@@ -127,3 +129,53 @@ class DestinationSignalistRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 DestinationSignalistRecord.__table__.primary_key.name = "pk_destination_signalists"
+
+SIGNAL_MODE_ENUM = _enum(SignalMode, "signal_mode")
+TRADE_DIRECTION_ENUM = _enum(TradeDirection, "trade_direction")
+PRICE_SOURCE_ENUM = _enum(PriceSourceType, "signal_price_source_type")
+SIGNAL_STATUS_ENUM = _enum(SignalLifecycleStatus, "signal_lifecycle_status")
+
+class SignalRecord(Base):
+    __tablename__ = "signals"
+    __table_args__ = (
+        ForeignKeyConstraint(["signalist_id"], ["signalists.id"], name="fk_signals_signalist_id_signalists"),
+        UniqueConstraint("creation_token", name="uq_signals_creation_token"),
+        CheckConstraint("leverage >= 1", name="ck_signals_leverage_positive"),
+        CheckConstraint("trim(canonical_symbol) <> ''", name="ck_signals_symbol_nonempty"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signalist_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    creation_token: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[SignalMode] = mapped_column(SIGNAL_MODE_ENUM, nullable=False)
+    canonical_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    base_asset: Mapped[str] = mapped_column(Text, nullable=False)
+    quote_asset: Mapped[str] = mapped_column(Text, nullable=False)
+    selected_exchange: Mapped[Exchange | None] = mapped_column(DESTINATION_EXCHANGE_ENUM, nullable=True)
+    direction: Mapped[TradeDirection] = mapped_column(TRADE_DIRECTION_ENUM, nullable=False)
+    entry_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    leverage: Mapped[int] = mapped_column(Integer, nullable=False)
+    stop_loss: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    reference_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    price_source_type: Mapped[PriceSourceType] = mapped_column(PRICE_SOURCE_ENUM, nullable=False)
+    status: Mapped[SignalLifecycleStatus] = mapped_column(SIGNAL_STATUS_ENUM, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+SignalRecord.__table__.primary_key.name = "pk_signals"
+
+class SignalTakeProfitRecord(Base):
+    __tablename__ = "signal_take_profits"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_signal_take_profits_signal_id_signals"),
+        UniqueConstraint("signal_id", "position", name="uq_signal_take_profits_signal_position"),
+        CheckConstraint("position >= 1", name="ck_signal_take_profits_position_positive"),
+    )
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+
+class SignalExchangeSymbolRecord(Base):
+    __tablename__ = "signal_exchange_symbols"
+    __table_args__ = (ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_signal_exchange_symbols_signal_id_signals"),)
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
+    native_symbol: Mapped[str] = mapped_column(Text, nullable=False)

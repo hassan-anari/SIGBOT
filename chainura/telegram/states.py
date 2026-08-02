@@ -30,3 +30,15 @@ class AdminDestinationPriority(StatesGroup):
 
 class AdminSignalistArchive(StatesGroup):
     confirming = State()
+
+
+class SignalCreate(StatesGroup):
+    shared_search = State()
+    exchange_selection = State()
+    native_search = State()
+    direction = State()
+    entry = State()
+    leverage = State()
+    take_profits = State()
+    stop_loss = State()
+    review = State()

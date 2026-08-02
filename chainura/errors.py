@@ -48,3 +48,23 @@ class ActorResolutionError(ApplicationError):
 
 class TelegramRuntimeError(ApplicationError):
     """A sanitized Telegram runtime or coordination failure."""
+
+
+class InvalidSignalInputError(ApplicationError):
+    """A signal violates the approved Phase 5A domain rules."""
+
+
+class EntryValidationError(ApplicationError):
+    """Entry cannot be validated against a healthy current reference price."""
+
+
+class SignalCreationError(ApplicationError):
+    """Signal creation failed without exposing persistence/provider details."""
+
+
+class SignalistCannotCreateSignalError(SignalCreationError):
+    pass
+
+
+class RendererNotConfiguredError(ApplicationError):
+    pass

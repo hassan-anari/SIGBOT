@@ -91,3 +91,15 @@ Before changing the code:
   content. This applies in Phase 5 to symbol names, Entry, stop loss, take-profit
   levels, leverage, prices, percentages, Telegram IDs, and Chat IDs; it does not
   authorize implementing those Phase 5 fields early.
+
+## Permanent Phase 5A signal and rendering rules
+
+- Never use float for financial values; use Decimal end-to-end.
+- Never expose Destination or assignment information to Signalists.
+- Never perform market HTTP calls inside database transactions.
+- Every awaited market/FSM operation must use matching flow and operation tokens and discard stale results.
+- Entry-validation tolerance is exactly 0.05 percent unless explicitly changed later.
+- The initial render uses the Signalist-entered Entry and the Reference Price as display price; initial PnL is always 0.00 percent.
+- TP and SL belong to the future caption, not the rendered card layout.
+- Renderer clock and elapsed values are supplied externally; renderers never generate current time.
+- Do not guess or commit production coordinates, fonts, or final layout details.

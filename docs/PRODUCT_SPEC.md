@@ -135,7 +135,7 @@ The price entered by the Signalist is the primary Entry and the basis for all su
 
 Reference Price is used only to validate the Entry.
 
-The initial tolerance is **1 percent**.
+The Phase 5A Entry-validation tolerance is exactly **0.05 percent**.
 
 Difference formula:
 
@@ -143,7 +143,7 @@ Difference formula:
 abs(Entry Price - Reference Price) / Reference Price × 100
 ```
 
-If the difference between Entry and Reference Price is greater than 1 percent:
+If the difference between Entry and Reference Price is greater than 0.05 percent:
 
 - The bot returns an error.
 - Final signal creation is not allowed.
@@ -183,7 +183,7 @@ Normal flow:
 
 1. The Signalist selects a Symbol from the shared list.
 2. A three-source Reference Price is calculated.
-3. Entry is validated using the 1 percent tolerance.
+3. Entry is validated using the 0.05 percent tolerance.
 4. The required images are generated.
 5. The signal is published and monitored.
 
@@ -661,7 +661,7 @@ The system conforms to this Scope when:
 - The Main Admin can manage Signalists, destinations, and related settings.
 - An active Signalist can create a signal.
 - An inactive Signalist cannot perform new actions.
-- Entry is validated against Reference Price using the 1 percent tolerance.
+- Entry is validated against Reference Price using the 0.05 percent tolerance.
 - Shared Symbols are processed as Composite signals.
 - Symbols outside the shared list are created through the Single Exchange flow.
 - Destinations are selected based on exchange priority and compatibility.
@@ -689,3 +689,12 @@ The system conforms to this Scope when:
 No feature outside this document may be added to the project at this stage.
 
 Any new change, capability, or rule must be recorded and approved as a separate Change Request.
+
+
+# Phase 5A — Signal Creation and Rendering Boundary
+
+Phase 5A records only complete, active Signals; drafts and pending Signals remain ephemeral FSM data and are never persisted. Active Signalists create either a composite Signal from the verified shared Futures/Perpetual intersection or a single-exchange Signal by selecting an exact verified Ourbit, Toobit, or LBank contract. Market calls occur outside database transactions.
+
+Entry is the exact Decimal entered by the Signalist. It is checked with `abs(entry - reference) / reference * 100 <= 0.05`, then freshly revalidated immediately before the short atomic persistence transaction. A random opaque creation token makes final confirmation idempotent. The transaction rechecks active Signalist status and stores the Signal, ordered TPs, and native exchange mappings atomically. There is no publication in Phase 5A.
+
+The public rendering contract is separate from signal creation and has no production image compositor. For the initial open card, Entry is the user value, display price equals final Reference Price, PnL is `0.00%`, and elapsed duration is zero. TP and SL are retained for a future caption and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M` initially), Toobit displays the externally supplied render time in Asia/Tehran, and LBank provisionally displays it in UTC. Renderers receive all clock values; they do not read a clock. Coordinates, fonts, templates, and final layout tuning remain outside this phase.
