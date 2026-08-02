@@ -4,6 +4,7 @@ from datetime import datetime
 from html import escape
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from decimal import Decimal
 
 
 def _load_tehran_timezone() -> ZoneInfo:
@@ -87,3 +88,34 @@ def format_priority(values, heading: str, empty_placeholder: str) -> str:
     rows = [f"{persian_digits(index)}. {EXCHANGE_NAMES[getattr(value, 'value', value)]}"
             for index, value in enumerate(values, 1)]
     return heading + "\n" + ("\n".join(rows) if rows else empty_placeholder)
+
+
+def bidi_ascii(value: str) -> str:
+    """Isolate escaped copyable ASCII without putting controls in the code entity."""
+    if not isinstance(value, str) or not value.isascii():
+        raise ValueError("display value must be ASCII")
+    return f"{LRI}<code>{escape(value, quote=True)}</code>{PDI}"
+
+
+def format_symbol(value: str) -> str:
+    return bidi_ascii(value)
+
+
+def format_decimal(value: Decimal) -> str:
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise ValueError("financial display requires a finite Decimal")
+    return bidi_ascii(str(value))
+
+
+def format_leverage(value: int) -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("leverage must be a positive integer")
+    return bidi_ascii(f"{value}x")
+
+
+def format_percentage(value: Decimal) -> str:
+    return bidi_ascii(f"{value}%")
+
+
+def format_ordered_take_profits(values: tuple[Decimal, ...]) -> str:
+    return "\n".join(f"TP{index}\n{format_decimal(value)}" for index, value in enumerate(values, 1))

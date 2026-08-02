@@ -23,7 +23,9 @@ class FakeState:
     async def clear(self): self.state=None; self.data={}; self.clears+=1
 
 class FakeMessage:
-    def __init__(self,text=""): self.text=text; self.answers=[]
+    def __init__(self,text=""):
+        self.text=text; self.answers=[]
+        self.chat=SimpleNamespace(id=1); self.from_user=SimpleNamespace(id=2)
     async def answer(self,text,reply_markup=None): self.answers.append((text,reply_markup))
 
 class FakeQuery:

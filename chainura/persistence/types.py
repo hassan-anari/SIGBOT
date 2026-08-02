@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from decimal import Decimal
 from sqlalchemy import Text
 from sqlalchemy.types import TypeDecorator
 
@@ -28,3 +29,17 @@ class UTCDateTime(TypeDecorator[datetime]):
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
+
+
+class ExactDecimal(TypeDecorator[Decimal]):
+    """Losslessly persist financial Decimals as canonical SQLite text."""
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise SignalistPersistenceError("financial value must be a finite Decimal")
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else Decimal(value)
