@@ -193,7 +193,7 @@ async def show_destination_detail(message, destination_id, destination_service):
 async def global_start(message: Message, actor: Actor, state: FSMContext, signal_service=None):
     from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
     from chainura.telegram.states import SignalCreate
-    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
+    if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     async with phase5_lock(message):
         if await state.get_state() == SignalCreate.finalizing.state:
             finalizing=True
@@ -222,7 +222,7 @@ async def global_help(message: Message, actor: Actor):
 async def global_main(message: Message, actor: Actor, state: FSMContext, signal_service=None):
     from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
     from chainura.telegram.states import SignalCreate
-    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
+    if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     async with phase5_lock(message):
         if await state.get_state() == SignalCreate.finalizing.state:
             finalizing=True
@@ -238,7 +238,7 @@ async def global_main(message: Message, actor: Actor, state: FSMContext, signal_
 @router.message(F.text.in_({texts.MENU_ADMIN_STATUS, texts.MENU_SIGNALIST_STATUS}))
 async def global_status(message: Message, actor: Actor, state: FSMContext, signal_service=None):
     from chainura.telegram.signal_routes import phase5_lock, reconcile_finalizing
-    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
+    if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     async with phase5_lock(message): await state.clear()
     await show_status(message, actor)
 

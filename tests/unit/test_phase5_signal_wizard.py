@@ -32,6 +32,12 @@ class State:
 class Message:
  def __init__(self,text=''): self.text=text; self.answers=[]; self.chat=SimpleNamespace(id=1); self.from_user=SimpleNamespace(id=2)
  async def answer(self,text,reply_markup=None): self.answers.append((text,reply_markup))
+class FailingMessage(Message):
+ async def answer(self,text,reply_markup=None): raise RuntimeError('telegram unavailable')
+class BlockingMessage(Message):
+ def __init__(self): super().__init__(); self.arrived=asyncio.Event(); self.release=asyncio.Event()
+ async def answer(self,text,reply_markup=None):
+  self.arrived.set(); await self.release.wait(); await super().answer(text,reply_markup)
 class Query:
  def __init__(self,user_id=2):
   self.message=Message(); self.message.from_user=SimpleNamespace(id=999,is_bot=True)
@@ -96,6 +102,17 @@ class BlockingInactiveService(BlockingPersistenceService):
  async def create_validated(self,c,r):
   from chainura.errors import SignalistCannotCreateSignalError
   self.persist_arrived.set(); await self.persist_release.wait(); raise SignalistCannotCreateSignalError('controlled')
+class AmbiguousState(State):
+ def __init__(self,apply): super().__init__(); self.apply=apply; self.fail_finalizing=True
+ async def set_state(self,value):
+  target=value.state if hasattr(value,'state') else value
+  if target==SignalCreate.finalizing.state and self.fail_finalizing:
+   if self.apply: self.state=target
+   raise RuntimeError('ambiguous Redis write')
+  self.state=target
+class StoredBlockingService(BlockingPersistenceService):
+ async def create_validated(self,c,r):
+  result=await super().create_validated(c,r); self.stored=result; return result
 
 class WizardTests(unittest.IsolatedAsyncioTestCase):
  async def cb(self,state,kind,ref='-',page=0,catalog=None,service=None,flow=None,actor_value=None):
@@ -270,10 +287,43 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(len(service.created),1); self.assertEqual(tuple(str(x) for x in service.created[0].take_profits),('99','98')); self.assertIsNone(state.state)
  async def test_deactivation_during_validation_and_finalizing(self):
   state=await self.review(); service=Service(); arrived=asyncio.Event(); release=asyncio.Event(); service.gate=(arrived,release); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await arrived.wait(); await self.cb(state,'confirm',service=service,actor_value=actor(SignalistStatus.INACTIVE)); release.set(); await task; self.assertEqual(service.created,[]); self.assertIsNone(state.state)
-  state=await self.review(); service=BlockingInactiveService(); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await service.persist_arrived.wait(); stale=await self.cb(state,'confirm',service=service,actor_value=actor(SignalistStatus.INACTIVE)); self.assertEqual(state.state,SignalCreate.finalizing.state); self.assertEqual(stale.message.answers[-1][0],texts.SIGNAL_FINALIZING); service.persist_release.set(); query=await task; self.assertIsNone(state.state); self.assertEqual(query.message.answers[-1][0],texts.INACTIVE)
+  state=await self.review(); service=BlockingInactiveService(); task=asyncio.create_task(self.cb(state,'confirm',service=service)); await service.persist_arrived.wait(); stale=await self.cb(state,'confirm',service=service,actor_value=actor(SignalistStatus.INACTIVE)); self.assertEqual(state.state,SignalCreate.finalizing.state); self.assertEqual(stale.message.answers[-1][0],texts.SIGNAL_FINALIZING); service.persist_release.set(); query=await task; self.assertIsNone(state.state); self.assertEqual(query.message.answers[-1][0],texts.SIGNALIST_NO_LONGER_ACTIVE)
  async def test_signalist_status_is_top_level_across_creation_states(self):
   for value in (SignalCreate.shared_search,SignalCreate.native_search,SignalCreate.entry,SignalCreate.leverage,SignalCreate.take_profits,SignalCreate.stop_loss,SignalCreate.review):
    state=await self.review(); state.state=value.state; message=Message(texts.MENU_SIGNALIST_STATUS); await admin_routes.global_status(message,actor(),state,Service()); self.assertIsNone(state.state); self.assertIn('وضعیت حساب',message.answers[-1][0])
+ async def test_ambiguous_finalizing_transition_never_persists_or_leaks_claim(self):
+  for applies in (False,True):
+   base=await self.review(); state=AmbiguousState(applies); state.state=base.state; state.data=base.data.copy(); service=Service()
+   with self.assertRaises(RuntimeError): await self.cb(state,'confirm',service=service)
+   self.assertEqual(service.created,[]); self.assertEqual(phase5_coordination.claim_count_for_tests(),0)
+   if applies:
+    message=Message(); self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,service),'review'); self.assertEqual(state.state,SignalCreate.review.state); self.assertEqual(state.data['creation_token'],base.data['creation_token'])
+   else: self.assertEqual(state.state,SignalCreate.review.state)
+ async def test_success_send_failure_is_recovered_from_committed_signal(self):
+  state=await self.review(); service=Service(); q=Query(); q.message=FailingMessage(); ack=Ack(); data=SignalCallback(kind='confirm',flow=state.data['flow_token'],ref='-',page=0)
+  with self.assertRaises(RuntimeError): await signal_routes.signal_callback_handler(q,data,actor(),state,ack,Catalog(),service)
+  self.assertEqual(len(service.created),1); self.assertEqual(state.state,SignalCreate.finalizing.state); self.assertEqual(phase5_coordination.claim_count_for_tests(),0)
+  service.stored=SimpleNamespace(id=1); message=Message(); self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,service),'success'); self.assertIsNone(state.state); self.assertEqual(message.answers[-1][0],texts.SIGNAL_RECORDED_SUCCESS)
+ async def test_concurrent_orphan_success_reconciliation_has_recovery_claim(self):
+  state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; service=Service(); service.stored=SimpleNamespace(id=1); first_message=BlockingMessage()
+  task=asyncio.create_task(signal_routes.reconcile_finalizing(first_message,first_message,state,service)); await first_message.arrived.wait()
+  second=Message(); self.assertEqual(await signal_routes.reconcile_finalizing(second,second,state,service),'live'); self.assertEqual(second.answers[-1][0],texts.SIGNAL_FINALIZING)
+  first_message.release.set(); self.assertEqual(await task,'success'); self.assertIsNone(state.state)
+ async def test_inactive_and_archived_typed_inputs_clear_without_cancel_copy(self):
+  cases=((SignalCreate.shared_search,signal_routes.shared_query,(Catalog(),)),(SignalCreate.native_search,signal_routes.native_query,(Catalog(),)),(SignalCreate.entry,signal_routes.entry_input,(Service(),)),(SignalCreate.leverage,signal_routes.leverage_input,()),(SignalCreate.take_profits,signal_routes.tp_input,()),(SignalCreate.stop_loss,signal_routes.sl_input,()))
+  for status in (SignalistStatus.INACTIVE,SignalistStatus.ARCHIVED):
+   for state_value,handler,extra in cases:
+    state=await self.review(); state.state=state_value.state; message=Message('100'); await handler(message,actor(status),state,*extra)
+    self.assertIsNone(state.state); self.assertEqual(len(message.answers),1); self.assertEqual(message.answers[0][0],texts.INACTIVE if status is SignalistStatus.INACTIVE else texts.ARCHIVED); self.assertNotEqual(message.answers[0][0],texts.FLOW_CANCELLED)
+ async def test_inactive_orphan_reconciliation_never_restores_review(self):
+  for status in (SignalistStatus.INACTIVE,SignalistStatus.ARCHIVED):
+   state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; message=Message()
+   self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,Service(),actor=actor(status)),'denied'); self.assertIsNone(state.state); self.assertEqual(len(message.answers),1); self.assertEqual(message.answers[0][0],texts.INACTIVE if status is SignalistStatus.INACTIVE else texts.ARCHIVED)
+  state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; service=Service(); service.stored=SimpleNamespace(id=1); message=Message()
+  self.assertEqual(await signal_routes.reconcile_finalizing(message,message,state,service,actor=actor(SignalistStatus.INACTIVE)),'success'); self.assertEqual(message.answers[0][0],texts.SIGNAL_RECORDED_SUCCESS)
+ async def test_create_signal_reconciles_orphan_before_inactive_rejection(self):
+  state=await self.review(); state.state=SignalCreate.finalizing.state; state.data['final_validation_token']='final'; service=Service(); service.stored=SimpleNamespace(id=1); message=Message(texts.MENU_CREATE_SIGNAL)
+  await signal_routes.start_signal(message,actor(SignalistStatus.INACTIVE),state,service); self.assertIsNone(state.state); self.assertEqual(len(message.answers),1); self.assertEqual(message.answers[0][0],texts.SIGNAL_RECORDED_SUCCESS)
 
 class CallbackSchemaTests(unittest.TestCase):
  def test_ascii_typed_and_bounded(self):

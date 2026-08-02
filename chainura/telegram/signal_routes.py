@@ -37,9 +37,14 @@ def phase5_lock(event):
                 else identity_from_message(event))
     return phase5_coordination.hold(identity)
 
-async def reconcile_finalizing(event,message,state,signal_service,*,show_live=True):
+def _access_text(actor):
+    return (texts.INACTIVE if actor.kind is ActorKind.INACTIVE_SIGNALIST else
+            texts.ARCHIVED if actor.kind is ActorKind.ARCHIVED_SIGNALIST else texts.UNKNOWN)
+
+async def reconcile_finalizing(event,message,state,signal_service,*,show_live=True,actor=None):
     identity=(identity_from_callback(event) if hasattr(event,"message")
               else identity_from_message(event))
+    recovery_claim=None
     async with phase5_coordination.hold(identity):
         if await state.get_state()!=SignalCreate.finalizing.state: return None
         data=await state.get_data()
@@ -67,15 +72,38 @@ async def reconcile_finalizing(event,message,state,signal_service,*,show_live=Tr
              current.get("final_validation_token"),current.get("canonical_symbol"))!=expected
                 or phase5_coordination.live_claim(identity) is not None): return "stale"
         if signal is not None:
-            await state.clear(); outcome="success"
+            recovery_claim=FinalizationClaim(identity,*expected)
+            phase5_coordination.register_claim(recovery_claim)
+            outcome="success"
+        elif actor is not None and actor.kind is not ActorKind.ACTIVE_SIGNALIST:
+            await state.clear(); outcome="denied"
         else:
             preserved={k:v for k,v in current.items()
                        if k not in {"final_validation_token"}}
             await state.set_data(preserved); await state.set_state(SignalCreate.review)
             outcome="review"
-    if outcome=="success": await message.answer(texts.SIGNAL_RECORDED_SUCCESS,reply_markup=signalist_menu())
+    if outcome=="success":
+        try:
+            await message.answer(texts.SIGNAL_RECORDED_SUCCESS,reply_markup=signalist_menu())
+            async with phase5_coordination.hold(identity):
+                if await _owned(state,SignalCreate.finalizing,expected[0],
+                        ("final_validation_token",expected[2]),
+                        {"creation_token":expected[1],"canonical_symbol":expected[3]}):
+                    await state.clear()
+        finally:
+            phase5_coordination.remove_claim(recovery_claim)
+    elif outcome=="denied":
+        await message.answer(_access_text(actor),reply_markup=remove_menu())
     else: await message.answer(texts.signal_review(preserved),reply_markup=signal_review_actions(preserved["flow_token"]))
     return outcome
+
+async def _reject_actor(message,state,actor,event=None):
+    async with phase5_lock(event or message):
+        if await state.get_state()!=SignalCreate.finalizing.state:
+            await state.clear(); cleared=True
+        else: cleared=False
+    if cleared: await message.answer(_access_text(actor),reply_markup=remove_menu())
+    return cleared
 
 async def _owned(state:FSMContext, expected, flow:str, operation:str|None=None, context:dict|None=None):
     if await state.get_state() != expected.state: return None
@@ -104,9 +132,9 @@ async def _cancel(message:Message,state:FSMContext,flow:str|None=None,event=None
 
 @router.message(F.text == texts.MENU_CREATE_SIGNAL)
 async def start_signal(message:Message,actor:Actor,state:FSMContext,signal_service=None):
+    if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     if actor.kind is not ActorKind.ACTIVE_SIGNALIST:
-        await message.answer(texts.INACTIVE if actor.kind is ActorKind.INACTIVE_SIGNALIST else texts.ARCHIVED if actor.kind is ActorKind.ARCHIVED_SIGNALIST else texts.UNKNOWN,reply_markup=remove_menu()); return
-    if await reconcile_finalizing(message,message,state,signal_service) is not None: return
+        await _reject_actor(message,state,actor); return
     async with phase5_lock(message):
         if await state.get_state() == SignalCreate.finalizing.state:
             finalizing=True
@@ -125,11 +153,11 @@ async def start_signal(message:Message,actor:Actor,state:FSMContext,signal_servi
 
 @router.message(SignalCreate.finalizing)
 async def finalizing_input(message:Message,actor:Actor,state:FSMContext,signal_service):
-    await reconcile_finalizing(message,message,state,signal_service)
+    await reconcile_finalizing(message,message,state,signal_service,actor=actor)
 
 @router.message(SignalCreate.shared_search, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def shared_query(message:Message,actor:Actor,state:FSMContext,symbol_catalog):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     query=message.text.strip(); token=_token()
     async with phase5_lock(message):
         data=await state.get_data(); flow=data.get("flow_token")
@@ -154,7 +182,7 @@ async def shared_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
 
 @router.message(SignalCreate.native_search, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def native_query(message:Message,actor:Actor,state:FSMContext,symbol_catalog):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     token=_token(); query=message.text.strip()
     async with phase5_lock(message):
         data=await state.get_data(); flow=data.get("flow_token"); exchange=data.get("selected_exchange")
@@ -179,7 +207,7 @@ async def native_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
 
 @router.message(SignalCreate.entry, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def entry_input(message:Message,actor:Actor,state:FSMContext,signal_service):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: entry=parse_price(message.text)
     except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
     token=_token()
@@ -211,7 +239,7 @@ async def entry_input(message:Message,actor:Actor,state:FSMContext,signal_servic
 
 @router.message(SignalCreate.leverage, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def leverage_input(message:Message,actor:Actor,state:FSMContext):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: leverage=parse_leverage(message.text)
     except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
     async with phase5_lock(message):
@@ -222,7 +250,7 @@ async def leverage_input(message:Message,actor:Actor,state:FSMContext):
 
 @router.message(SignalCreate.take_profits, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def tp_input(message:Message,actor:Actor,state:FSMContext):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: value=parse_price(message.text)
     except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
     async with phase5_lock(message):
@@ -238,7 +266,7 @@ async def tp_input(message:Message,actor:Actor,state:FSMContext):
 
 @router.message(SignalCreate.stop_loss, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def sl_input(message:Message,actor:Actor,state:FSMContext):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _cancel(message,state); return
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: value=parse_price(message.text)
     except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
     async with phase5_lock(message):
@@ -259,7 +287,7 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             or not hasattr(callback.message, "answer")): return
     kind=callback_data.kind
     reconciliation=await reconcile_finalizing(callback,callback.message,state,
-        signal_service,show_live=(kind!="confirm" or actor.kind is not ActorKind.ACTIVE_SIGNALIST))
+        signal_service,show_live=(kind!="confirm" or actor.kind is not ActorKind.ACTIVE_SIGNALIST),actor=actor)
     if reconciliation is not None:
         if not (reconciliation=="review" and actor.kind is not ActorKind.ACTIVE_SIGNALIST): return
     data=await state.get_data(); flow=callback_data.flow
@@ -388,19 +416,20 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             return
         ownership={"creation_token":creation_token,"canonical_symbol":canonical_symbol}
         identity=identity_from_callback(callback)
-        async with phase5_lock(callback):
-            if not await _owned(state,SignalCreate.review,flow,("final_validation_token",token),ownership): return
-            claim=FinalizationClaim(identity,flow,creation_token,token,canonical_symbol)
-            phase5_coordination.register_claim(claim)
-            await state.set_state(SignalCreate.finalizing)
+        claim=None
         try:
+            async with phase5_lock(callback):
+                if not await _owned(state,SignalCreate.review,flow,("final_validation_token",token),ownership): return
+                await state.set_state(SignalCreate.finalizing)
+                claim=FinalizationClaim(identity,flow,creation_token,token,canonical_symbol)
+                phase5_coordination.register_claim(claim)
             try:
                 await signal_service.create_validated(command,result)
             except SignalistCannotCreateSignalError:
                 async with phase5_lock(callback):
                     still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token}))
                     if still_owned: await state.clear()
-                if still_owned: await callback.message.answer(texts.INACTIVE,reply_markup=remove_menu())
+                if still_owned: await callback.message.answer(texts.SIGNALIST_NO_LONGER_ACTIVE,reply_markup=remove_menu())
                 return
             except ApplicationError:
                 async with phase5_lock(callback):
@@ -409,11 +438,14 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
                 if still_owned: await callback.message.answer(texts.TEMPORARY_ERROR)
                 return
             async with phase5_lock(callback):
-                still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token}))
-                if still_owned: await state.clear()
-            if still_owned: await callback.message.answer(texts.SIGNAL_RECORDED_SUCCESS,reply_markup=signalist_menu())
+                still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}))
+            if still_owned:
+                await callback.message.answer(texts.SIGNAL_RECORDED_SUCCESS,reply_markup=signalist_menu())
+                async with phase5_lock(callback):
+                    if await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}):
+                        await state.clear()
         finally:
-            async with phase5_lock(callback):
+            if claim is not None:
                 phase5_coordination.remove_claim(claim)
         return
     if kind=="back":

@@ -47,7 +47,7 @@ Working Directory پروژه resolve می‌شود و پوشهٔ والد هنگ
 
 ## پایهٔ پایدار و اجرای دیتابیس
 
-تنها موجودیت پایدار فعلی `Signalist` است. وضعیت‌های `active`، `inactive` و
+موجودیت‌های `Signalist`، مقصدها، انتساب‌ها، اولویت‌ها و Signalها به‌صورت دائمی در SQLite نگهداری می‌شوند. وضعیت‌های `active`، `inactive` و
 `archived` با Soft Archive نگهداری می‌شوند. SQLite منبع دائمی حقیقت است و فایل
 پیش‌فرض آن `data/chainura.db` روی دیسک محلی و پایدار قرار می‌گیرد؛ این فایل را
 روی NFS، SMB یا Network Filesystem قرار ندهید.
