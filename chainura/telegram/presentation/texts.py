@@ -136,10 +136,24 @@ def signal_tp_list(values):
 
 def signal_review(data):
     from decimal import Decimal
-    from chainura.telegram.presentation.formatting import format_decimal, format_leverage, format_ordered_take_profits, format_symbol
-    mode=SIGNAL_MODE_COMPOSITE if data["mode"]=="composite" else SIGNAL_MODE_SINGLE
+    from chainura.telegram.presentation.formatting import format_decimal, format_leverage, format_symbol
     direction=SIGNAL_DIRECTION_LONG if data["direction"]=="long" else SIGNAL_DIRECTION_SHORT
-    rows=[SIGNAL_REVIEW_TITLE,"", "نماد:",format_symbol(data["canonical_symbol"]),"",f"حالت: {mode}"]
-    if data["mode"]=="single_exchange": rows += ["صرافی:",safe(EXCHANGE_NAMES[data["selected_exchange"]])]
-    rows += ["",f"جهت: {direction}","","ورود:",format_decimal(Decimal(data["entry_price"])),"","اهرم:",format_leverage(data["leverage"]),"","تارگت‌ها:",format_ordered_take_profits(tuple(Decimal(x) for x in data["take_profits"])),"","حد ضرر:",format_decimal(Decimal(data["stop_loss"])),"","قیمت مرجع:",format_decimal(Decimal(data["reference_price"])),"",f"منبع قیمت: {safe(PRICE_SOURCE_LABELS[data['price_source_type']])}"]
+    keycaps=("1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣")
+    targets="\n".join(
+        f"{keycaps[index - 1] if index <= len(keycaps) else f'TP{index}'} {format_decimal(Decimal(value))}"
+        for index,value in enumerate(data["take_profits"],1)
+    )
+    rows=[
+        SIGNAL_REVIEW_TITLE,
+        "",
+        f"🪙 <b>نماد:</b> {format_symbol(data['canonical_symbol'])}",
+        f"{'📈' if data['direction']=='long' else '📉'} <b>جهت:</b> {direction}",
+        f"💵 <b>قیمت ورود:</b> {format_decimal(Decimal(data['entry_price']))}",
+        f"⚡ <b>اهرم:</b> {format_leverage(data['leverage'])}",
+        "",
+        "🎯 <b>تارگت‌ها:</b>",
+        targets,
+        "",
+        f"🛑 <b>حد ضرر:</b> {format_decimal(Decimal(data['stop_loss']))}",
+    ]
     return "\n".join(rows)

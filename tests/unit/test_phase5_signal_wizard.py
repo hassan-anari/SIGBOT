@@ -136,7 +136,7 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
   await signal_routes.sl_input(Message('99'),actor(),state)
   review=state.data.copy(); self.assertEqual(state.state,SignalCreate.review.state)
   rendered=texts.signal_review(review)
-  self.assertNotIn('مقصد',rendered); self.assertIn('مرجع مشترک',rendered)
+  self.assertNotIn('مقصد',rendered); self.assertNotIn('قیمت مرجع',rendered)
   self.assertNotIn('composite',rendered); self.assertNotIn('_only',rendered)
   result=await self.cb(state,'confirm',catalog=catalog,service=service)
   self.assertEqual(len(service.created),1); self.assertIsNone(state.state); self.assertEqual(result.message.answers[-1][0],texts.SIGNAL_RECORDED_SUCCESS)
@@ -214,12 +214,15 @@ class WizardTests(unittest.IsolatedAsyncioTestCase):
    state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state
    service=ErrorService(error); query=await self.cb(state,'confirm',service=service)
    self.assertEqual(query.message.answers[-1][0],copy); self.assertEqual(state.state,SignalCreate.review.state); self.assertEqual(service.created,[])
- async def test_all_price_sources_are_localized_in_review(self):
+ async def test_all_price_sources_are_hidden_from_review(self):
   base=dict(mode='composite',canonical_symbol='BTCUSDT',selected_exchange=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100')
-  for source,label in texts.PRICE_SOURCE_LABELS.items():
+  for source in texts.PRICE_SOURCE_LABELS:
    data={**base,'price_source_type':source}
    if source!='composite': data.update(mode='single_exchange',selected_exchange=source.removesuffix('_only'))
-   rendered=texts.signal_review(data); self.assertIn(label,rendered); self.assertNotIn(source,rendered); self.assertNotIn('_only',rendered)
+   rendered=texts.signal_review(data)
+   self.assertNotIn('حالت:',rendered); self.assertNotIn('صرافی:',rendered)
+   self.assertNotIn('قیمت مرجع:',rendered); self.assertNotIn('منبع قیمت:',rendered)
+   self.assertNotIn(source,rendered); self.assertNotIn('_only',rendered)
  async def test_final_persistence_failure_is_sanitized_and_retryable(self):
   state=await self.start(); state.data.update(mode='composite',canonical_symbol='BTCUSDT',base_asset='BTC',quote_asset='USDT',selected_exchange=None,native_symbol=None,direction='long',entry_price='100',leverage=2,take_profits=['101'],stop_loss='99',reference_price='100',price_source_type='composite'); state.state=SignalCreate.review.state
   query=await self.cb(state,'confirm',service=PersistFailService())
