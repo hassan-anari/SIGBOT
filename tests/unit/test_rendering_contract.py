@@ -22,7 +22,7 @@ class RenderingTests(unittest.TestCase):
  def test_time_strategies(self):
   self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.OURBIT],TimeDisplayStrategy.ELAPSED)
   self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.TOOBIT],TimeDisplayStrategy.TEHRAN_WALL_CLOCK)
-  self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.LBANK],TimeDisplayStrategy.UTC_WALL_CLOCK)
+  self.assertEqual(TIME_DISPLAY_STRATEGIES[Exchange.LBANK],TimeDisplayStrategy.TEHRAN_WALL_CLOCK)
 
 class HardenedRenderingTests(unittest.TestCase):
  def test_exact_exchange_specs_are_public_and_immutable(self):

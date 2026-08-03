@@ -19,7 +19,7 @@ class TimeDisplayStrategy(str, Enum):
 TIME_DISPLAY_STRATEGIES = MappingProxyType({
     Exchange.OURBIT: TimeDisplayStrategy.ELAPSED,
     Exchange.TOOBIT: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
-    Exchange.LBANK: TimeDisplayStrategy.UTC_WALL_CLOCK,
+    Exchange.LBANK: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
 })
 
 @dataclass(frozen=True, slots=True)

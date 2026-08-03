@@ -9,8 +9,23 @@ def format_decimal(value: Decimal) -> str:
     return format(value, "f")
 
 
-def format_entry_price(value: Decimal) -> str: return format_decimal(value)
-def format_display_price(value: Decimal) -> str: return format_decimal(value)
+def format_grouped_decimal(value: Decimal) -> str:
+    rendered = format_decimal(value)
+    sign = ""
+    if rendered.startswith("-"):
+        sign, rendered = "-", rendered[1:]
+    integer, separator, fraction = rendered.partition(".")
+    first_group_length = len(integer) % 3 or 3
+    groups = [integer[:first_group_length]]
+    groups.extend(
+        integer[index:index + 3]
+        for index in range(first_group_length, len(integer), 3)
+    )
+    return f"{sign}{','.join(groups)}{separator}{fraction}"
+
+
+def format_entry_price(value: Decimal) -> str: return format_grouped_decimal(value)
+def format_display_price(value: Decimal) -> str: return format_grouped_decimal(value)
 def format_initial_pnl(value: Decimal) -> str:
     if value != Decimal("0"):
         raise ValueError("initial PnL must be zero")
