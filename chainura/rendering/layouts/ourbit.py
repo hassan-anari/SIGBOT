@@ -39,6 +39,10 @@ LAYOUT = InitialCardLayout(
             HorizontalAlignment.LEFT,
             VerticalAlignment.CENTER,
             fill=PNL_NEUTRAL,
+            fill_by_value=(
+                ("+12.34%", PNL_POSITIVE),
+                ("-12.34%", PNL_NEGATIVE),
+            ),
         ),
 
         # The Entry Price label and $ sign are already part of the PNG.

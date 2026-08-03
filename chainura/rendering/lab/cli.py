@@ -2,7 +2,11 @@ from __future__ import annotations
 import argparse, sys
 from pathlib import Path
 from chainura.domain.destination import Exchange
-from chainura.rendering.lab.fixtures import FIXTURES, fixture
+from chainura.rendering.lab.fixtures import (
+    FIXTURES,
+    fixture,
+    fixture_value_overrides,
+)
 from chainura.rendering.lab.preview import load_exchange_layout, render_preview
 from chainura.rendering.lab.watch import validate_watch_interval, watch
 from chainura.rendering.pillow.errors import RendererLabError
@@ -31,7 +35,15 @@ def parse_font_roles(values):
         result[role]=Path(path)
     return result
 def build_font_provider(args): return RoleFontProvider(args.font,parse_font_roles(args.font_role))
-def _render(exchange, template, output, args, font_provider, *, layout=None):
+def _render(
+    exchange,
+    template,
+    output,
+    args,
+    font_provider,
+    *,
+    layout=None,
+):
     payload = fixture(
         args.fixture,
         exchange,
@@ -45,6 +57,7 @@ def _render(exchange, template, output, args, font_provider, *, layout=None):
         font_provider,
         args.debug,
         layout=layout,
+        value_overrides=fixture_value_overrides(args.fixture),
     )
 
 def main(argv=None):

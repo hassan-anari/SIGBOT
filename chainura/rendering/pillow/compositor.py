@@ -11,6 +11,7 @@ from .errors import RendererAssetError, RendererLayoutError
 from .formatting import *
 from .geometry import contain_size
 from .text import FontProvider, draw_inline_row, draw_text_layer
+from typing import Mapping
 
 def _open_png(path:Path, *, label:str)->Image.Image:
     if not path.is_file(): raise RendererAssetError(f"{label} does not exist: {path}")
@@ -50,10 +51,25 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
 
         values["time_clock"] = clock_value
         values["time_date"] = date_value
+        values["pnl"] = f"+{values['pnl']}"
+
+    if payload.exchange is Exchange.LBANK:
+        values["separator"] = "|"
+        values["lbank_leverage"] = f"{payload.leverage}x"
+        values["lbank_time"] = values["time"].replace("-", "/")
 
     return values
 
-def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_path:Path|str,layout:InitialCardLayout,font_provider:FontProvider,debug:DebugOverlayConfig=DebugOverlayConfig())->RenderedSignalImage:
+def compose_initial(
+    payload: SignalRenderPayload,
+    template_path: Path | str,
+    output_path: Path | str,
+    layout: InitialCardLayout,
+    font_provider: FontProvider,
+    debug: DebugOverlayConfig = DebugOverlayConfig(),
+    *,
+    value_overrides: Mapping[str, str] | None = None,
+) -> RenderedSignalImage:
     if layout.exchange is not payload.exchange:
         raise RendererLayoutError(f"{layout.exchange.value} layout cannot render {payload.exchange.value} payload")
     try: spec=EXCHANGE_IMAGE_SPECS[payload.exchange]
@@ -61,7 +77,24 @@ def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_pa
     template_path,output_path=Path(template_path),Path(output_path)
     image=_open_png(template_path,label="template")
     if image.size != (spec.width,spec.height): raise RendererAssetError(f"template dimensions must be {spec.width}x{spec.height}, got {image.width}x{image.height}")
-    draw=ImageDraw.Draw(image,"RGBA"); values=_values(payload); fitted=[]
+    draw = ImageDraw.Draw(image, "RGBA")
+    values = _values(payload)
+
+    if value_overrides:
+        invalid = {
+            field: value
+            for field, value in value_overrides.items()
+            if field not in values or not isinstance(value, str)
+        }
+
+        if invalid:
+            raise RendererLayoutError(
+                "renderer value overrides contain invalid fields"
+            )
+
+        values.update(value_overrides)
+
+    fitted = []
     for layer in layout.text_layers: fitted.append((layer,draw_text_layer(draw,layer,values[layer.field],font_provider)))
     rows=[]
     for row in layout.inline_rows: rows.append((row, draw_inline_row(draw,row,values,font_provider)))

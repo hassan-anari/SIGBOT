@@ -32,9 +32,12 @@ LAYOUT = InitialCardLayout(
             box=Rectangle(48, 300, 410, 390),
             font=FontSpec("bold", 88, 42),
             horizontal=HorizontalAlignment.LEFT,
-             prefix="+",
             vertical=VerticalAlignment.CENTER,
             fill=PNL_NEUTRAL,
+                fill_by_value=(
+        ("+12.34%", PNL_POSITIVE),
+        ("-12.34%", PNL_NEGATIVE),
+    ),
         ),
 
         # Numeric Entry value only.
