@@ -1,11 +1,76 @@
 from .models import *
 from chainura.domain.destination import Exchange
-LAYOUT=InitialCardLayout(Exchange.OURBIT,(
- TextLayer("symbol",Rectangle(100,160,980,260),FontSpec("bold",72,28),HorizontalAlignment.CENTER),
- TextLayer("direction",Rectangle(100,285,500,365),FontSpec("semibold",48,24)),
- TextLayer("leverage",Rectangle(580,285,980,365),FontSpec("semibold",48,24),HorizontalAlignment.RIGHT),
- TextLayer("entry",Rectangle(100,500,980,590),FontSpec("medium",54,22),HorizontalAlignment.RIGHT,prefix="Entry  "),
- TextLayer("price",Rectangle(100,630,980,720),FontSpec("medium",54,22),HorizontalAlignment.RIGHT,prefix="Fair Price  "),
- TextLayer("pnl",Rectangle(100,760,980,850),FontSpec("semibold",58,26),HorizontalAlignment.RIGHT,prefix="PnL  "),
- TextLayer("time",Rectangle(100,930,980,1010),FontSpec("regular",44,22),HorizontalAlignment.CENTER),
-),ImageLayer("coin_logo",Rectangle(40,40,140,140)))
+
+WHITE = (245, 246, 248, 255)
+GRAY = (137, 139, 149, 255)
+PNL_NEUTRAL = (245, 246, 248, 255)
+PNL_NEGATIVE = (255, 64, 72, 255)
+
+
+LAYOUT = InitialCardLayout(
+    Exchange.OURBIT,
+    (
+        # BTCUSDT
+        TextLayer(
+            "symbol",
+            Rectangle(48, 360, 560, 435),
+            FontSpec("bold", 50, 28),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=WHITE,
+        ),
+
+        # Perp | Short | 25X
+        TextLayer(
+            "meta",
+            Rectangle(48, 450, 500, 490),
+            FontSpec("semibold", 37, 21),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=GRAY,
+        ),
+
+        # Initial PnL is currently always 0.00%.
+        TextLayer(
+            "pnl",
+            Rectangle(48, 535, 520, 640),
+            FontSpec("bold", 90, 40),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=PNL_NEUTRAL,
+        ),
+
+        # The Entry Price label and $ sign are already part of the PNG.
+        # This layer renders only the numeric value.
+        TextLayer(
+            "entry",
+            Rectangle(375, 700, 650, 755),
+            FontSpec("bold", 37, 24),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=WHITE,
+        ),
+
+        # The Fair Price label and $ sign are already part of the PNG.
+        # This layer renders only the numeric value.
+        TextLayer(
+            "price",
+            Rectangle(375, 755, 650, 820),
+            FontSpec("bold", 37, 24),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=WHITE,
+        ),
+
+        # 00H 00M
+        TextLayer(
+            "time",
+            Rectangle(50, 1025, 275, 1080),
+            FontSpec("regular", 37, 20),
+            HorizontalAlignment.LEFT,
+            VerticalAlignment.CENTER,
+            fill=GRAY,
+        ),
+    ),
+    None,
+)
