@@ -14,7 +14,7 @@ from PIL import Image
 
 from chainura.domain.destination import Exchange
 from chainura.rendering.logos import (CoinLogoStore, LogoSyncSummary,
-    ToobitLogoSynchronizer, normalize_symbol, run_logo_sync)
+    ToobitLogoSynchronizer, _read_bounded_body, normalize_symbol, run_logo_sync)
 from chainura.telegram.runtime import Runtime, RuntimeState
 
 
@@ -25,14 +25,32 @@ def image_bytes(format: str) -> bytes:
 
 
 class _Content:
-    def __init__(self, data): self.data = data
-    async def read(self, limit): return self.data[:limit]
+    def __init__(self, data):
+        self.chunks = list(data) if isinstance(data, _Fragmented) else [data]
+        self.offset = 0
+    async def read(self, limit):
+        if not self.chunks: return b""
+        chunk = self.chunks.pop(0)
+        if isinstance(chunk, BaseException): raise chunk
+        if len(chunk) > limit:
+            self.chunks.insert(0, chunk[limit:])
+            chunk = chunk[:limit]
+        self.offset += len(chunk)
+        return chunk
+
+
+class _Fragmented:
+    def __init__(self, *chunks, content_length=None):
+        self.chunks = chunks
+        self.content_length = content_length
+    def __iter__(self): return iter(self.chunks)
 
 
 class _Response:
     def __init__(self, *, document=None, data=b"", url="https://images.test/logo"):
         self.document, self.content, self.url = document, _Content(data), url
-        self.content_length = len(data) if data else None
+        self.content_length = (data.content_length if isinstance(data, _Fragmented)
+                               else len(data) if data else None)
     async def __aenter__(self): return self
     async def __aexit__(self, *args): pass
     def raise_for_status(self): pass
@@ -63,6 +81,85 @@ class LogoSyncTests(unittest.IsolatedAsyncioTestCase):
 
     def factory(self, document, images):
         return lambda **kwargs: _Session(document, images)
+
+    async def test_bounded_reader_consumes_fragmented_body_through_eof(self):
+        content = _Content(_Fragmented(b"first", b"-", b"complete"))
+        self.assertEqual(await _read_bounded_body(content, 100), b"first-complete")
+        self.assertGreaterEqual(content.offset, len(b"first-complete"))
+
+    async def test_valid_fragmented_png_with_short_first_chunk_is_stored(self):
+        data = image_bytes("PNG")
+        fragmented = _Fragmented(data[:1], data[1:7], data[7:], content_length=None)
+        url = "https://images.test/fragmented"
+        sync = ToobitLogoSynchronizer(self.store, session_factory=self.factory(
+            {"data":{"l":[{"sn":"BTCUSDT", "i":url}]}}, {url:fragmented}))
+        summary = await sync.sync_once()
+        self.assertEqual((summary.downloaded, summary.failed), (1, 0))
+        self.assertIsNotNone(self.store.resolve(Exchange.TOOBIT, "BTCUSDT"))
+
+    async def test_fragmented_cumulative_limit_without_content_length_is_enforced(self):
+        content = _Content(_Fragmented(b"123", b"456", content_length=None))
+        with self.assertRaisesRegex(ValueError, "byte limit"):
+            await _read_bounded_body(content, 5)
+
+        bad, good = "https://images.test/fragmented-big", "https://images.test/good"
+        good_data = image_bytes("PNG")
+        maximum = len(good_data)
+        document = {"data":{"l":[{"sn":"BTCUSDT", "i":bad},
+                                     {"sn":"ETHUSDT", "i":good}]}}
+        sync = ToobitLogoSynchronizer(self.store, max_image_bytes=maximum,
+            session_factory=self.factory(document, {
+                bad:_Fragmented(b"a" * (maximum - 1), b"body-secret"),
+                good:good_data,
+            }))
+        summary = await sync.sync_once()
+        self.assertEqual((summary.downloaded, summary.failed), (1, 1))
+        self.assertIsNone(self.store.resolve(Exchange.TOOBIT, "BTCUSDT"))
+        self.assertIsNotNone(self.store.resolve(Exchange.TOOBIT, "ETHUSDT"))
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    async def test_item_failure_logs_are_sanitized_once_per_normalized_symbol(self):
+        redirect = "https://private.example/path?secret=yes"
+        unreadable = "https://images.test/unreadable"
+        document = {"data":{"l":[
+            {"sn":"btcusdt", "i":redirect}, {"sn":"ethusdt", "i":unreadable}]}}
+        sync = ToobitLogoSynchronizer(self.store, session_factory=self.factory(document, {
+            redirect:(b"response-secret", "http://private.example/redirect?token=x"),
+            unreadable:b"private-response-body",
+        }))
+        with self.assertLogs("chainura.rendering.logos", level="WARNING") as logs:
+            summary = await sync.sync_once()
+        self.assertEqual(summary.failed, 2)
+        self.assertEqual(len(logs.output), 2)
+        joined = "\n".join(logs.output)
+        self.assertIn("symbol=BTCUSDT category=ValueError", joined)
+        self.assertIn("symbol=ETHUSDT category=UnidentifiedImageError", joined)
+        for unsafe in (redirect, "private.example", "response-secret",
+                       "private-response-body", "token=x"):
+            self.assertNotIn(unsafe, joined)
+
+    async def test_success_and_skip_do_not_warn_and_cancellation_propagates(self):
+        existing = self.store.path(Exchange.TOOBIT, "BTCUSDT")
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(image_bytes("PNG"))
+        good = "https://images.test/good"
+        document = {"data":{"l":[{"sn":"BTCUSDT", "i":"https://images.test/skip"},
+                                     {"sn":"ETHUSDT", "i":good}]}}
+        sync = ToobitLogoSynchronizer(self.store, session_factory=self.factory(
+            document, {good:image_bytes("PNG")}))
+        with patch("chainura.rendering.logos.LOGGER.warning") as warning:
+            summary = await sync.sync_once()
+        self.assertEqual((summary.skipped_existing, summary.downloaded), (1, 1))
+        warning.assert_not_called()
+
+        cancelled_url = "https://images.test/cancelled"
+        cancelled = ToobitLogoSynchronizer(self.store, session_factory=self.factory(
+            {"data":{"l":[{"sn":"SOLUSDT", "i":cancelled_url}]}},
+            {cancelled_url:_Fragmented(asyncio.CancelledError())}))
+        with patch("chainura.rendering.logos.LOGGER.warning") as warning:
+            with self.assertRaises(asyncio.CancelledError):
+                await cancelled.sync_once()
+        warning.assert_not_called()
 
     async def test_png_webp_jpeg_and_extensionless_are_real_png(self):
         cases = {"BTCUSDT": ("PNG", "a.png"), "ETHUSDT": ("WEBP", "b.webp"),

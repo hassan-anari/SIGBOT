@@ -23,6 +23,21 @@ SYNC_INTERVAL_SECONDS = 6 * 60 * 60
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_PIXELS = 16_000_000
 _SYMBOL = re.compile(r"[A-Z0-9]{1,64}")
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+async def _read_bounded_body(content, maximum: int) -> bytes:
+    """Read through EOF without ever retaining more than the configured limit."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await content.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > maximum:
+            raise ValueError("logo exceeds byte limit")
+        chunks.append(chunk)
 
 
 def normalize_symbol(value: object) -> str | None:
@@ -112,6 +127,8 @@ class ToobitLogoSynchronizer:
 
         counts = {"skipped": 0, "downloaded": 0, "replaced": 0, "failed": 0}
         for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
             counts[result if isinstance(result, str) else "failed"] += 1
         summary = LogoSyncSummary(len(pairs), counts["skipped"], counts["downloaded"],
                                   counts["replaced"], counts["failed"])
@@ -125,9 +142,10 @@ class ToobitLogoSynchronizer:
         destination = self.store.path(Exchange.TOOBIT, symbol)
         assert destination is not None
         async with semaphore:
-            return await self._sync_logo_bounded(session, destination, url)
+            return await self._sync_logo_bounded(session, symbol, destination, url)
 
-    async def _sync_logo_bounded(self, session, destination: Path, url: str) -> str:
+    async def _sync_logo_bounded(self, session, symbol: str,
+                                 destination: Path, url: str) -> str:
         """Perform every disk, network, and decode step under the caller's permit."""
         try:
             existed = await asyncio.to_thread(destination.exists)
@@ -140,18 +158,16 @@ class ToobitLogoSynchronizer:
                 content_length = response.content_length
                 if content_length is not None and content_length > self.max_image_bytes:
                     raise ValueError("logo exceeds byte limit")
-                data = await response.content.read(self.max_image_bytes + 1)
-                if len(data) > self.max_image_bytes:
-                    raise ValueError("logo exceeds byte limit")
+                data = await _read_bounded_body(response.content, self.max_image_bytes)
             await asyncio.to_thread(
                 self._write_png, destination, data, self.max_image_pixels
             )
             return "replaced" if existed else "downloaded"
         except asyncio.CancelledError:
             raise
-        except (Image.DecompressionBombWarning, Image.DecompressionBombError):
-            return "failed"
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("Toobit logo sync item failed symbol=%s category=%s",
+                           symbol, type(exc).__name__)
             return "failed"
 
     @staticmethod
