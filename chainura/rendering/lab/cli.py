@@ -13,6 +13,7 @@ def _common(parser, *, paths=True):
     if paths:
         parser.add_argument("--exchange",required=True,choices=EXCHANGES); parser.add_argument("--template",required=True,type=Path); parser.add_argument("--output",required=True,type=Path)
     parser.add_argument("--fixture",required=True,choices=tuple(FIXTURES)); parser.add_argument("--font",type=Path); parser.add_argument("--font-role",action="append",default=[],metavar="ROLE=PATH"); parser.add_argument("--debug",action="store_true")
+    parser.add_argument("--logo",type=Path,help="optional local PNG coin logo",)
 def parser():
     result=argparse.ArgumentParser(prog="python -m chainura.rendering.lab",description="Developer-only local signal Renderer Lab")
     commands=result.add_subparsers(dest="command",required=True)
@@ -30,8 +31,22 @@ def parse_font_roles(values):
         result[role]=Path(path)
     return result
 def build_font_provider(args): return RoleFontProvider(args.font,parse_font_roles(args.font_role))
-def _render(exchange,template,output,args,font_provider,*,layout=None):
-    payload=fixture(args.fixture,exchange); return render_preview(payload,template,output,font_provider,args.debug,layout=layout)
+def _render(exchange, template, output, args, font_provider, *, layout=None):
+    payload = fixture(
+        args.fixture,
+        exchange,
+        logo=args.logo,
+    )
+
+    return render_preview(
+        payload,
+        template,
+        output,
+        font_provider,
+        args.debug,
+        layout=layout,
+    )
+
 def main(argv=None):
     args=parser().parse_args(argv)
     try:

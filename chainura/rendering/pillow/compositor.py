@@ -45,6 +45,12 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
     if payload.exchange is Exchange.OURBIT:
         values["meta"] = f"Perp  |  {direction}  |  {leverage}"
 
+    if payload.exchange is Exchange.TOOBIT:
+        date_value, clock_value = values["time"].split(" ", 1)
+
+        values["time_clock"] = clock_value
+        values["time_date"] = date_value
+
     return values
 
 def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_path:Path|str,layout:InitialCardLayout,font_provider:FontProvider,debug:DebugOverlayConfig=DebugOverlayConfig())->RenderedSignalImage:

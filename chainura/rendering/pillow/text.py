@@ -53,18 +53,152 @@ class DefaultTestFontProvider:
     """Explicit test injection; never selected by production or CLI code."""
     def get(self,role:str,size:int): return ImageFont.load_default(size=size)
 
-def fit_text(draw:ImageDraw.ImageDraw,text:str,layer:TextLayer,provider:FontProvider):
-    sizes=range(layer.font.preferred_size,layer.font.minimum_size-1,-1) if layer.fitting.shrink_to_fit else (layer.font.preferred_size,)
-    for size in sizes:
-        font=provider.get(layer.font.role,size)
-        box=draw.textbbox((0,0),text,font=font)
-        if box[2]-box[0] <= layer.box.width and box[3]-box[1] <= layer.box.height: return font,size,box
-    raise RendererLayoutError(f"{layer.field} cannot fit its layout box at minimum font size")
+def fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    layer: TextLayer,
+    provider: FontProvider,
+):
+    sizes = (
+        range(
+            layer.font.preferred_size,
+            layer.font.minimum_size - 1,
+            -1,
+        )
+        if layer.fitting.shrink_to_fit
+        else (layer.font.preferred_size,)
+    )
 
-def draw_text_layer(draw:ImageDraw.ImageDraw,layer:TextLayer,value:str,provider:FontProvider):
-    text=f"{layer.prefix}{value}{layer.suffix}"
-    font,size,measured=fit_text(draw,text,layer,provider); width=measured[2]-measured[0]; height=measured[3]-measured[1]
-    x={HorizontalAlignment.LEFT:layer.box.left,HorizontalAlignment.CENTER:layer.box.left+(layer.box.width-width)/2,HorizontalAlignment.RIGHT:layer.box.right-width}[layer.horizontal]
-    y={VerticalAlignment.TOP:layer.box.top,VerticalAlignment.CENTER:layer.box.top+(layer.box.height-height)/2,VerticalAlignment.BOTTOM:layer.box.bottom-height}[layer.vertical]
-    draw.text((round(x)-measured[0],round(y)-measured[1]),text,font=font,fill=layer.fill)
-    return size,(round(x),round(y),round(x+width),round(y+height))
+    padding_x = layer.badge.padding_x if layer.badge else 0
+    padding_y = layer.badge.padding_y if layer.badge else 0
+
+    for size in sizes:
+        font = provider.get(layer.font.role, size)
+        measured = draw.textbbox((0, 0), text, font=font)
+
+        text_width = measured[2] - measured[0]
+        text_height = measured[3] - measured[1]
+
+        required_width = text_width + padding_x * 2
+        required_height = text_height + padding_y * 2
+
+        if (
+            required_width <= layer.box.width
+            and required_height <= layer.box.height
+        ):
+            return font, size, measured
+
+    raise RendererLayoutError(
+        f"{layer.field} cannot fit its layout box "
+        "at minimum font size"
+    )
+
+def draw_text_layer(
+    draw: ImageDraw.ImageDraw,
+    layer: TextLayer,
+    value: str,
+    provider: FontProvider,
+):
+    text = f"{layer.prefix}{value}{layer.suffix}"
+
+    font, size, measured = fit_text(
+        draw,
+        text,
+        layer,
+        provider,
+    )
+
+    text_width = measured[2] - measured[0]
+    text_height = measured[3] - measured[1]
+
+    padding_x = layer.badge.padding_x if layer.badge else 0
+    padding_y = layer.badge.padding_y if layer.badge else 0
+
+    rendered_width = text_width + padding_x * 2
+    rendered_height = text_height + padding_y * 2
+
+    left = {
+        HorizontalAlignment.LEFT:
+            layer.box.left,
+
+        HorizontalAlignment.CENTER:
+            layer.box.left
+            + (layer.box.width - rendered_width) / 2,
+
+        HorizontalAlignment.RIGHT:
+            layer.box.right - rendered_width,
+    }[layer.horizontal]
+
+    top = {
+        VerticalAlignment.TOP:
+            layer.box.top,
+
+        VerticalAlignment.CENTER:
+            layer.box.top
+            + (layer.box.height - rendered_height) / 2,
+
+        VerticalAlignment.BOTTOM:
+            layer.box.bottom - rendered_height,
+    }[layer.vertical]
+
+    left = round(left)
+    top = round(top)
+
+    if layer.badge is not None:
+        badge_fill = _resolved_color(
+            layer.badge.fill,
+            layer.badge.fill_by_value,
+            value,
+        )
+
+        radius = min(
+            layer.badge.radius,
+            rendered_height // 2,
+        )
+
+        draw.rounded_rectangle(
+            (
+                left,
+                top,
+                left + rendered_width,
+                top + rendered_height,
+            ),
+            radius=radius,
+            fill=badge_fill,
+        )
+
+    text_fill = _resolved_color(
+        layer.fill,
+        layer.fill_by_value,
+        value,
+    )
+
+    text_x = left + padding_x - measured[0]
+    text_y = top + padding_y - measured[1]
+
+    draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=text_fill,
+    )
+
+    actual = (
+        left,
+        top,
+        left + rendered_width,
+        top + rendered_height,
+    )
+
+    return size, actual
+
+def _resolved_color(
+    default: tuple[int, int, int, int],
+    rules: tuple[tuple[str, tuple[int, int, int, int]], ...],
+    value: str,
+) -> tuple[int, int, int, int]:
+    for expected, color in rules:
+        if value == expected:
+            return color
+
+    return default

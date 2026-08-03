@@ -28,13 +28,38 @@ class FontSpec:
 class TextFitting:
     shrink_to_fit: bool=True; multiline: bool=False
 
+
+RGBA = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class BadgeStyle:
+    fill: RGBA
+    radius: int = 10
+    padding_x: int = 12
+    padding_y: int = 5
+    fill_by_value: tuple[tuple[str, RGBA], ...] = ()
+
 @dataclass(frozen=True, slots=True)
 class TextLayer:
-    field: str; box: Rectangle; font: FontSpec
-    horizontal: HorizontalAlignment=HorizontalAlignment.LEFT
-    vertical: VerticalAlignment=VerticalAlignment.CENTER
-    prefix: str=""; suffix: str=""; fitting: TextFitting=TextFitting()
-    fill: tuple[int,int,int,int]=(255,255,255,255)
+    field: str
+    box: Rectangle
+    font: FontSpec
+
+    horizontal: HorizontalAlignment = HorizontalAlignment.LEFT
+    vertical: VerticalAlignment = VerticalAlignment.CENTER
+
+    prefix: str = ""
+    suffix: str = ""
+    fitting: TextFitting = TextFitting()
+
+    fill: RGBA = (255, 255, 255, 255)
+
+    # Optional dynamic text colors, e.g. Long/Short
+    fill_by_value: tuple[tuple[str, RGBA], ...] = ()
+
+    # Optional rounded background
+    badge: BadgeStyle | None = None
 
 @dataclass(frozen=True, slots=True)
 class ImageLayer:
