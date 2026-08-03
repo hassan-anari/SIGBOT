@@ -19,9 +19,30 @@ def _open_png(path:Path, *, label:str)->Image.Image:
     if image.format != "PNG": raise RendererAssetError(f"{label} must be PNG: {path}")
     return image.convert("RGBA")
 
-def _values(payload:SignalRenderPayload)->dict[str,str]:
-    time={Exchange.OURBIT:format_elapsed(payload.elapsed_seconds),Exchange.TOOBIT:format_tehran_timestamp(payload.rendered_at),Exchange.LBANK:format_utc_timestamp(payload.rendered_at)}[payload.exchange]
-    return {"symbol":format_symbol(payload.native_symbol),"direction":payload.direction.value.upper(),"leverage":format_leverage(payload.leverage),"entry":format_entry_price(payload.entry_price),"price":format_display_price(payload.display_price),"pnl":format_initial_pnl(payload.initial_pnl_percent),"time":time}
+def _values(payload: SignalRenderPayload) -> dict[str, str]:
+    time = {
+        Exchange.OURBIT: format_elapsed(payload.elapsed_seconds),
+        Exchange.TOOBIT: format_tehran_timestamp(payload.rendered_at),
+        Exchange.LBANK: format_utc_timestamp(payload.rendered_at),
+    }[payload.exchange]
+
+    direction = payload.direction.value.title()
+    leverage = format_leverage(payload.leverage)
+
+    values = {
+        "symbol": format_symbol(payload.native_symbol),
+        "direction": direction,
+        "leverage": leverage,
+        "entry": format_entry_price(payload.entry_price),
+        "price": format_display_price(payload.display_price),
+        "pnl": format_initial_pnl(payload.initial_pnl_percent),
+        "time": time,
+    }
+
+    if payload.exchange is Exchange.OURBIT:
+        values["meta"] = f"Perp  |  {direction}  |  {leverage}"
+
+    return values
 
 def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_path:Path|str,layout:InitialCardLayout,font_provider:FontProvider,debug:DebugOverlayConfig=DebugOverlayConfig())->RenderedSignalImage:
     if layout.exchange is not payload.exchange:
