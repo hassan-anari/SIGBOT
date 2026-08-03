@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -48,10 +49,13 @@ class CoinLogoStore:
     @staticmethod
     def is_valid_png(path: Path) -> bool:
         try:
-            with Image.open(path) as image:
-                image.verify()
-                return image.format == "PNG"
-        except (OSError, UnidentifiedImageError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(path) as image:
+                    image.verify()
+                    return image.format == "PNG"
+        except (OSError, UnidentifiedImageError, Image.DecompressionBombWarning,
+                Image.DecompressionBombError):
             return False
 
 
@@ -67,12 +71,14 @@ class LogoSyncSummary:
 class ToobitLogoSynchronizer:
     def __init__(self, store: CoinLogoStore, *, concurrency: int = 4,
                  max_image_bytes: int = MAX_IMAGE_BYTES,
+                 max_image_pixels: int = MAX_IMAGE_PIXELS,
                  session_factory: Callable[..., aiohttp.ClientSession] = aiohttp.ClientSession):
-        if concurrency <= 0 or max_image_bytes <= 0:
+        if concurrency <= 0 or max_image_bytes <= 0 or max_image_pixels <= 0:
             raise ValueError("logo synchronization limits must be positive")
         self.store = store
         self.concurrency = concurrency
         self.max_image_bytes = max_image_bytes
+        self.max_image_pixels = max_image_pixels
         self.session_factory = session_factory
 
     async def sync_once(self) -> LogoSyncSummary:
@@ -118,36 +124,52 @@ class ToobitLogoSynchronizer:
     async def _sync_logo(self, session, semaphore, symbol: str, url: str) -> str:
         destination = self.store.path(Exchange.TOOBIT, symbol)
         assert destination is not None
-        existed = destination.exists()
-        if existed and await asyncio.to_thread(self.store.is_valid_png, destination):
-            return "skipped"
         async with semaphore:
-            try:
-                async with session.get(url) as response:
-                    response.raise_for_status()
-                    if urlsplit(str(response.url)).scheme != "https":
-                        raise ValueError("logo redirect is not HTTPS")
-                    content_length = response.content_length
-                    if content_length is not None and content_length > self.max_image_bytes:
-                        raise ValueError("logo exceeds byte limit")
-                    data = await response.content.read(self.max_image_bytes + 1)
-                    if len(data) > self.max_image_bytes:
-                        raise ValueError("logo exceeds byte limit")
-                await asyncio.to_thread(self._write_png, destination, data)
-                return "replaced" if existed else "downloaded"
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                return "failed"
+            return await self._sync_logo_bounded(session, destination, url)
+
+    async def _sync_logo_bounded(self, session, destination: Path, url: str) -> str:
+        """Perform every disk, network, and decode step under the caller's permit."""
+        try:
+            existed = await asyncio.to_thread(destination.exists)
+            if existed and await asyncio.to_thread(self.store.is_valid_png, destination):
+                return "skipped"
+            async with session.get(url) as response:
+                response.raise_for_status()
+                if urlsplit(str(response.url)).scheme != "https":
+                    raise ValueError("logo redirect is not HTTPS")
+                content_length = response.content_length
+                if content_length is not None and content_length > self.max_image_bytes:
+                    raise ValueError("logo exceeds byte limit")
+                data = await response.content.read(self.max_image_bytes + 1)
+                if len(data) > self.max_image_bytes:
+                    raise ValueError("logo exceeds byte limit")
+            await asyncio.to_thread(
+                self._write_png, destination, data, self.max_image_pixels
+            )
+            return "replaced" if existed else "downloaded"
+        except asyncio.CancelledError:
+            raise
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+            return "failed"
+        except Exception:
+            return "failed"
 
     @staticmethod
-    def _write_png(destination: Path, data: bytes) -> None:
+    def _write_png(destination: Path, data: bytes, max_image_pixels: int) -> None:
         temporary: Path | None = None
         try:
-            with Image.open(io.BytesIO(data)) as source:
-                source.load()
-                if source.width * source.height > MAX_IMAGE_PIXELS:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                source = Image.open(io.BytesIO(data))
+            with source:
+                width, height = source.size
+                if (isinstance(width, bool) or not isinstance(width, int) or width <= 0
+                        or isinstance(height, bool) or not isinstance(height, int)
+                        or height <= 0):
+                    raise ValueError("logo dimensions are invalid")
+                if width * height > max_image_pixels:
                     raise ValueError("logo exceeds pixel limit")
+                source.load()
                 converted = source.convert("RGBA")
             destination.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(prefix=f".{destination.name}.", suffix=".tmp",

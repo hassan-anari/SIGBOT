@@ -3,8 +3,12 @@ from __future__ import annotations
 import asyncio
 import io
 import tempfile
+import threading
+import time
 import unittest
+import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -43,6 +47,9 @@ class _Session:
         if "futures?" in url: return _Response(document=self.document)
         value = self.images[url]
         if isinstance(value, Exception): raise value
+        if isinstance(value, tuple):
+            data, final_url = value
+            return _Response(data=data, url=final_url)
         return _Response(data=value, url=url)
 
 
@@ -103,6 +110,107 @@ class LogoSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await oversized.sync_once()).failed, 1)
         self.assertIsNone(self.store.resolve(Exchange.TOOBIT, "BTCUSDT"))
         self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    async def test_pixel_limit_is_checked_before_load_and_leaves_no_output(self):
+        destination = self.store.path(Exchange.TOOBIT, "BTCUSDT")
+        fake = unittest.mock.MagicMock()
+        fake.size = (11, 10)
+        fake.__enter__.return_value = fake
+        with patch("chainura.rendering.logos.Image.open", return_value=fake):
+            with self.assertRaisesRegex(ValueError, "pixel limit"):
+                ToobitLogoSynchronizer._write_png(destination, b"header", 100)
+        fake.load.assert_not_called()
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    async def test_decompression_warning_and_error_are_controlled(self):
+        item = {"sn":"BTCUSDT", "i":"https://images.test/a"}
+        for exception in (Image.DecompressionBombWarning,
+                          Image.DecompressionBombError):
+            with self.subTest(exception=exception.__name__):
+                sync = ToobitLogoSynchronizer(self.store, session_factory=self.factory(
+                    {"data":{"l":[item]}}, {item["i"]:image_bytes("PNG")}))
+                def rejected(*args, **kwargs):
+                    if exception is Image.DecompressionBombWarning:
+                        warnings.warn("bomb", exception)
+                    raise exception("bomb")
+                with patch("chainura.rendering.logos.Image.open", side_effect=rejected):
+                    summary = await sync.sync_once()
+                self.assertEqual(summary.failed, 1)
+                self.assertEqual(list(self.root.rglob("*.png")), [])
+                self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    async def test_http_redirect_is_rejected_and_other_valid_logo_continues(self):
+        bad, good = "https://images.test/bad", "https://images.test/good"
+        document = {"data":{"l":[{"sn":"BTCUSDT","i":bad},
+                                     {"sn":"ETHUSDT","i":good}]}}
+        sync = ToobitLogoSynchronizer(self.store, session_factory=self.factory(document, {
+            bad:(image_bytes("PNG"), "http://redirect.test/bad"),
+            good:image_bytes("PNG"),
+        }))
+        summary = await sync.sync_once()
+        self.assertEqual((summary.downloaded, summary.failed), (1, 1))
+        self.assertIsNone(self.store.resolve(Exchange.TOOBIT, "BTCUSDT"))
+        self.assertIsNotNone(self.store.resolve(Exchange.TOOBIT, "ETHUSDT"))
+
+    async def test_rejected_oversized_image_does_not_replace_previous_file(self):
+        destination = self.store.path(Exchange.TOOBIT, "BTCUSDT")
+        destination.parent.mkdir(parents=True)
+        original = image_bytes("PNG")
+        destination.write_bytes(original)
+        fake = unittest.mock.MagicMock()
+        fake.size = (20, 20); fake.__enter__.return_value = fake
+        with patch("chainura.rendering.logos.Image.open", return_value=fake):
+            with self.assertRaises(ValueError):
+                ToobitLogoSynchronizer._write_png(destination, b"replacement", 100)
+        self.assertEqual(destination.read_bytes(), original)
+        fake.load.assert_not_called()
+
+    async def test_rejected_oversized_image_does_not_stop_valid_image(self):
+        bad, good = "https://images.test/oversized", "https://images.test/good"
+        document = {"data":{"l":[{"sn":"BTCUSDT","i":bad},
+                                     {"sn":"ETHUSDT","i":good}]}}
+        sync = ToobitLogoSynchronizer(self.store, max_image_pixels=100,
+            session_factory=self.factory(document, {
+                bad:b"oversized-header", good:image_bytes("PNG")}))
+        real_open = Image.open
+        oversized = unittest.mock.MagicMock()
+        oversized.size = (11, 10); oversized.__enter__.return_value = oversized
+        def open_image(stream):
+            if stream.getvalue() == b"oversized-header": return oversized
+            return real_open(stream)
+        with patch("chainura.rendering.logos.Image.open", side_effect=open_image):
+            summary = await sync.sync_once()
+        self.assertEqual((summary.downloaded, summary.failed), (1, 1))
+        oversized.load.assert_not_called()
+        self.assertIsNone(self.store.resolve(Exchange.TOOBIT, "BTCUSDT"))
+        self.assertIsNotNone(self.store.resolve(Exchange.TOOBIT, "ETHUSDT"))
+
+    async def test_complete_symbol_operations_and_existing_validation_are_bounded(self):
+        concurrency = 2
+        items = [{"sn":f"COIN{index}USDT", "i":f"https://images.test/{index}"}
+                 for index in range(6)]
+        for item in items:
+            path = self.store.path(Exchange.TOOBIT, item["sn"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(image_bytes("PNG"))
+        active = maximum = 0
+        lock = threading.Lock()
+        original = self.store.is_valid_png
+        def measured(path):
+            nonlocal active, maximum
+            with lock:
+                active += 1; maximum = max(maximum, active)
+            time.sleep(.02)
+            try: return original(path)
+            finally:
+                with lock: active -= 1
+        sync = ToobitLogoSynchronizer(self.store, concurrency=concurrency,
+            session_factory=self.factory({"data":{"l":items}}, {}))
+        with patch.object(self.store, "is_valid_png", side_effect=measured):
+            summary = await sync.sync_once()
+        self.assertEqual(summary.skipped_existing, len(items))
+        self.assertEqual(maximum, concurrency)
 
     async def test_recurring_runs_immediately_waits_and_stops(self):
         class Sync:
