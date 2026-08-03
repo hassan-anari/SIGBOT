@@ -62,6 +62,36 @@ class TextLayer:
     badge: BadgeStyle | None = None
 
 @dataclass(frozen=True, slots=True)
+class InlineTextItem:
+    field: str
+    font: FontSpec
+    flexible: bool = False
+    prefix: str = ""
+    suffix: str = ""
+    fill: RGBA = (255, 255, 255, 255)
+    fill_by_value: tuple[tuple[str, RGBA], ...] = ()
+    badge: BadgeStyle | None = None
+
+@dataclass(frozen=True, slots=True)
+class InlineRowLayer:
+    field: str
+    box: Rectangle
+    items: tuple[InlineTextItem, ...]
+    gap: int
+    vertical: VerticalAlignment = VerticalAlignment.CENTER
+
+    def __post_init__(self) -> None:
+        if not self.field or self.box.width <= 0 or self.box.height <= 0:
+            raise ValueError("inline row identity and box must be valid")
+        if not isinstance(self.items, tuple) or not self.items:
+            raise ValueError("inline row must contain items")
+        if self.gap < 0 or not any(item.flexible for item in self.items):
+            raise ValueError("inline row needs a non-negative gap and flexible item")
+        for item in self.items:
+            if item.font.minimum_size <= 0 or item.font.preferred_size < item.font.minimum_size:
+                raise ValueError(f"{item.field} font sizes are invalid")
+
+@dataclass(frozen=True, slots=True)
 class ImageLayer:
     field: str; box: Rectangle
 
@@ -71,7 +101,10 @@ class DebugOverlayConfig:
 
 @dataclass(frozen=True, slots=True)
 class InitialCardLayout:
-    exchange: Exchange; text_layers: tuple[TextLayer,...]; logo_layer: ImageLayer|None=None
+    exchange: Exchange
+    text_layers: tuple[TextLayer,...]
+    logo_layer: ImageLayer|None=None
+    inline_rows: tuple[InlineRowLayer, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.exchange, Exchange):
@@ -80,6 +113,10 @@ class InitialCardLayout:
             raise ValueError("layout must contain text layers")
         if any(not isinstance(layer, TextLayer) for layer in self.text_layers):
             raise ValueError("layout text layers are invalid")
+        if not isinstance(self.inline_rows, tuple) or any(
+            not isinstance(row, InlineRowLayer) for row in self.inline_rows
+        ):
+            raise ValueError("layout inline rows are invalid")
         for layer in self.text_layers:
             if layer.box.width <= 0 or layer.box.height <= 0:
                 raise ValueError(f"{layer.field} layout box must have positive dimensions")
