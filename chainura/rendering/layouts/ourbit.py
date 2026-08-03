@@ -3,8 +3,9 @@ from chainura.domain.destination import Exchange
 
 WHITE = (245, 246, 248, 255)
 GRAY = (137, 139, 149, 255)
+PNL_POSITIVE = (10, 176, 86, 255)
+PNL_NEGATIVE = (239, 63, 63, 255)
 PNL_NEUTRAL = (245, 246, 248, 255)
-PNL_NEGATIVE = (255, 64, 72, 255)
 
 
 LAYOUT = InitialCardLayout(

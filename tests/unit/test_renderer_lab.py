@@ -20,7 +20,8 @@ from chainura.rendering.lab.preview import (RENDERERS, render_lbank_initial,
     render_ourbit_initial, render_preview, render_toobit_initial)
 from chainura.rendering.lab.watch import validate_watch_interval, watch
 from chainura.rendering.layouts.models import FontSpec, InitialCardLayout, Rectangle, TextLayer
-from chainura.rendering.layouts.ourbit import LAYOUT
+from chainura.rendering.layouts.ourbit import (LAYOUT, PNL_NEGATIVE, PNL_NEUTRAL,
+    PNL_POSITIVE)
 from chainura.rendering.models import (EXCHANGE_IMAGE_SPECS, TIME_DISPLAY_STRATEGIES,
     TimeDisplayStrategy)
 from chainura.rendering.pillow.compositor import _values, compose_initial
@@ -107,6 +108,13 @@ class RendererLabTests(unittest.TestCase):
         ourbit={"symbol":"bold","meta":"semibold","pnl":"bold","entry":"bold","price":"bold","time":"regular"}
         self.assertEqual({layer.field:layer.font.role for layer in LAYOUT.text_layers},ourbit)
         for layout in (toobit,lbank): self.assertEqual({layer.field:layer.font.role for layer in layout.text_layers},standard)
+
+    def test_ourbit_approved_pnl_palette_and_initial_neutral_fill(self):
+        self.assertEqual(PNL_POSITIVE, (10, 176, 86, 255))
+        self.assertEqual(PNL_NEGATIVE, (239, 63, 63, 255))
+        self.assertEqual(PNL_NEUTRAL, (245, 246, 248, 255))
+        pnl_layer = next(layer for layer in LAYOUT.text_layers if layer.field == "pnl")
+        self.assertEqual(pnl_layer.fill, PNL_NEUTRAL)
 
     def test_decimal_and_approved_initial_formats(self):
         self.assertEqual(format_decimal(Decimal("0.0000000012300")),"0.0000000012300")
