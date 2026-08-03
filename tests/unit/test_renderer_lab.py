@@ -8,11 +8,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from argparse import Namespace
 from PIL import Image
 
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import TradeDirection
 from chainura.rendering.lab.fixtures import FIXTURES, fixture
+from chainura.rendering.lab.cli import build_font_provider, parse_font_roles
 from chainura.rendering.lab.preview import (RENDERERS, render_lbank_initial,
     render_ourbit_initial, render_preview, render_toobit_initial)
 from chainura.rendering.lab.watch import validate_watch_interval, watch
@@ -20,10 +22,10 @@ from chainura.rendering.layouts.models import FontSpec, InitialCardLayout, Recta
 from chainura.rendering.layouts.ourbit import LAYOUT
 from chainura.rendering.models import EXCHANGE_IMAGE_SPECS
 from chainura.rendering.pillow.compositor import compose_initial
-from chainura.rendering.pillow.errors import RendererAssetError, RendererLayoutError
+from chainura.rendering.pillow.errors import RendererAssetError, RendererLabError, RendererLayoutError
 from chainura.rendering.pillow.formatting import (format_decimal, format_elapsed,
     format_initial_pnl, format_tehran_timestamp, format_utc_timestamp)
-from chainura.rendering.pillow.text import DefaultTestFontProvider, PathFontProvider
+from chainura.rendering.pillow.text import DefaultTestFontProvider, PathFontProvider, RoleFontProvider
 
 class RendererLabTests(unittest.TestCase):
     def setUp(self):
@@ -59,6 +61,47 @@ class RendererLabTests(unittest.TestCase):
 
     def test_missing_font(self):
         with self.assertRaises(RendererAssetError): PathFontProvider(self.root/"missing.ttf")
+
+    def test_role_font_fallback_override_and_cache(self):
+        fallback=self.root/"fallback.ttf"; fallback.touch()
+        medium=self.root/"medium.otf"; medium.touch()
+        shared=self.root/"shared.ttf"; shared.touch()
+        created=[]
+        def load(path,size):
+            value=object(); created.append((Path(path),size,value)); return value
+        with patch("chainura.rendering.pillow.text.ImageFont.truetype",side_effect=load):
+            provider=RoleFontProvider(fallback,{"medium":medium,"semibold":shared,"bold":shared})
+            regular=provider.get("regular",24); medium_font=provider.get("medium",24)
+            semibold=provider.get("semibold",24); bold=provider.get("bold",24)
+            self.assertIs(regular,provider.get("regular",24))
+            self.assertIs(semibold,bold)
+        self.assertEqual(created.count((fallback.resolve(),24,regular)),1)
+        self.assertEqual(created.count((medium.resolve(),24,medium_font)),1)
+        self.assertEqual(sum(path==shared.resolve() and size==24 for path,size,_ in created),1)
+        self.assertEqual(provider.role_paths["medium"],medium.resolve())
+
+    def test_all_roles_resolve_to_explicit_paths_and_missing_role_is_controlled(self):
+        paths={role:self.root/f"{role}.ttf" for role in ("regular","medium","semibold","bold")}
+        for path in paths.values(): path.touch()
+        with patch("chainura.rendering.pillow.text.ImageFont.truetype",side_effect=lambda path,size:(Path(path),size)):
+            provider=RoleFontProvider(role_paths=paths)
+            self.assertEqual({role:provider.get(role,20)[0] for role in paths},{role:path.resolve() for role,path in paths.items()})
+            with self.assertRaises(RendererAssetError): provider.get("unknown",20)
+
+    def test_font_role_cli_validation_and_assets(self):
+        self.assertEqual(parse_font_roles(["bold=/tmp/bold.ttf"]),{"bold":Path("/tmp/bold.ttf")})
+        for values in (["broken"],["=/tmp/font.ttf"],["bold="],["bold=a","bold=b"]):
+            with self.subTest(values=values),self.assertRaises(RendererLabError): parse_font_roles(values)
+        with self.assertRaises(RendererAssetError): build_font_provider(Namespace(font=None,font_role=[]))
+        with self.assertRaises(RendererAssetError): RoleFontProvider(role_paths={"bold":self.root/"missing.ttf"})
+        invalid=self.root/"invalid.ttf"; invalid.write_text("not a font")
+        with self.assertRaises(RendererAssetError): RoleFontProvider(fallback_path=invalid)
+
+    def test_layouts_request_calibration_roles(self):
+        from chainura.rendering.layouts.lbank import LAYOUT as lbank
+        from chainura.rendering.layouts.toobit import LAYOUT as toobit
+        expected={"symbol":"bold","direction":"semibold","leverage":"semibold","entry":"medium","price":"medium","pnl":"semibold","time":"regular"}
+        for layout in (LAYOUT,toobit,lbank): self.assertEqual({layer.field:layer.font.role for layer in layout.text_layers},expected)
 
     def test_decimal_and_approved_initial_formats(self):
         self.assertEqual(format_decimal(Decimal("0.0000000012300")),"0.0000000012300")

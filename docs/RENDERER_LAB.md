@@ -14,6 +14,14 @@ pass its exact path with `--font`. Outputs belong in `.renderer_lab/output/`.
 The entire directory is ignored because templates, fonts, logos, and generated
 previews are local assets and must never enter source control.
 
+`--font PATH` is the simple, backward-compatible mode: that file is the fallback
+for every layout role. For multi-weight calibration, repeat
+`--font-role ROLE=PATH`; an explicit role overrides the fallback. At least one
+fallback or role mapping is required. The recommended starting roles are bold
+for Symbol, semibold for Direction, Leverage, and PnL, medium for Entry and
+display price, and regular for time/date/elapsed. These remain independently
+tunable in each exchange layout.
+
 ## Commands
 
 ```sh
@@ -21,6 +29,25 @@ python -m chainura.rendering.lab preview --exchange ourbit --template .renderer_
 python -m chainura.rendering.lab preview-all --fixture composite-short --font .renderer_lab/fonts/local.ttf
 python -m chainura.rendering.lab watch --exchange toobit --template .renderer_lab/templates/toobit.png --output .renderer_lab/output/toobit.png --fixture long-symbol --font .renderer_lab/fonts/local.ttf --debug
 ```
+
+For example, locally available SF Pro Display files can be assigned without
+hard-coding that family into the renderer:
+
+```sh
+python -m chainura.rendering.lab preview \
+  --exchange ourbit \
+  --template .renderer_lab/templates/ourbit.png \
+  --output .renderer_lab/output/ourbit.png \
+  --fixture composite-long \
+  --font .renderer_lab/fonts/SF-Pro-Display-Regular.otf \
+  --font-role medium=.renderer_lab/fonts/SF-Pro-Display-Medium.otf \
+  --font-role semibold=.renderer_lab/fonts/SF-Pro-Display-Semibold.otf \
+  --font-role bold=.renderer_lab/fonts/SF-Pro-Display-Bold.otf
+```
+
+All font files stay under `.renderer_lab/fonts/` and must never be committed.
+Directories containing multiple fonts are intentionally ambiguous; use explicit
+role mappings rather than passing such a directory to `--font`.
 
 `--debug` adds obvious layer boxes, measured text boxes, layer names, and fitted
 font sizes. Fixed fixture names are `composite-long`, `composite-short`,
