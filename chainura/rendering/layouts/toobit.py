@@ -23,61 +23,6 @@ PNL_NEUTRAL = (245, 246, 248, 255)
 LAYOUT = InitialCardLayout(
     Exchange.TOOBIT,
     (
-        # BTCUSDT
-        TextLayer(
-            field="symbol",
-            box=Rectangle(120, 210, 338, 272),
-            font=FontSpec("bold", 50, 25),
-            horizontal=HorizontalAlignment.LEFT,
-            vertical=VerticalAlignment.CENTER,
-            fill=WHITE,
-        ),
-
-        # Long / Short
-        #
-        # The current TextLayer color is static.
-        # This green is the Long calibration color.
-        TextLayer(
-            field="direction",
-            box=Rectangle(330, 211, 450, 272),
-            font=FontSpec("medium", 31, 20),
-            horizontal=HorizontalAlignment.CENTER,
-            vertical=VerticalAlignment.CENTER,
-
-            fill=LONG_TEXT,
-            fill_by_value=(
-                ("Short", SHORT_TEXT),
-            ),
-
-            badge=BadgeStyle(
-                fill=LONG_BACKGROUND,
-                radius=9,
-                padding_x=12,
-                padding_y=7,
-                fill_by_value=(
-                    ("Short", SHORT_BACKGROUND),
-                ),
-            ),
-        ),
-
-        # 20X
-        TextLayer(
-            field="leverage",
-            box=Rectangle(445, 210, 555, 272),
-            font=FontSpec("medium", 29, 20),
-            horizontal=HorizontalAlignment.LEFT,
-            vertical=VerticalAlignment.CENTER,
-
-            fill=LEVERAGE_TEXT,
-
-            badge=BadgeStyle(
-                fill=LEVERAGE_BACKGROUND,
-                radius=9,
-                padding_x=11,
-                padding_y=9,
-            ),
-        ),
-
         # Initial PnL: 0.00%
         #
         # For visual negative-PnL calibration, temporarily change fill
@@ -140,5 +85,22 @@ LAYOUT = InitialCardLayout(
     ImageLayer(
         "coin_logo",
         Rectangle(48, 205, 106, 276),
-    )
+    ),
+    (InlineRowLayer(
+        field="toobit_header",
+        box=Rectangle(120, 210, 750, 272),
+        gap=8,
+        vertical=VerticalAlignment.CENTER,
+        items=(
+            InlineTextItem("symbol", FontSpec("bold", 50, 25), flexible=True,
+                           fill=WHITE),
+            InlineTextItem("direction", FontSpec("medium", 31, 20),
+                fill=LONG_TEXT, fill_by_value=(("Short", SHORT_TEXT),),
+                badge=BadgeStyle(fill=LONG_BACKGROUND, radius=9, padding_x=12,
+                    padding_y=7, fill_by_value=(("Short", SHORT_BACKGROUND),))),
+            InlineTextItem("leverage", FontSpec("medium", 29, 20),
+                fill=LEVERAGE_TEXT, badge=BadgeStyle(fill=LEVERAGE_BACKGROUND,
+                    radius=9, padding_x=11, padding_y=9)),
+        ),
+    ),)
 )

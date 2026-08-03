@@ -10,7 +10,7 @@ from chainura.rendering.layouts.models import DebugOverlayConfig, InitialCardLay
 from .errors import RendererAssetError, RendererLayoutError
 from .formatting import *
 from .geometry import contain_size
-from .text import FontProvider, draw_text_layer
+from .text import FontProvider, draw_inline_row, draw_text_layer
 
 def _open_png(path:Path, *, label:str)->Image.Image:
     if not path.is_file(): raise RendererAssetError(f"{label} does not exist: {path}")
@@ -63,6 +63,8 @@ def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_pa
     if image.size != (spec.width,spec.height): raise RendererAssetError(f"template dimensions must be {spec.width}x{spec.height}, got {image.width}x{image.height}")
     draw=ImageDraw.Draw(image,"RGBA"); values=_values(payload); fitted=[]
     for layer in layout.text_layers: fitted.append((layer,draw_text_layer(draw,layer,values[layer.field],font_provider)))
+    rows=[]
+    for row in layout.inline_rows: rows.append((row, draw_inline_row(draw,row,values,font_provider)))
     if payload.coin_logo_path is not None:
         logo=_open_png(payload.coin_logo_path,label="coin logo"); box=layout.logo_layer
         if box:
@@ -72,6 +74,13 @@ def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_pa
         for layer,(size,actual) in fitted:
             draw.rectangle(layer.box.as_tuple(),outline=debug.color,width=3); draw.rectangle(actual,outline=(0,255,255,220),width=2)
             draw.text((layer.box.left,layer.box.top),f"{layer.field} {size}px",fill=debug.color)
+        for row, children in rows:
+            draw.rectangle(row.box.as_tuple(), outline=debug.color, width=3)
+            draw.text((row.box.left, row.box.top), row.field, fill=debug.color)
+            for item, size, actual in children:
+                draw.rectangle(actual, outline=(0,255,255,220), width=2)
+                draw.text((actual[0], actual[1]), f"{item.field} {size}px",
+                          fill=debug.color)
         if layout.logo_layer: draw.rectangle(layout.logo_layer.box.as_tuple(),outline=debug.color,width=3)
     try: output_path.parent.mkdir(parents=True,exist_ok=True)
     except OSError as exc: raise RendererAssetError(f"cannot create output directory: {output_path.parent}") from exc

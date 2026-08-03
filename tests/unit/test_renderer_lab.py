@@ -107,7 +107,12 @@ class RendererLabTests(unittest.TestCase):
         standard={"symbol":"bold","direction":"semibold","leverage":"semibold","entry":"medium","price":"medium","pnl":"semibold","time":"regular"}
         ourbit={"symbol":"bold","meta":"semibold","pnl":"bold","entry":"bold","price":"bold","time":"regular"}
         self.assertEqual({layer.field:layer.font.role for layer in LAYOUT.text_layers},ourbit)
-        for layout in (toobit,lbank): self.assertEqual({layer.field:layer.font.role for layer in layout.text_layers},standard)
+        self.assertEqual({layer.field:layer.font.role for layer in lbank.text_layers},standard)
+        toobit_roles={layer.field:layer.font.role for layer in toobit.text_layers}
+        toobit_roles.update({item.field:item.font.role for row in toobit.inline_rows for item in row.items})
+        self.assertEqual(toobit_roles, {"symbol":"bold","direction":"medium",
+            "leverage":"medium","entry":"medium","price":"medium","pnl":"bold",
+            "time_clock":"regular","time_date":"regular"})
 
     def test_ourbit_approved_pnl_palette_and_initial_neutral_fill(self):
         self.assertEqual(PNL_POSITIVE, (10, 176, 86, 255))

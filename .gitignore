@@ -17,3 +17,4 @@ data/*-shm
 data/*.backup
 integration_tests/*.db
 .renderer_lab/
+var/coin_logos/

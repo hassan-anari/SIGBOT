@@ -512,6 +512,19 @@ The system requires the following background tasks:
 - Send a connectivity-recovery message
 - Prevent separate alerts for every active signal
 
+## 16.7. Toobit Coin-Logo Synchronization
+
+- After the active runtime acquires the Telegram poller lease, it starts a
+  non-blocking Toobit coin-logo synchronization immediately and repeats it every
+  six hours until shutdown.
+- Synchronization downloads only missing logos or replaces invalid files, decodes
+  supported source images, and persists them as PNG files under
+  `var/coin_logos/toobit/<NATIVE_SYMBOL>.png` on local disk.
+- Rendering performs deterministic local lookup only. Renderers never access the
+  Toobit API, download images, convert formats, or mutate the logo directory.
+- Metadata or individual-image API failures are logged and remain non-fatal to
+  Telegram polling; a later scheduled iteration retries unavailable logos.
+
 ---
 
 # 17. API Outages and Service Monitoring

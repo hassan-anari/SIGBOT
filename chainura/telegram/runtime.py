@@ -40,6 +40,7 @@ from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
+from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_logo_sync
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -95,6 +96,8 @@ class Runtime:
         self.renewal_task: asyncio.Task[None] | None = None
         self.renewal_stop = asyncio.Event()
         self.lease_lost = asyncio.Event()
+        self.logo_sync_task: asyncio.Task[None] | None = None
+        self.logo_sync_stop = asyncio.Event()
         self._cleanup_lock = asyncio.Lock()
         self._cleanup_complete = asyncio.Event()
         self._lease_released = False
@@ -220,6 +223,8 @@ class Runtime:
             self._checkpoint()
 
             self.state = RuntimeState.RUNNING
+            self.logo_sync_task = asyncio.create_task(run_logo_sync(
+                ToobitLogoSynchronizer(CoinLogoStore()), self.logo_sync_stop))
             self.polling_task = asyncio.create_task(self.dispatcher.start_polling(
                 self.bot, handle_signals=False, close_bot_session=False,
                 handle_as_tasks=False, allowed_updates=["message", "callback_query"]))
@@ -291,6 +296,10 @@ class Runtime:
                 return
             self.state = RuntimeState.STOPPING
             self.shutdown_requested.set()
+
+            self.logo_sync_stop.set()
+            if self.logo_sync_task:
+                await self._best_effort(self.logo_sync_task, "Toobit logo sync task")
 
             if self.dispatcher and self.polling_task and not self.polling_task.done():
                 stopped = await self._best_effort(
