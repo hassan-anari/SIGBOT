@@ -25,6 +25,9 @@ python -m chainura.rendering.lab watch --exchange toobit --template .renderer_la
 `--debug` adds obvious layer boxes, measured text boxes, layer names, and fitted
 font sizes. Fixed fixture names are `composite-long`, `composite-short`,
 `single-long`, `single-short`, `long-symbol`, `small-price`, and `high-leverage`.
+Watch mode reloads only the selected exchange's layout module when that Python
+file changes. Temporary syntax or layout errors are reported once per change;
+the process stays alive and renders again after the next saved correction.
 
 ## Calibration workflow
 

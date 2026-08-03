@@ -6,7 +6,7 @@ from chainura.domain.destination import Exchange
 from chainura.domain.signal import TradeDirection
 from chainura.rendering.models import EXCHANGE_IMAGE_SPECS, RenderedSignalImage, SignalRenderPayload
 from chainura.rendering.layouts.models import DebugOverlayConfig, InitialCardLayout
-from .errors import RendererAssetError
+from .errors import RendererAssetError, RendererLayoutError
 from .formatting import *
 from .geometry import contain_size
 from .text import FontProvider, draw_text_layer
@@ -24,7 +24,11 @@ def _values(payload:SignalRenderPayload)->dict[str,str]:
     return {"symbol":format_symbol(payload.native_symbol),"direction":payload.direction.value.upper(),"leverage":format_leverage(payload.leverage),"entry":format_entry_price(payload.entry_price),"price":format_display_price(payload.display_price),"pnl":format_initial_pnl(payload.initial_pnl_percent),"time":time}
 
 def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_path:Path|str,layout:InitialCardLayout,font_provider:FontProvider,debug:DebugOverlayConfig=DebugOverlayConfig())->RenderedSignalImage:
-    template_path,output_path=Path(template_path),Path(output_path); spec=EXCHANGE_IMAGE_SPECS[payload.exchange]
+    if layout.exchange is not payload.exchange:
+        raise RendererLayoutError(f"{layout.exchange.value} layout cannot render {payload.exchange.value} payload")
+    try: spec=EXCHANGE_IMAGE_SPECS[payload.exchange]
+    except KeyError as exc: raise RendererLayoutError(f"no approved image specification for {payload.exchange!r}") from exc
+    template_path,output_path=Path(template_path),Path(output_path)
     image=_open_png(template_path,label="template")
     if image.size != (spec.width,spec.height): raise RendererAssetError(f"template dimensions must be {spec.width}x{spec.height}, got {image.width}x{image.height}")
     draw=ImageDraw.Draw(image,"RGBA"); values=_values(payload); fitted=[]
@@ -39,7 +43,9 @@ def compose_initial(payload:SignalRenderPayload,template_path:Path|str,output_pa
             draw.rectangle(layer.box.as_tuple(),outline=debug.color,width=3); draw.rectangle(actual,outline=(0,255,255,220),width=2)
             draw.text((layer.box.left,layer.box.top),f"{layer.field} {size}px",fill=debug.color)
         if layout.logo_layer: draw.rectangle(layout.logo_layer.box.as_tuple(),outline=debug.color,width=3)
-    output_path.parent.mkdir(parents=True,exist_ok=True); temporary=None
+    try: output_path.parent.mkdir(parents=True,exist_ok=True)
+    except OSError as exc: raise RendererAssetError(f"cannot create output directory: {output_path.parent}") from exc
+    temporary=None
     try:
         with tempfile.NamedTemporaryFile(prefix=f".{output_path.name}.",suffix=".tmp",dir=output_path.parent,delete=False) as stream:
             temporary=Path(stream.name); image.save(stream,format="PNG"); stream.flush(); os.fsync(stream.fileno())

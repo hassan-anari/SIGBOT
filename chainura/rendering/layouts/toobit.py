@@ -1,5 +1,6 @@
 from .models import *
-LAYOUT=InitialCardLayout("toobit",(
+from chainura.domain.destination import Exchange
+LAYOUT=InitialCardLayout(Exchange.TOOBIT,(
  TextLayer("symbol",Rectangle(90,130,852,220),FontSpec("main",64,26),HorizontalAlignment.CENTER),
  TextLayer("direction",Rectangle(90,250,450,325),FontSpec("main",44,22)),
  TextLayer("leverage",Rectangle(500,250,852,325),FontSpec("main",44,22),HorizontalAlignment.RIGHT),

@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from chainura.domain.destination import Exchange
+
 class HorizontalAlignment(str, Enum): LEFT="left"; CENTER="center"; RIGHT="right"
 class VerticalAlignment(str, Enum): TOP="top"; CENTER="center"; BOTTOM="bottom"
 
@@ -44,4 +46,17 @@ class DebugOverlayConfig:
 
 @dataclass(frozen=True, slots=True)
 class InitialCardLayout:
-    exchange: str; text_layers: tuple[TextLayer,...]; logo_layer: ImageLayer|None=None
+    exchange: Exchange; text_layers: tuple[TextLayer,...]; logo_layer: ImageLayer|None=None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.exchange, Exchange):
+            raise ValueError("layout exchange must be an Exchange")
+        if not isinstance(self.text_layers, tuple) or not self.text_layers:
+            raise ValueError("layout must contain text layers")
+        if any(not isinstance(layer, TextLayer) for layer in self.text_layers):
+            raise ValueError("layout text layers are invalid")
+        for layer in self.text_layers:
+            if layer.box.width <= 0 or layer.box.height <= 0:
+                raise ValueError(f"{layer.field} layout box must have positive dimensions")
+            if layer.font.minimum_size <= 0 or layer.font.preferred_size < layer.font.minimum_size:
+                raise ValueError(f"{layer.field} font sizes are invalid")

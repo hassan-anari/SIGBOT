@@ -1,16 +1,21 @@
 from __future__ import annotations
 import hashlib, inspect
+import io
+import os
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from PIL import Image
 
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import TradeDirection
 from chainura.rendering.lab.fixtures import FIXTURES, fixture
-from chainura.rendering.lab.preview import RENDERERS, render_preview
+from chainura.rendering.lab.preview import (RENDERERS, render_lbank_initial,
+    render_ourbit_initial, render_preview, render_toobit_initial)
+from chainura.rendering.lab.watch import validate_watch_interval, watch
 from chainura.rendering.layouts.models import FontSpec, InitialCardLayout, Rectangle, TextLayer
 from chainura.rendering.layouts.ourbit import LAYOUT
 from chainura.rendering.models import EXCHANGE_IMAGE_SPECS
@@ -68,7 +73,7 @@ class RendererLabTests(unittest.TestCase):
             self.assertIs(fixture(name,Exchange.LBANK).direction,direction); self.render(Exchange.LBANK,name=name)
 
     def test_controlled_minimum_size_failure(self):
-        layout=InitialCardLayout("ourbit",(TextLayer("symbol",Rectangle(0,0,1,1),FontSpec("main",10,10)),))
+        layout=InitialCardLayout(Exchange.OURBIT,(TextLayer("symbol",Rectangle(0,0,1,1),FontSpec("main",10,10)),))
         with self.assertRaises(RendererLayoutError): compose_initial(fixture("long-symbol",Exchange.OURBIT),self.template(Exchange.OURBIT),self.root/"fail.png",layout,self.font)
 
     def test_optional_logo_absent_present_and_invalid(self):
@@ -87,5 +92,54 @@ class RendererLabTests(unittest.TestCase):
         source=inspect.getsource(compositor)
         self.assertNotIn("datetime.now",source); self.assertNotIn("time.time",source)
         self.assertEqual(set(RENDERERS),set(Exchange))
+
+    def test_watch_hot_reload_syntax_recovery_and_clean_interrupt(self):
+        template=self.root/"template.png"; template.write_text("template-1")
+        layout=self.root/"layout.py"; layout.write_text("COORDINATE = 10\n")
+        output=self.root/"output.png"; effective=[]; reloads=[]; tick=100
+
+        def set_file(path,content):
+            nonlocal tick
+            tick+=1; path.write_text(content); os.utime(path,ns=(tick,tick))
+        def render(reload_layout):
+            reloads.append(reload_layout)
+            namespace={}; exec(compile(layout.read_text(),str(layout),"exec"),namespace)
+            effective.append(namespace["COORDINATE"]); output.write_text(str(effective[-1]))
+        events=[
+            lambda:set_file(template,"template-2"),
+            lambda:set_file(layout,"COORDINATE =\n"),
+            lambda:set_file(layout,"COORDINATE = 30\n"),
+            KeyboardInterrupt(),
+        ]
+        def sleep(_interval):
+            event=events.pop(0)
+            if isinstance(event,BaseException): raise event
+            event()
+        printed=io.StringIO()
+        with patch("chainura.rendering.lab.watch.time.sleep",side_effect=sleep),patch("sys.stdout",printed):
+            watch(render,template,layout,output,.01)
+        self.assertEqual(effective,[10,10,30])
+        self.assertEqual(reloads,[False,False,True,True])
+        self.assertIn("render error:",printed.getvalue())
+        self.assertIn("watch stopped",printed.getvalue())
+        self.assertEqual(output.read_text(),"30")
+
+    def test_invalid_watch_intervals(self):
+        for value in (0,-1,float("nan"),float("inf"),float("-inf")):
+            with self.subTest(value=value),self.assertRaises(ValueError): validate_watch_interval(value)
+        self.assertEqual(validate_watch_interval(.25),.25)
+
+    def test_explicit_renderers_reject_other_exchanges_without_output_changes(self):
+        cases=((render_ourbit_initial,Exchange.OURBIT),(render_toobit_initial,Exchange.TOOBIT),(render_lbank_initial,Exchange.LBANK))
+        for renderer,expected in cases:
+            for actual in Exchange:
+                if actual is expected: continue
+                with self.subTest(renderer=expected,actual=actual):
+                    absent=self.root/f"{expected.value}-{actual.value}-absent.png"
+                    with self.assertRaises(RendererLayoutError): renderer(fixture("composite-long",actual),self.root/"missing.png",absent,self.font)
+                    self.assertFalse(absent.exists())
+                    existing=self.root/f"{expected.value}-{actual.value}-existing.png"; existing.write_bytes(b"unchanged")
+                    with self.assertRaises(RendererLayoutError): renderer(fixture("composite-long",actual),self.root/"missing.png",existing,self.font)
+                    self.assertEqual(existing.read_bytes(),b"unchanged")
 
 if __name__=="__main__": unittest.main()

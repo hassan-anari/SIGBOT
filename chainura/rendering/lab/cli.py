@@ -3,8 +3,8 @@ import argparse, sys
 from pathlib import Path
 from chainura.domain.destination import Exchange
 from chainura.rendering.lab.fixtures import FIXTURES, fixture
-from chainura.rendering.lab.preview import render_preview
-from chainura.rendering.lab.watch import watch
+from chainura.rendering.lab.preview import load_exchange_layout, render_preview
+from chainura.rendering.lab.watch import validate_watch_interval, watch
 from chainura.rendering.pillow.errors import RendererLabError
 from chainura.rendering.pillow.text import PathFontProvider
 
@@ -18,10 +18,10 @@ def parser():
     commands=result.add_subparsers(dest="command",required=True)
     _common(commands.add_parser("preview",help="render one exchange preview"))
     all_parser=commands.add_parser("preview-all",help="render all exchanges using canonical local paths"); _common(all_parser,paths=False); all_parser.add_argument("--root",type=Path,default=ROOT)
-    watch_parser=commands.add_parser("watch",help="render and poll template/layout changes"); _common(watch_parser); watch_parser.add_argument("--interval",type=float,default=.5)
+    watch_parser=commands.add_parser("watch",help="render and poll template/layout changes"); _common(watch_parser); watch_parser.add_argument("--interval",type=validate_watch_interval,default=.5)
     return result
-def _render(exchange,template,output,args):
-    payload=fixture(args.fixture,exchange); return render_preview(payload,template,output,PathFontProvider(args.font),args.debug)
+def _render(exchange,template,output,args,*,layout=None):
+    payload=fixture(args.fixture,exchange); return render_preview(payload,template,output,PathFontProvider(args.font),args.debug,layout=layout)
 def main(argv=None):
     args=parser().parse_args(argv)
     try:
@@ -30,6 +30,11 @@ def main(argv=None):
             for exchange in Exchange: _render(exchange,args.root/"templates"/f"{exchange.value}.png",args.root/"output"/f"{exchange.value}-{args.fixture}.png",args)
         else:
             exchange=Exchange(args.exchange); layout=Path(__file__).parents[1]/"layouts"/f"{exchange.value}.py"
-            watch(lambda:_render(exchange,args.template,args.output,args),args.template,layout,args.output,args.interval)
+            current_layout=load_exchange_layout(exchange)
+            def watched_render(reload_layout):
+                nonlocal current_layout
+                if reload_layout: current_layout=load_exchange_layout(exchange,reload=True)
+                return _render(exchange,args.template,args.output,args,layout=current_layout)
+            watch(watched_render,args.template,layout,args.output,args.interval)
         return 0
     except (RendererLabError,KeyError,OSError) as exc: print(f"error: {exc}",file=sys.stderr); return 2

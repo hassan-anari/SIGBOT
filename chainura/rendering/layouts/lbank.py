@@ -1,5 +1,6 @@
 from .models import *
-LAYOUT=InitialCardLayout("lbank",(
+from chainura.domain.destination import Exchange
+LAYOUT=InitialCardLayout(Exchange.LBANK,(
  TextLayer("symbol",Rectangle(75,125,755,215),FontSpec("main",60,24),HorizontalAlignment.CENTER),
  TextLayer("direction",Rectangle(75,245,390,320),FontSpec("main",42,20)),
  TextLayer("leverage",Rectangle(440,245,755,320),FontSpec("main",42,20),HorizontalAlignment.RIGHT),

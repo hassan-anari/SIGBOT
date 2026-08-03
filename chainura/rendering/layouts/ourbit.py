@@ -1,5 +1,6 @@
 from .models import *
-LAYOUT=InitialCardLayout("ourbit",(
+from chainura.domain.destination import Exchange
+LAYOUT=InitialCardLayout(Exchange.OURBIT,(
  TextLayer("symbol",Rectangle(100,160,980,260),FontSpec("main",72,28),HorizontalAlignment.CENTER),
  TextLayer("direction",Rectangle(100,285,500,365),FontSpec("main",48,24)),
  TextLayer("leverage",Rectangle(580,285,980,365),FontSpec("main",48,24),HorizontalAlignment.RIGHT),
