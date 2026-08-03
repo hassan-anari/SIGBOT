@@ -3,6 +3,7 @@ import hashlib, inspect
 import io
 import os
 from dataclasses import FrozenInstanceError, replace
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,11 +21,13 @@ from chainura.rendering.lab.preview import (RENDERERS, render_lbank_initial,
 from chainura.rendering.lab.watch import validate_watch_interval, watch
 from chainura.rendering.layouts.models import FontSpec, InitialCardLayout, Rectangle, TextLayer
 from chainura.rendering.layouts.ourbit import LAYOUT
-from chainura.rendering.models import EXCHANGE_IMAGE_SPECS
-from chainura.rendering.pillow.compositor import compose_initial
+from chainura.rendering.models import (EXCHANGE_IMAGE_SPECS, TIME_DISPLAY_STRATEGIES,
+    TimeDisplayStrategy)
+from chainura.rendering.pillow.compositor import _values, compose_initial
 from chainura.rendering.pillow.errors import RendererAssetError, RendererLabError, RendererLayoutError
-from chainura.rendering.pillow.formatting import (format_decimal, format_elapsed,
-    format_initial_pnl, format_tehran_timestamp, format_utc_timestamp)
+from chainura.rendering.pillow.formatting import (format_decimal, format_display_price,
+    format_elapsed, format_entry_price, format_grouped_decimal, format_initial_pnl,
+    format_tehran_timestamp, format_utc_timestamp)
 from chainura.rendering.pillow.text import DefaultTestFontProvider, PathFontProvider, RoleFontProvider
 
 class RendererLabTests(unittest.TestCase):
@@ -100,8 +103,10 @@ class RendererLabTests(unittest.TestCase):
     def test_layouts_request_calibration_roles(self):
         from chainura.rendering.layouts.lbank import LAYOUT as lbank
         from chainura.rendering.layouts.toobit import LAYOUT as toobit
-        expected={"symbol":"bold","direction":"semibold","leverage":"semibold","entry":"medium","price":"medium","pnl":"semibold","time":"regular"}
-        for layout in (LAYOUT,toobit,lbank): self.assertEqual({layer.field:layer.font.role for layer in layout.text_layers},expected)
+        standard={"symbol":"bold","direction":"semibold","leverage":"semibold","entry":"medium","price":"medium","pnl":"semibold","time":"regular"}
+        ourbit={"symbol":"bold","meta":"semibold","pnl":"bold","entry":"bold","price":"bold","time":"regular"}
+        self.assertEqual({layer.field:layer.font.role for layer in LAYOUT.text_layers},ourbit)
+        for layout in (toobit,lbank): self.assertEqual({layer.field:layer.font.role for layer in layout.text_layers},standard)
 
     def test_decimal_and_approved_initial_formats(self):
         self.assertEqual(format_decimal(Decimal("0.0000000012300")),"0.0000000012300")
@@ -110,6 +115,54 @@ class RendererLabTests(unittest.TestCase):
         value=fixture("composite-long",Exchange.TOOBIT).rendered_at
         self.assertEqual(format_tehran_timestamp(value),"2026-08-01 16:04:56")
         self.assertEqual(format_utc_timestamp(value),"2026-08-01 12:34:56 UTC")
+
+    def test_grouped_decimal_price_formats_are_exact(self):
+        cases = (
+            ("65234.1200", "65,234.1200"),
+            ("1000", "1,000"),
+            ("1234.56", "1,234.56"),
+            ("123456789.000", "123,456,789.000"),
+            ("0.0000012300", "0.0000012300"),
+            ("12.3400", "12.3400"),
+            ("1E+12", "1,000,000,000,000"),
+            ("-1234567.8900", "-1,234,567.8900"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                value = Decimal(raw)
+                self.assertEqual(format_grouped_decimal(value), expected)
+                self.assertEqual(format_entry_price(value), expected)
+                self.assertEqual(format_display_price(value), expected)
+                self.assertNotIn("E", expected.upper())
+
+    def test_all_exchange_preview_values_use_grouped_prices(self):
+        for exchange in Exchange:
+            with self.subTest(exchange=exchange):
+                values = _values(fixture("composite-long", exchange))
+                self.assertEqual(values["entry"], "65,234.1200")
+                self.assertEqual(values["price"], "65,234.1200")
+                tiny = _values(fixture("small-price", exchange))
+                self.assertEqual(tiny["entry"], "0.000000001234500")
+                self.assertEqual(tiny["price"], "0.000000001234500")
+
+    def test_exchange_time_strategies_and_fixed_rendered_instant(self):
+        self.assertEqual(TIME_DISPLAY_STRATEGIES, {
+            Exchange.OURBIT: TimeDisplayStrategy.ELAPSED,
+            Exchange.TOOBIT: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
+            Exchange.LBANK: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
+        })
+        values = {exchange: _values(fixture("composite-long", exchange))["time"] for exchange in Exchange}
+        self.assertEqual(values[Exchange.OURBIT], "00H 00M")
+        self.assertEqual(values[Exchange.TOOBIT], "2026-08-01 16:04:56")
+        self.assertEqual(values[Exchange.LBANK], values[Exchange.TOOBIT])
+        self.assertNotIn("UTC", values[Exchange.LBANK])
+
+    def test_tehran_time_date_rollover(self):
+        instant = datetime(2026, 8, 1, 22, 0, 0, tzinfo=timezone.utc)
+        for exchange in (Exchange.TOOBIT, Exchange.LBANK):
+            with self.subTest(exchange=exchange):
+                payload = replace(fixture("composite-long", exchange), rendered_at=instant)
+                self.assertEqual(_values(payload)["time"], "2026-08-02 01:30:00")
 
     def test_direction_long_short_symbol_fit_and_high_leverage(self):
         for name,direction in (("composite-long",TradeDirection.LONG),("composite-short",TradeDirection.SHORT),("long-symbol",TradeDirection.LONG),("high-leverage",TradeDirection.LONG)):

@@ -4,7 +4,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, UnidentifiedImageError
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import TradeDirection
-from chainura.rendering.models import EXCHANGE_IMAGE_SPECS, RenderedSignalImage, SignalRenderPayload
+from chainura.rendering.models import (EXCHANGE_IMAGE_SPECS, TIME_DISPLAY_STRATEGIES,
+    RenderedSignalImage, SignalRenderPayload, TimeDisplayStrategy)
 from chainura.rendering.layouts.models import DebugOverlayConfig, InitialCardLayout
 from .errors import RendererAssetError, RendererLayoutError
 from .formatting import *
@@ -20,11 +21,13 @@ def _open_png(path:Path, *, label:str)->Image.Image:
     return image.convert("RGBA")
 
 def _values(payload: SignalRenderPayload) -> dict[str, str]:
-    time = {
-        Exchange.OURBIT: format_elapsed(payload.elapsed_seconds),
-        Exchange.TOOBIT: format_tehran_timestamp(payload.rendered_at),
-        Exchange.LBANK: format_utc_timestamp(payload.rendered_at),
-    }[payload.exchange]
+    strategy = TIME_DISPLAY_STRATEGIES[payload.exchange]
+    if strategy is TimeDisplayStrategy.ELAPSED:
+        time = format_elapsed(payload.elapsed_seconds)
+    elif strategy is TimeDisplayStrategy.TEHRAN_WALL_CLOCK:
+        time = format_tehran_timestamp(payload.rendered_at)
+    else:
+        time = format_utc_timestamp(payload.rendered_at)
 
     direction = payload.direction.value.title()
     leverage = format_leverage(payload.leverage)
