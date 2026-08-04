@@ -33,6 +33,7 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
   async with self.engine.connect() as c:
    self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
    self.assertEqual(await c.scalar(text('select count(*) from signal_initial_prices')),2)
+   self.assertEqual(await c.scalar(text('select count(*) from initial_publication_requests')),1)
  async def test_snapshot_mapping_composite_fk_and_uniqueness(self):
   from sqlalchemy.exc import IntegrityError
   one=await self.service.create(self.command())
@@ -63,6 +64,7 @@ class ConcurrentSignalPersistenceTests(SignalPersistenceTests):
    self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
    self.assertEqual(await c.scalar(text('select count(*) from signal_take_profits')),2)
    self.assertEqual(await c.scalar(text('select count(*) from signal_exchange_symbols')),3)
+   self.assertEqual(await c.scalar(text('select count(*) from initial_publication_requests')),1)
  async def test_existing_token_skips_failed_provider(self):
   gate=GatePrices(); gate.release.set(); service=SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),gate,lambda:datetime(2026,8,1,tzinfo=timezone.utc))
   one=await service.create(self.command()); gate.fail=True; two=await service.create(self.command())

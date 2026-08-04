@@ -97,6 +97,10 @@ class TelegramRuntimeSettings:
     bot_token: str = field(repr=False)
     redis_url: str = field(repr=False)
     rendering: RenderingSettings | None = None
+    publication_concurrency: int = 3
+    send_max_attempts: int = 3
+    send_retry_base_seconds: float = 0.5
+    publication_sweep_seconds: float = 5.0
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, str]) -> "TelegramRuntimeSettings":
@@ -108,7 +112,19 @@ class TelegramRuntimeSettings:
         render_keys=("RENDER_TEMPLATE_ASSET_ROOT","RENDER_OUTPUT_ROOT","TOOBIT_COIN_LOGO_ROOT",
           "RENDER_FONT_REGULAR_PATH","RENDER_FONT_MEDIUM_PATH","RENDER_FONT_SEMIBOLD_PATH","RENDER_FONT_BOLD_PATH","RENDER_CONCURRENCY")
         rendering=RenderingSettings.from_mapping(mapping) if any(key in mapping for key in render_keys) else None
-        return cls(application=application, bot_token=token, redis_url=redis_url,rendering=rendering)
+        try:
+            concurrency=int(mapping.get("TELEGRAM_PUBLICATION_CONCURRENCY","3"))
+            attempts=int(mapping.get("TELEGRAM_SEND_MAX_ATTEMPTS","3"))
+            retry=float(mapping.get("TELEGRAM_SEND_RETRY_BASE_SECONDS","0.5"))
+            sweep=float(mapping.get("PUBLICATION_SWEEP_SECONDS","5"))
+        except ValueError as exc:raise InvalidApplicationConfigurationError("publication settings must be numeric") from exc
+        if not 1<=concurrency<=20:raise InvalidApplicationConfigurationError("TELEGRAM_PUBLICATION_CONCURRENCY must be between 1 and 20")
+        if not 1<=attempts<=10:raise InvalidApplicationConfigurationError("TELEGRAM_SEND_MAX_ATTEMPTS must be between 1 and 10")
+        if not 0.1<=retry<=60:raise InvalidApplicationConfigurationError("TELEGRAM_SEND_RETRY_BASE_SECONDS must be between 0.1 and 60")
+        if not 0.5<=sweep<=300:raise InvalidApplicationConfigurationError("PUBLICATION_SWEEP_SECONDS must be between 0.5 and 300")
+        return cls(application=application, bot_token=token, redis_url=redis_url,rendering=rendering,
+            publication_concurrency=concurrency,send_max_attempts=attempts,
+            send_retry_base_seconds=retry,publication_sweep_seconds=sweep)
 
 
 def load_telegram_runtime_settings() -> TelegramRuntimeSettings:

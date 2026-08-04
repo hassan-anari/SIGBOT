@@ -42,8 +42,9 @@ class EntryValidationRequest:
     entry_price: Decimal
 
 class SignalService:
-    def __init__(self, transactions, reference_prices: ReferencePriceProvider, clock=lambda: datetime.now(timezone.utc)):
+    def __init__(self, transactions, reference_prices: ReferencePriceProvider, clock=lambda: datetime.now(timezone.utc), publication_wake=None):
         self._transactions=transactions; self._prices=reference_prices; self._clock=clock
+        self._publication_wake=publication_wake
 
     async def validate_entry(self, request: EntryValidationRequest | CreateSignalCommand) -> ReferencePriceResult:
         validation = (request if isinstance(request, EntryValidationRequest) else
@@ -144,6 +145,7 @@ class SignalService:
                     raise SignalistCannotCreateSignalError("an active signalist is required")
                 created=await tx.signals.add(signal)
                 await tx.commit()
+                if self._publication_wake is not None:self._publication_wake()
                 return created
         except DuplicateSignalCreationTokenError:
             # The failed transaction has closed/rolled back. Reload in a fresh one.

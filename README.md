@@ -336,3 +336,9 @@ alembic upgrade head
 مسیر سیگنالیست فعال اکنون جست‌وجو و صفحه‌بندی فهرست مشترک، مسیر قرارداد تأییدشدهٔ تک‌صرافی، انتخاب جهت، اعتبارسنجی اولیهٔ Entry، اهرم، تارگت‌های مرتب، SL، مرور نهایی و بازاعتبارسنجی بازار پیش از ثبت اتمیک را پوشش می‌دهد. Callbackهای این مسیر typed، ASCII و وابسته به Flow هستند و پاسخ دیررس جست‌وجو یا قیمت پس از لغو، `/start` یا بازگشت به منوی اصلی نمی‌تواند FSM را زنده یا سیگنال را ثبت کند. Runtime از `MarketProbe` و Adapterهای موجود برای Catalog و Reference Price استفاده می‌کند و معماری HTTP صرافی دیگری ندارد.
 
 اندازه‌های نهایی Canvas به‌صورت Specification تغییرناپذیر در `chainura/rendering/models.py` تعریف شده‌اند: Ourbit برابر 1080×1148، Toobit برابر 942×1010 و LBank برابر 830×1005، همگی PNG. این مشخصات فقط Contract هستند؛ همچنان هیچ Pillow compositor، مختصات، فونت یا Template تولیدی وجود ندارد.
+
+## Phase 5C initial publication
+
+A confirmed Signal now creates a SQLite-backed publication outbox atomically and returns immediately to the Signalist. The background worker plans compatible active assigned destinations from persisted source snapshots, enforces Asia/Tehran daily initial-message slots, renders destination templates, sends Persian HTML photo captions, and stores Telegram message IDs. Private initial captions include `#پیامک`; destination information is never disclosed to Signalists.
+
+Templates are immutable, content-addressed PNG documents installed as exchange defaults or destination overrides by the Main Admin workflow. Missing templates remain retryable. Definite failures release capacity; ambiguous sends become `delivery_unknown`, retain capacity, and are not automatically resent. Generated initial images are cleaned after use and owned-pattern orphans are cleaned before worker startup. Monitoring and approved update publication remain Phase 6 work.

@@ -4,7 +4,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from chainura.domain.signal import Signal
 from chainura.errors import DuplicateSignalCreationTokenError, SignalCreationError
 from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecord,
-                                          SignalTakeProfitRecord, SignalInitialPriceRecord)
+                                          SignalTakeProfitRecord, SignalInitialPriceRecord,
+                                          InitialPublicationRequestRecord)
 
 class SqlAlchemySignalRepository:
     def __init__(self, session): self._session = session
@@ -37,6 +38,7 @@ class SqlAlchemySignalRepository:
             self._session.add_all([SignalTakeProfitRecord(signal_id=row.id, position=i, price=p) for i,p in enumerate(signal.take_profits,1)])
             self._session.add_all([SignalExchangeSymbolRecord(signal_id=row.id, exchange=e, native_symbol=s) for e,s in signal.exchange_symbols])
             self._session.add_all([SignalInitialPriceRecord(signal_id=row.id, exchange=e, price=p) for e,p in signal.initial_source_prices])
+            self._session.add(InitialPublicationRequestRecord(signal_id=row.id))
             await self._session.flush()
         except IntegrityError as exc:
             raw = str(exc.orig)

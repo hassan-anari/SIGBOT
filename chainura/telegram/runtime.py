@@ -43,6 +43,10 @@ from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
 from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_logo_sync
 from chainura.rendering.production import ProductionRendererRegistration
+from chainura.rendering.templates import TemplateAssetStore, TemplateService
+from chainura.application.initial_rendering import InitialPayloadFactory, InitialImageService
+from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker,
+                                               TelegramPhotoPublisher)
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -107,6 +111,8 @@ class Runtime:
         self._bot_closed = False
         self._engine_disposed = False
         self.renderer_registration = None
+        self.initial_image_service = None
+        self.publication_worker = None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -209,8 +215,22 @@ class Runtime:
             assignment_service = DestinationAssignmentService(transactions)
             market_probe = MarketProbe()
             symbol_catalog = SymbolCatalogProvider(market_probe)
+            if self.settings.rendering is not None:
+                template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
+                self.initial_image_service=InitialImageService(InitialPayloadFactory(
+                    CoinLogoStore(self.settings.rendering.toobit_logo_root)),template_service,
+                    self.settings.rendering.output_root,self.settings.rendering.concurrency)
+                publication_service=InitialPublicationService(transactions,self.initial_image_service,
+                    TelegramPhotoPublisher(self.bot),max_attempts=self.settings.send_max_attempts,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.publication_worker=InitialPublicationWorker(publication_service,
+                    self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                await self._startup_await(publication_service.recover())
+                await self._startup_await(self._cleanup_orphan_outputs())
+                await self._startup_await(self.publication_worker.start())
             signal_service = SignalService(
-                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog))
+                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
+                publication_wake=self.publication_worker.wake if self.publication_worker else None)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
@@ -316,6 +336,11 @@ class Runtime:
             if self.polling_task:
                 await self._best_effort(self.polling_task, "polling task")
 
+            if self.publication_worker:
+                await self._best_effort(self.publication_worker.close(), "publication worker")
+            if self.initial_image_service:
+                await self._best_effort(self.initial_image_service.aclose(), "initial image service")
+
             self.renewal_stop.set()
             if self.renewal_task:
                 if self.renewal_task.done():
@@ -354,6 +379,15 @@ class Runtime:
 
             self.state = RuntimeState.STOPPED
             self._cleanup_complete.set()
+
+    async def _cleanup_orphan_outputs(self):
+        root=self.settings.rendering.output_root.resolve()
+        root.mkdir(parents=True,exist_ok=True)
+        def clean():
+            for pattern in ("initial-*.png", ".initial-*.png.*.tmp"):
+                for path in root.glob(pattern):
+                    if path.is_file() and path.resolve().parent==root:path.unlink(missing_ok=True)
+        await asyncio.to_thread(clean)
 
 
 async def run() -> None:

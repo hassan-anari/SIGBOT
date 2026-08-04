@@ -91,6 +91,14 @@ class TemplatePersistenceError(TemplateError): pass
 class TemplateNotConfiguredError(TemplateError): pass
 class TemplateAssetError(TemplateError): pass
 class UnsafeRenderPathError(RenderingError): pass
+class PublicationError(ApplicationError): pass
+class PublicationPlanningError(PublicationError): pass
+class PublicationPersistenceError(PublicationError): pass
+class DailyCapacityError(PublicationError): pass
+class CaptionGenerationError(PublicationError): pass
+class TelegramDeliveryError(PublicationError): pass
+class PublicationLifecycleError(PublicationError): pass
+class TemplateUploadTransportError(PublicationError): pass
 
 
 class DuplicateSignalCreationTokenError(SignalCreationError):
