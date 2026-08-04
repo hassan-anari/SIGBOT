@@ -31,7 +31,7 @@ LAYOUT = InitialCardLayout(
             fill=GRAY,
         ),
 
-        # Initial PnL is currently always 0.00%.
+        # Initial PnL value.
         TextLayer(
             "pnl",
             Rectangle(48, 535, 520, 640),

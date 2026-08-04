@@ -1,10 +1,11 @@
 from __future__ import annotations
-import asyncio,uuid,logging
+import asyncio,uuid,logging,os
 from datetime import datetime
 from pathlib import Path
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import Signal,SignalMode
-from chainura.errors import RenderPayloadError,RenderingError,UnsafeRenderPathError
+from chainura.errors import (RenderPayloadError,RenderingError,UnsafeRenderPathError,
+    RenderingLifecycleError)
 from chainura.rendering.logos import CoinLogoStore
 from chainura.rendering.models import SignalRenderEventKind,SignalRenderPayload,RenderedSignalImage
 from chainura.rendering.signal_image import render_signal_image
@@ -13,6 +14,9 @@ LOGGER=logging.getLogger("chainura.rendering.initial")
 def _observe_future(future):
  try:future.exception()
  except (asyncio.CancelledError,Exception):pass
+async def _run_render_worker(payload,template,output):
+ try:return True,await asyncio.to_thread(render_signal_image,payload,template,output)
+ except BaseException as exc:return False,exc
 
 class InitialPayloadFactory:
  def __init__(self,logo_store:CoinLogoStore):self.logo_store=logo_store
@@ -41,27 +45,47 @@ class InitialImageService:
   self.payload_factory=payload_factory;self.template_service=template_service
   self.output_root=Path(output_root).resolve();self.output_root.mkdir(parents=True,exist_ok=True)
   self._semaphore=asyncio.Semaphore(concurrency);self._cleanup_tasks=set()
- def _new_output(self):return self.output_root/f"initial-{uuid.uuid4().hex}.png"
+  self._active_tasks=set();self._state="open";self._close_task=None
+ def _reserve_output(self):
+  for _ in range(16):
+   candidate=self.output_root/f"initial-{uuid.uuid4().hex}.png"
+   try:
+    descriptor=os.open(candidate,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+   except FileExistsError:continue
+   except OSError as exc:raise RenderingError("render output reservation failed") from exc
+   try:os.close(descriptor)
+   except OSError as exc:
+    candidate.unlink(missing_ok=True);raise RenderingError("render output reservation failed") from exc
+   return candidate
+  raise RenderingLifecycleError("render output name allocation exhausted")
  async def render_initial_signal(self,signal,exchange,destination_id,rendered_at)->RenderedSignalImage:
-  template=await self.template_service.resolve(exchange,destination_id)
-  output=self._new_output()
+  if self._state!="open":raise RenderingLifecycleError("initial image service is closing")
+  operation=asyncio.current_task();self._active_tasks.add(operation)
+  output=None
   try:
+   template=await self.template_service.resolve(exchange,destination_id)
+   output=await asyncio.to_thread(self._reserve_output)
    async with self._semaphore:
     payload=await asyncio.to_thread(self.payload_factory.build,signal,exchange,rendered_at)
-    worker=asyncio.create_task(asyncio.to_thread(render_signal_image,payload,template.path,output));worker.add_done_callback(_observe_future)
+    worker=asyncio.create_task(_run_render_worker(payload,template.path,output))
     shielded=asyncio.shield(worker);shielded.add_done_callback(_observe_future)
-    try:return await shielded
+    try:
+     succeeded,result=await shielded
+     if succeeded:return result
+     raise result
     except asyncio.CancelledError:
      cleanup=asyncio.create_task(self._finish_cancelled(worker,output))
      self._cleanup_tasks.add(cleanup);cleanup.add_done_callback(self._cleanup_tasks.discard)
      raise
   except asyncio.CancelledError:
-   await self._safe_cleanup(output);raise
+   if output is not None:await self._safe_cleanup(output)
+   raise
   except Exception:
-   await self._safe_cleanup(output);raise
+   if output is not None:await self._safe_cleanup(output)
+   raise
+  finally:self._active_tasks.discard(operation)
  async def _finish_cancelled(self,worker,output):
-  try:await worker
-  except BaseException:pass
+  await worker
   await self._safe_cleanup(output)
  async def _safe_cleanup(self,output):
   try:await asyncio.to_thread(self.cleanup,output)
@@ -72,7 +96,13 @@ class InitialImageService:
    tasks=tuple(self._cleanup_tasks)
    await asyncio.gather(*(asyncio.shield(task) for task in tasks))
  async def aclose(self):
-  await self.drain_pending_cleanup()
+  if self._close_task is None:
+   self._state="closing";self._close_task=asyncio.create_task(self._close_owned_work())
+  await asyncio.shield(self._close_task)
+ async def _close_owned_work(self):
+  while self._active_tasks:
+   await asyncio.gather(*(asyncio.shield(task) for task in tuple(self._active_tasks)),return_exceptions=True)
+  await self.drain_pending_cleanup();self._state="closed"
  def cleanup(self,path:Path|str):
   candidate=Path(path).resolve()
   if not candidate.is_relative_to(self.output_root) or candidate==self.output_root:raise UnsafeRenderPathError("render cleanup path is outside output root")

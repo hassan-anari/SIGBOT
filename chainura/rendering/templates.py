@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,errno,hashlib,io,os,tempfile,warnings
+import asyncio,errno,hashlib,io,os,stat,tempfile,warnings
 from dataclasses import dataclass
 from pathlib import Path
 from PIL import Image,UnidentifiedImageError
@@ -79,8 +79,18 @@ class TemplateAssetStore:
         finally:
             if temporary is not None:temporary.unlink(missing_ok=True)
     def inspect(self,exchange,path,sha):
-        try:data=path.read_bytes()
-        except OSError as exc:raise TemplateAssetError("selected template asset is missing") from exc
+        try:
+            metadata=path.stat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise TemplateAssetError("selected template asset is not a regular file")
+            if metadata.st_size<=0 or metadata.st_size>self.max_bytes:
+                raise TemplateAssetError("selected template asset size is invalid")
+            with path.open("rb") as stream:
+                data=stream.read(self.max_bytes)
+                if len(data)!=metadata.st_size or stream.read(1):
+                    raise TemplateAssetError("selected template asset changed while reading")
+        except TemplateAssetError:raise
+        except OSError as exc:raise TemplateAssetError("selected template asset is unavailable") from exc
         asset=self.validate(exchange,data)
         if asset.sha256!=sha:raise TemplateAssetError("selected template hash mismatch")
 

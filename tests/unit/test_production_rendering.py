@@ -1,6 +1,7 @@
 import io,tempfile,unittest,inspect,asyncio,threading
 from unittest.mock import patch
 import errno
+import hashlib
 from datetime import datetime,timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,13 +9,14 @@ from PIL import Image
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import PriceSourceType,Signal,SignalLifecycleStatus,SignalMode,TradeDirection
 from chainura.application.initial_rendering import InitialPayloadFactory,InitialImageService
-from chainura.errors import RenderingLifecycleError,TemplateValidationError,UnsafeRenderPathError,TemplatePersistenceError
+from chainura.errors import (RenderingLifecycleError,TemplateValidationError,UnsafeRenderPathError,
+    TemplatePersistenceError,TemplateAssetError)
 from chainura.rendering.logos import CoinLogoStore,toobit_logo_key
 from chainura.rendering.models import EXCHANGE_IMAGE_SPECS
 from chainura.rendering.production import ProductionRendererRegistration,RenderingSettings
 from chainura.rendering.pillow.text import DefaultTestFontProvider
 from chainura.rendering.signal_image import unregister_signal_renderer
-from chainura.rendering.templates import TemplateAssetStore,TemplateService
+from chainura.rendering.templates import TemplateAssetStore,TemplateService,MAX_TEMPLATE_BYTES
 from chainura.application.profit import leveraged_return_percent
 from chainura.rendering.pillow.formatting import format_initial_pnl
 from chainura.rendering.pillow.compositor import _values,pnl_semantic_state
@@ -118,6 +120,34 @@ class TemplateErrorBoundaryTests(unittest.IsolatedAsyncioTestCase):
    service=TemplateService(Factory(),TemplateAssetStore(root))
    with self.assertRaises(TemplatePersistenceError):await service.resolve(Exchange.OURBIT)
 
+class BoundedTemplateInspectionTests(unittest.TestCase):
+ def test_exact_limit_accepted_and_oversize_rejected_before_read(self):
+  with tempfile.TemporaryDirectory() as root:
+   store=TemplateAssetStore(root);base=png(Exchange.OURBIT)
+   exact=Path(root)/"exact.png";data=base+b"\0"*(MAX_TEMPLATE_BYTES-len(base));exact.write_bytes(data)
+   store.inspect(Exchange.OURBIT,exact,hashlib.sha256(data).hexdigest())
+   large=Path(root)/"large.png";large.write_bytes(data+b"x")
+   with self.assertRaises(TemplateAssetError):store.inspect(Exchange.OURBIT,large,"unused")
+ def test_non_regular_and_no_unbounded_read_bytes(self):
+  with tempfile.TemporaryDirectory() as root:
+   store=TemplateAssetStore(root)
+   with self.assertRaises(TemplateAssetError):store.inspect(Exchange.OURBIT,Path(root),"unused")
+  self.assertNotIn("read_bytes",inspect.getsource(TemplateAssetStore.inspect))
+ def test_growth_and_truncated_reads_are_rejected(self):
+  base=png(Exchange.OURBIT)
+  class ManagedPath:
+   def __init__(self,data,reported):self.data=data;self.reported=reported
+   def stat(self):return type("S",(),{"st_mode":0o100600,"st_size":self.reported})()
+   def open(self,*_):return io.BytesIO(self.data)
+  store=TemplateAssetStore("unused")
+  for path in (ManagedPath(base+b"x",len(base)),ManagedPath(base,len(base)+1)):
+   with self.assertRaises(TemplateAssetError):store.inspect(Exchange.OURBIT,path,"unused")
+ def test_sparse_oversize_rejected_by_stat(self):
+  with tempfile.TemporaryDirectory() as root:
+   path=Path(root)/"sparse.png"
+   with path.open("wb") as stream:stream.seek(MAX_TEMPLATE_BYTES);stream.write(b"x")
+   with self.assertRaises(TemplateAssetError):TemplateAssetStore(root).inspect(Exchange.OURBIT,path,"unused")
+
 if __name__=="__main__":unittest.main()
 
 class CancellationTests(unittest.IsolatedAsyncioTestCase):
@@ -146,3 +176,24 @@ class CancellationTests(unittest.IsolatedAsyncioTestCase):
    await asyncio.sleep(0);task.cancel()
    with self.assertRaises(asyncio.CancelledError):await task
    service._semaphore.release();self.assertEqual(list(service.output_root.iterdir()),[])
+ async def test_close_is_idempotent_and_rejects_new_render(self):
+  with tempfile.TemporaryDirectory() as root:
+   class Templates:pass
+   service=InitialImageService(None,Templates(),Path(root)/"out",1)
+   await asyncio.gather(service.aclose(),service.aclose())
+   with self.assertRaises(RenderingLifecycleError):
+    await service.render_initial_signal(None,Exchange.OURBIT,None,NOW)
+
+class OutputOwnershipTests(unittest.IsolatedAsyncioTestCase):
+ async def test_forced_collision_retries_and_preserves_unrelated_file(self):
+  with tempfile.TemporaryDirectory() as root:
+   class Templates:
+    async def resolve(self,*_):return type("T",(),{"path":Path(root)/"template.png"})()
+   service=InitialImageService(InitialPayloadFactory(CoinLogoStore(root)),Templates(),Path(root)/"out",1)
+   unrelated=service.output_root/"initial-collision.png";unrelated.write_bytes(b"owner")
+   names=iter([type("U",(),{"hex":"collision"})(),type("U",(),{"hex":"owned"})()])
+   def renderer(payload,template,output):Path(output).write_bytes(b"rendered");return type("R",(),{"file_path":Path(output)})()
+   with patch("chainura.application.initial_rendering.uuid.uuid4",side_effect=lambda:next(names)),patch("chainura.application.initial_rendering.render_signal_image",renderer):
+    result=await service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW)
+   self.assertEqual(unrelated.read_bytes(),b"owner");self.assertEqual(result.file_path.name,"initial-owned.png")
+   service.cleanup(result.file_path);await service.aclose()

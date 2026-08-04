@@ -22,6 +22,8 @@ Template verification, hashing, durable writes, local-logo inspection, and Pillo
 composition are executed off the asyncio event loop under configured bounds.
 The application owner must call `InitialImageService.aclose()` during shutdown;
 Phase 5C publication will own this service and must also clean each returned image.
+Shutdown ordering is: stop accepting publication work, cancel and await publication
+tasks, await `InitialImageService.aclose()`, then close renderer registration.
 
 این پروژه علاوه بر Probe مستقل بازار، پایهٔ پایدار و مستقل از Transport برنامه را برای مدیریت هویت و وضعیت Signalist فراهم می‌کند. CLI بازار همچنان بدون تنظیمات یا اتصال دیتابیس اجرا می‌شود.
 

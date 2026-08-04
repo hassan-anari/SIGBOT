@@ -23,7 +23,7 @@ PNL_NEUTRAL = (245, 246, 248, 255)
 LAYOUT = InitialCardLayout(
     Exchange.TOOBIT,
     (
-        # Initial PnL: 0.00%
+        # Initial PnL value.
         #
         # For visual negative-PnL calibration, temporarily change fill
         # to PNL_NEGATIVE in the local layout only.
