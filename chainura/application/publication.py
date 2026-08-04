@@ -8,12 +8,12 @@ from chainura.application.initial_caption import build_initial_caption
 from chainura.domain.destination import DestinationStatus
 from chainura.domain.publication import PublicationStatus, tehran_local_date
 from chainura.errors import (CaptionGenerationError, DailyCapacityError, TemplateAssetError,
- TemplateNotConfiguredError, TelegramDeliveryError)
+ TemplateNotConfiguredError, TelegramDeliveryError, RenderPayloadError, RenderingError)
 LOGGER=logging.getLogger("chainura.publication")
 
-class DeliveryRejected(TelegramDeliveryError):pass
-class DeliveryAmbiguous(TelegramDeliveryError):pass
-class DeliveryRateLimited(TelegramDeliveryError):
+class DeliveryRejected(TelegramDeliveryError, RenderPayloadError, RenderingError):pass
+class DeliveryAmbiguous(TelegramDeliveryError, RenderPayloadError, RenderingError):pass
+class DeliveryRateLimited(TelegramDeliveryError, RenderPayloadError, RenderingError):
  def __init__(self,retry_after):self.retry_after=retry_after
 
 class TelegramPhotoPublisher:
@@ -26,6 +26,15 @@ class TelegramPhotoPublisher:
   except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
+  return message_id
+ async def send_update(self,chat_id,path,caption,reply_to_message_id):
+  try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption,reply_to_message_id=reply_to_message_id)
+  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
+  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
+  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  message_id=getattr(message,'message_id',None)
+  if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous('invalid_response')
   return message_id
 
 class InitialPublicationService:
@@ -147,17 +156,6 @@ class InitialPublicationWorker:
   self._stop.set();self._wake.set()
   if self._task is not None:await self._task
 
-async def _send_update(self,chat_id,path,caption,reply_to_message_id):
- try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption,reply_to_message_id=reply_to_message_id)
- except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
- except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
- except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
- except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
- message_id=getattr(message,'message_id',None)
- if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous('invalid_response')
- return message_id
-TelegramPhotoPublisher.send_update=_send_update
-
 class UpdatePublicationService:
  def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
   self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
@@ -180,7 +178,8 @@ class UpdatePublicationService:
     event=await tx._session.get(__import__('chainura.persistence.models',fromlist=['SignalEventRecord']).SignalEventRecord,delivery.event_id)
     price=await tx._session.get(__import__('chainura.persistence.models',fromlist=['SignalEventSourcePriceRecord']).SignalEventSourcePriceRecord,(delivery.event_id,delivery.selected_exchange))
     await tx.commit()
-   from chainura.application.update_caption import UpdateCaptionInput, build_update_caption
+   if event is None or price is None:raise RenderPayloadError("update event snapshot is inconsistent")
+   from chainura.application.update_caption import UpdateCaptionInput, build_update_caption, UpdateCaptionError
    caption=build_update_caption(UpdateCaptionInput(event.kind,signal.canonical_symbol,event.observed_reference_price,event.leveraged_roi,event.tp_index))
    output=await self.image_service.render_update_signal(signal,event,price.price,delivery.selected_exchange,delivery.destination_id)
    async with self.transactions() as tx:
@@ -200,8 +199,13 @@ class UpdatePublicationService:
     async with self.transactions() as tx:await tx.update_publications.transition(delivery.id,PublicationStatus.SENDING,PublicationStatus.SENT,self.clock(),message_id=message_id);await tx.update_publications.complete_request(delivery.request_id,self.clock());await tx.commit()
    except Exception:
     await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,'sent_commit_failed',PublicationStatus.SENDING)
+  except asyncio.CancelledError:raise
   except TemplateNotConfiguredError:await self._finish(delivery,PublicationStatus.BLOCKED_TEMPLATE,'template_missing')
-  except (TemplateAssetError,CaptionGenerationError) as exc:await self._finish(delivery,PublicationStatus.BLOCKED_TEMPLATE if isinstance(exc,TemplateAssetError) else PublicationStatus.FAILED,type(exc).__name__)
+  except TemplateAssetError:await self._finish(delivery,PublicationStatus.BLOCKED_TEMPLATE,'TemplateAssetError')
+  except Exception as exc:
+   safe=type(exc).__name__
+   LOGGER.warning('update publication pre-send failed delivery_id=%s category=%s',delivery.id,safe)
+   await self._finish(delivery,PublicationStatus.FAILED,safe)
   finally:
    if output is not None:
     try:self.image_service.cleanup(output.file_path)
@@ -217,7 +221,9 @@ class UpdatePublicationWorker(InitialPublicationWorker):
     await self.service.sweep();ids=await self.service.pending_ids()
     for offset in range(0,len(ids),self.concurrency):
      batch=ids[offset:offset+self.concurrency]
-     await asyncio.gather(*(self.service.process(item) for item in batch),return_exceptions=True)
+     results=await asyncio.gather(*(self.service.process(item) for item in batch),return_exceptions=True)
+     for delivery_id,result in zip(batch,results):
+      if isinstance(result,BaseException):LOGGER.warning("update publication delivery isolated delivery_id=%s category=%s",delivery_id,type(result).__name__)
    except asyncio.CancelledError:raise
    except Exception as exc:LOGGER.error('update publication sweep failed category=%s',type(exc).__name__)
    if self._stop.is_set():break

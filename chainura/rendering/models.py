@@ -97,12 +97,16 @@ class SignalRenderPayload:
             raise InvalidSignalInputError("render trade prices violate direction")
         if not isinstance(self.initial_pnl_percent, Decimal) or not self.initial_pnl_percent.is_finite():
             raise InvalidSignalInputError("initial PnL must be a finite Decimal")
-        if isinstance(self.elapsed_seconds, bool) or self.elapsed_seconds != 0:
-            raise InvalidSignalInputError("initial elapsed duration must be zero")
+        if isinstance(self.elapsed_seconds, bool) or not isinstance(self.elapsed_seconds, int) or self.elapsed_seconds < 0:
+            raise InvalidSignalInputError("elapsed duration must be a nonnegative integer")
         for name in ("signal_created_at", "rendered_at"):
             value = getattr(self, name)
             if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
                 raise InvalidSignalInputError(f"{name} must be aware")
+        if self.rendered_at < self.signal_created_at:
+            raise InvalidSignalInputError("rendered event time cannot precede signal creation")
+        if self.event_kind is SignalRenderEventKind.INITIAL and self.elapsed_seconds != 0:
+            raise InvalidSignalInputError("initial elapsed duration must be zero")
         if self.coin_logo_path is not None and not isinstance(self.coin_logo_path, Path):
             raise InvalidSignalInputError("coin_logo_path must be Path or None")
 

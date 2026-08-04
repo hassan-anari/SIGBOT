@@ -237,3 +237,40 @@ class OutputOwnershipTests(unittest.IsolatedAsyncioTestCase):
    self.assertEqual(unrelated.read_bytes(),b"owner");self.assertEqual(result.file_path.name,"initial-owned.png")
    await service.aclose();self.assertEqual(result.file_path.read_bytes(),b"rendered")
    service.cleanup(result.file_path);self.assertFalse(result.file_path.exists())
+
+class Phase6BUpdateRenderingTests(unittest.IsolatedAsyncioTestCase):
+ def event(self,kind,price=Decimal('111'),tp_index=1,seconds=3661):
+  from chainura.domain.monitoring import SignalEventKind
+  return type('E',(),{'id':1,'kind':kind,'tp_index':tp_index if kind is SignalEventKind.TP_HIT else None,'observed_reference_price':price,'leveraged_roi':Decimal('55'),'occurred_at':NOW.replace(hour=13,minute=1,second=1)})()
+ def service(self,root,concurrency=2):
+  class Templates:
+   async def resolve(self,*_):return type('T',(),{'path':Path(root)/'template.png'})()
+  return InitialImageService(InitialPayloadFactory(CoinLogoStore(root)),Templates(),Path(root)/'out',concurrency)
+ async def test_update_output_prefix_metadata_and_cleanup(self):
+  from chainura.domain.monitoring import SignalEventKind
+  with tempfile.TemporaryDirectory() as root:
+   service=self.service(root)
+   spec=EXCHANGE_IMAGE_SPECS[Exchange.OURBIT]
+   def renderer(payload,template,output):
+    self.assertEqual(payload.event_kind.value,'tp');self.assertGreater(payload.elapsed_seconds,0)
+    Path(output).write_bytes(b'update-bytes');return __import__('chainura.rendering.models',fromlist=['RenderedSignalImage']).RenderedSignalImage(Path(output),spec.width,spec.height,spec.content_type,hashlib.sha256(b'update-bytes').hexdigest())
+   with patch('chainura.application.initial_rendering.render_signal_image',renderer):
+    result=await service.render_update_signal(signal(),self.event(SignalEventKind.TP_HIT),Decimal('111'),Exchange.OURBIT,None)
+   self.assertTrue(result.file_path.exists());self.assertTrue(result.file_path.name.startswith('update-'))
+   self.assertEqual((result.width,result.height,result.content_type),(spec.width,spec.height,spec.content_type))
+   self.assertEqual(result.sha256,hashlib.sha256(result.file_path.read_bytes()).hexdigest())
+   self.assertFalse(list(service.output_root.glob('initial-*.png')))
+   service.cleanup(result.file_path);self.assertFalse(result.file_path.exists())
+ async def test_concurrent_initial_and_two_updates_do_not_mutate_factory(self):
+  from chainura.domain.monitoring import SignalEventKind
+  with tempfile.TemporaryDirectory() as root:
+   service=self.service(root,3);seen=[]
+   def renderer(payload,template,output):
+    seen.append((payload.event_kind.value,payload.display_price,Path(output).name.split('-',1)[0]));Path(output).write_bytes(str(payload.display_price).encode())
+    spec=EXCHANGE_IMAGE_SPECS[payload.exchange]
+    return __import__('chainura.rendering.models',fromlist=['RenderedSignalImage']).RenderedSignalImage(Path(output),spec.width,spec.height,spec.content_type,hashlib.sha256(Path(output).read_bytes()).hexdigest())
+   with patch('chainura.application.initial_rendering.render_signal_image',renderer):
+    a,b,c=await asyncio.gather(service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW),service.render_update_signal(signal(),self.event(SignalEventKind.SL_HIT,Decimal('90'),None),Decimal('90'),Exchange.OURBIT,None),service.render_update_signal(signal(),self.event(SignalEventKind.BREAKEVEN,Decimal('100'),None),Decimal('100'),Exchange.OURBIT,None))
+   self.assertEqual(a.file_path.name.split('-',1)[0],'initial');self.assertTrue(b.file_path.name.startswith('update-'));self.assertTrue(c.file_path.name.startswith('update-'))
+   self.assertIn(('initial',Decimal('100.002'),'initial'),seen);self.assertIn(('sl',Decimal('90'),'update'),seen);self.assertIn(('breakeven',Decimal('100'),'update'),seen)
+   self.assertIsInstance(service.payload_factory,InitialPayloadFactory)

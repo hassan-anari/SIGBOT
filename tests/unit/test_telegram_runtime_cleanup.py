@@ -240,3 +240,22 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.polling_task)
         self.assertEqual(order,['lease','storage','bot','engine'])
         self.assertTrue(runtime.lease_lost.is_set())
+
+class RuntimePhase6BCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_publication_task_is_supervised(self):
+        runtime=Runtime(settings());runtime.state=RuntimeState.RUNNING
+        runtime.renewal_task=asyncio.create_task(asyncio.sleep(30));runtime.polling_task=asyncio.create_task(asyncio.sleep(30))
+        async def fail(): raise RuntimeError('boom')
+        runtime.update_publication_task=asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        with self.assertRaises(TelegramRuntimeError):await runtime._supervise()
+        self.assertTrue(runtime.shutdown_requested.is_set())
+        for task in (runtime.renewal_task,runtime.polling_task):
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):await task
+    def test_notification_wiring_is_not_nested_under_update_worker_condition(self):
+        import inspect
+        source=inspect.getsource(Runtime.start)
+        self.assertIn('monitoring_service.notification_wake=self.notification_worker.wake',source)
+        self.assertIn('monitoring_service.update_publication_wake=self.update_publication_worker.wake',source)
+        self.assertNotIn('if self.update_publication_worker: monitoring_service.update_publication_wake=self.update_publication_worker.wake;await self._startup_await(self.notification_worker.start())',source)

@@ -56,9 +56,22 @@ class SqlAlchemyUpdatePublicationRepository:
   await self.session.flush();req.status=PublicationRequestStatus.PLANNED;req.planned_at=now;req.updated_at=now;await self.complete_request(req.id,now);return True
  async def supersede_obsolete_tp(self,now):
   rows=(await self.session.execute(select(DestinationUpdatePublicationRecord,SignalEventRecord).join(SignalEventRecord,SignalEventRecord.id==DestinationUpdatePublicationRecord.event_id).where(SignalEventRecord.kind==SignalEventKind.TP_HIT,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.BLOCKED_TEMPLATE))))).all()
+  affected=set()
   for d,e in rows:
    newer=await self.session.scalar(select(func.count()).select_from(SignalEventRecord).where(SignalEventRecord.signal_id==e.signal_id,SignalEventRecord.kind==SignalEventKind.TP_HIT,SignalEventRecord.tp_index>e.tp_index))
-   if newer:d.status=PublicationStatus.SUPERSEDED;d.updated_at=now
+   if newer:
+    d.status=PublicationStatus.SUPERSEDED;d.updated_at=now;affected.add(d.request_id)
+  for request_id in affected:await self.complete_request(request_id,now)
+  return len(affected)
+ async def _is_obsolete_tp(self,row):
+  event=await self.session.get(SignalEventRecord,row.event_id)
+  candidate=await self.session.get(SignalUpdateCandidateRecord,row.candidate_id)
+  request=await self.session.get(UpdatePublicationRequestRecord,row.request_id)
+  if request is None or request.status is PublicationRequestStatus.SUPERSEDED:return True
+  if candidate is None or candidate.superseded_by_event_id is not None:return True
+  if event is None or event.kind is not SignalEventKind.TP_HIT:return False
+  newer=await self.session.scalar(select(func.count()).select_from(SignalEventRecord).where(SignalEventRecord.signal_id==event.signal_id,SignalEventRecord.kind==SignalEventKind.TP_HIT,SignalEventRecord.tp_index>event.tp_index))
+  return bool(newer)
  async def pending_delivery_ids(self,now,limit=100):
   return tuple((await self.session.scalars(select(DestinationUpdatePublicationRecord.id).where((DestinationUpdatePublicationRecord.status==PublicationStatus.PENDING)|((DestinationUpdatePublicationRecord.status==PublicationStatus.RETRY_WAIT)&(DestinationUpdatePublicationRecord.retry_at<=now))).order_by(DestinationUpdatePublicationRecord.signal_id,DestinationUpdatePublicationRecord.destination_id,DestinationUpdatePublicationRecord.event_id).limit(limit))).all())
  async def claim(self,id,now):
@@ -72,6 +85,8 @@ class SqlAlchemyUpdatePublicationRepository:
  async def prepare_send(self,id,now):
   row=await self.session.get(DestinationUpdatePublicationRecord,id);signal=await self.session.get(SignalRecord,row.signal_id) if row else None;dest=await self.session.get(DestinationRecord,row.destination_id) if row else None;actor=await self.session.get(SignalistRecord,signal.signalist_id) if signal else None
   if not row or row.status is not PublicationStatus.RENDERING:return 'lost',None
+  if await self._is_obsolete_tp(row):
+   row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;return row.status.value,None
   if actor is None or actor.status is not SignalistStatus.ACTIVE:row.status=PublicationStatus.SKIPPED_SIGNALIST_INACTIVE
   elif dest is None or dest.status is not DestinationStatus.ACTIVE:row.status=PublicationStatus.SKIPPED_DESTINATION_INACTIVE
   elif not await self.session.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id))):row.status=PublicationStatus.SKIPPED_UNASSIGNED
@@ -95,6 +110,12 @@ class SqlAlchemyUpdatePublicationRepository:
   return await self.session.scalar(select(DestinationPublicationRecord.telegram_message_id).where(DestinationPublicationRecord.signal_id==signal_id,DestinationPublicationRecord.destination_id==destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT).limit(1))
  async def complete_request(self,request_id,now):
   unfinished=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.request_id==request_id,DestinationUpdatePublicationRecord.status.not_in(tuple(TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.SUPERSEDED}))))
-  if not unfinished:await self.session.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.id==request_id,UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING))).values(status=PublicationRequestStatus.COMPLETED,completed_at=now,updated_at=now))
+  if unfinished:return
+  total=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.request_id==request_id))
+  superseded=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.request_id==request_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SUPERSEDED))
+  target=PublicationRequestStatus.SUPERSEDED if total and total==superseded else PublicationRequestStatus.COMPLETED
+  values={"status":target,"completed_at":now,"updated_at":now}
+  if target is PublicationRequestStatus.SUPERSEDED:values["superseded_at"]=now
+  await self.session.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.id==request_id,UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING,PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL))).values(**values))
  async def unblock_templates(self,now):
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.BLOCKED_TEMPLATE).values(status=PublicationStatus.PENDING,last_error_category=None,updated_at=now))
