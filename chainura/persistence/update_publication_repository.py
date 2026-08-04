@@ -30,8 +30,9 @@ class SqlAlchemyUpdatePublicationRepository:
   affected=set((await self.session.scalars(select(DestinationUpdatePublicationRecord.request_id).where(
    DestinationUpdatePublicationRecord.status.in_((PublicationStatus.RENDERING,PublicationStatus.SENDING))
    | ((DestinationUpdatePublicationRecord.status==PublicationStatus.RETRY_WAIT)&(DestinationUpdatePublicationRecord.retry_at<=now))))).all())
-  affected.update((await self.session.scalars(select(UpdatePublicationRequestRecord.id).where(
-   UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL,PublicationRequestStatus.PLANNING,PublicationRequestStatus.PLANNED))))).all())
+  affected.update((await self.session.scalars(select(UpdatePublicationRequestRecord.id).join(
+   DestinationUpdatePublicationRecord,DestinationUpdatePublicationRecord.request_id==UpdatePublicationRequestRecord.id).where(
+   UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PLANNING,PublicationRequestStatus.PLANNED))).distinct())).all())
   await self.session.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.status==PublicationRequestStatus.PLANNING).values(status=PublicationRequestStatus.PENDING,updated_at=now))
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.RENDERING).values(status=PublicationStatus.PENDING,updated_at=now))
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category='restart_after_send_started',updated_at=now))
