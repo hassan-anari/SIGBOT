@@ -669,71 +669,160 @@ async def edit_limit(message: Message, actor: Actor, state: FSMContext):
         button(texts.BUTTON_CANCEL, cb("nav", "cancel", "dse"))]]))
 
 from datetime import datetime, timezone, date
-from chainura.application.reporting import period_filter
+from chainura.application.reporting import ReportFilter, period_filter, TEHRAN
 from chainura.telegram.states import AdminReportFlow
 
-def report_keyboard(stage="scope", page=1):
-    if stage=="scope": return markup([[button(texts.REPORT_ALL_SIGNALISTS, cb("rp","period","all"))],[button(texts.REPORT_ONE_SIGNALIST, cb("rp","sig",1))],[button(texts.BUTTON_CANCEL, cb("rp","scope","cancel"))]])
-    if stage=="period":
-        return markup([[button(texts.REPORT_TODAY, cb("rp","summary","today")),button(texts.REPORT_7D, cb("rp","summary","7d"))],[button(texts.REPORT_30D, cb("rp","summary","30d")),button(texts.REPORT_CUSTOM, cb("rp","summary","custom"))],[button(texts.BUTTON_BACK_STEP, cb("rp","scope","back")),button(texts.BUTTON_CANCEL, cb("rp","scope","cancel"))]])
-    return markup([[button(texts.REPORT_HISTORY, cb("rp","hist",page))],[button(texts.REPORT_REFRESH, cb("rp","summary","refresh")),button(texts.BUTTON_BACK_STEP, cb("rp","period","back"))]])
 
-def history_keyboard(page,pages):
-    row=[]
-    if page>1: row.append(button(texts.BUTTON_PREVIOUS, cb("rp","hist",page-1)))
-    if page<pages: row.append(button(texts.BUTTON_NEXT, cb("rp","hist",page+1)))
-    rows=[]
-    if row: rows.append(row)
-    rows.append([button(texts.REPORT_REFRESH, cb("rp","hist",page)),button(texts.BUTTON_BACK_STEP, cb("rp","summary","back"))])
+def _report_state_filter(data):
+    start = data.get("report_start"); end = data.get("report_end")
+    if not start or not end:
+        return None
+    return ReportFilter(datetime.fromisoformat(start), datetime.fromisoformat(end), data.get("report_signalist_id"))
+
+
+def _report_scope_label(data):
+    return data.get("report_signalist_name") or texts.REPORT_ALL_SIGNALISTS
+
+
+def _date_label(value):
+    return datetime.fromisoformat(value).astimezone(TEHRAN).date().isoformat()
+
+
+def report_keyboard(stage="scope", page=1):
+    if stage == "scope":
+        return markup([[button(texts.REPORT_ALL_SIGNALISTS, cb("rp", "period", "all"))],
+                       [button(texts.REPORT_ONE_SIGNALIST, cb("rp", "sig", 1))],
+                       [button(texts.BUTTON_CANCEL, cb("rp", "scope", "cancel"))]])
+    if stage == "period":
+        return markup([[button(texts.REPORT_TODAY, cb("rp", "summary", "today")), button(texts.REPORT_7D, cb("rp", "summary", "7d"))],
+                       [button(texts.REPORT_30D, cb("rp", "summary", "30d")), button(texts.REPORT_CUSTOM, cb("rp", "summary", "custom"))],
+                       [button(texts.BUTTON_BACK_STEP, cb("rp", "scope", "back")), button(texts.BUTTON_CANCEL, cb("rp", "scope", "cancel"))]])
+    return markup([[button(texts.REPORT_HISTORY, cb("rp", "hist", page))],
+                   [button(texts.REPORT_REFRESH, cb("rp", "summary", "refresh")), button(texts.BUTTON_BACK_STEP, cb("rp", "period", "back"))]])
+
+
+def report_signalist_keyboard(page_obj):
+    rows = [[button(texts.signalist_button_label(item), cb("rp", "sigsel", item.id))] for item in page_obj.items]
+    nav = []
+    if page_obj.page > 1:
+        nav.append(button(texts.BUTTON_PREVIOUS, cb("rp", "sig", page_obj.page - 1)))
+    if page_obj.page < page_obj.pages:
+        nav.append(button(texts.BUTTON_NEXT, cb("rp", "sig", page_obj.page + 1)))
+    if nav:
+        rows.append(nav)
+    rows.append([button(texts.BUTTON_BACK_STEP, cb("rp", "scope", "back")), button(texts.BUTTON_CANCEL, cb("rp", "scope", "cancel"))])
     return markup(rows)
+
+
+def history_keyboard(page, pages):
+    row = []
+    if page > 1:
+        row.append(button(texts.BUTTON_PREVIOUS, cb("rp", "hist", page - 1)))
+    if page < pages:
+        row.append(button(texts.BUTTON_NEXT, cb("rp", "hist", page + 1)))
+    rows = []
+    if row:
+        rows.append(row)
+    rows.append([button(texts.REPORT_REFRESH, cb("rp", "hist", page)), button(texts.BUTTON_BACK_STEP, cb("rp", "summary", "back"))])
+    return markup(rows)
+
+
+async def _show_summary(message, reporting_service, state, flt):
+    data = await state.get_data()
+    summary = await reporting_service.summary(flt)
+    from datetime import timedelta
+    start_label = flt.start_utc.astimezone(TEHRAN).date().isoformat()
+    end_label = (flt.end_utc.astimezone(TEHRAN).date() - timedelta(days=1)).isoformat()
+    await message.answer(texts.report_summary_text(summary, _report_scope_label(data), start_label, end_label), reply_markup=report_keyboard("summary"))
+
 
 @router.message(F.text == texts.MENU_ADMIN_REPORTS)
 async def reports_menu(message: Message, actor: Actor, state: FSMContext):
-    if not await require_admin(message, actor): return
-    await state.clear(); await state.update_data(report_scope="all")
+    if not await require_admin(message, actor):
+        return
+    await state.clear()
+    await state.update_data(report_scope="all", report_signalist_id=None, report_signalist_name=texts.REPORT_ALL_SIGNALISTS)
     await message.answer(texts.REPORT_SCOPE_TITLE, reply_markup=report_keyboard("scope"))
+
 
 @router.callback_query(lambda c: parse_phase4(c.data) is not None and parse_phase4(c.data).namespace == "rp")
 async def reports_callback(query: CallbackQuery, actor: Actor, state: FSMContext, reporting_service=None, signalist_service=None):
-    ack=CallbackAcknowledger(query); cbdata=parse_phase4(query.data)
-    if not await require_admin(query,actor,ack): return
+    ack = CallbackAcknowledger(query); cbdata = parse_phase4(query.data)
+    if not await require_admin(query, actor, ack):
+        return
     await ack.answer_once()
-    if cbdata.action=="scope":
-        if cbdata.arguments and cbdata.arguments[0]=="cancel": await state.clear(); await query.message.answer(texts.FLOW_CANCELLED, reply_markup=admin_menu()); return
+    if cbdata.action == "scope":
+        if cbdata.arguments and cbdata.arguments[0] == "cancel":
+            await state.clear(); await query.message.answer(texts.FLOW_CANCELLED, reply_markup=admin_menu()); return
+        await state.clear(); await state.update_data(report_scope="all", report_signalist_id=None, report_signalist_name=texts.REPORT_ALL_SIGNALISTS)
         await query.message.answer(texts.REPORT_SCOPE_TITLE, reply_markup=report_keyboard("scope")); return
-    if cbdata.action=="period":
-        await state.update_data(report_scope=cbdata.arguments[0] if cbdata.arguments else "all")
+    if cbdata.action == "period":
+        if cbdata.arguments and cbdata.arguments[0] == "all":
+            await state.update_data(report_scope="all", report_signalist_id=None, report_signalist_name=texts.REPORT_ALL_SIGNALISTS)
         await query.message.answer(texts.REPORT_PERIOD_TITLE, reply_markup=report_keyboard("period")); return
-    if cbdata.action=="sig":
-        # compact fallback: individual scope can be supplied by tests/state; UI lists elsewhere remain unchanged
-        await state.update_data(report_scope="all")
+    if cbdata.action == "sig":
+        if signalist_service is None:
+            await query.message.answer(texts.TEMPORARY_ERROR); return
+        page_no = int(cbdata.arguments[0]) if cbdata.arguments else 1
+        page_obj = await signalist_service.list_page(None, PageRequest(page_no))
+        content = texts.page_title(texts.SIGNALIST_LIST_TITLE, page_obj.page, page_obj.pages, texts.BUTTON_ALL)
+        if not page_obj.items:
+            content += "\n\n" + texts.EMPTY_LIST
+        await query.message.answer(content, reply_markup=report_signalist_keyboard(page_obj)); return
+    if cbdata.action == "sigsel":
+        if signalist_service is None:
+            await query.message.answer(texts.TEMPORARY_ERROR); return
+        try:
+            selected = await signalist_service.get_by_id(int(cbdata.arguments[0]))
+        except Exception:
+            await query.message.answer(texts.STALE_ACTION); return
+        await state.update_data(report_scope="signalist", report_signalist_id=selected.id, report_signalist_name=selected.display_name)
         await query.message.answer(texts.REPORT_PERIOD_TITLE, reply_markup=report_keyboard("period")); return
-    if reporting_service is None: await query.message.answer(texts.TEMPORARY_ERROR); return
-    data=await state.get_data(); period=cbdata.arguments[0] if cbdata.arguments else "today"
-    if cbdata.action=="summary" and period=="custom":
+    if reporting_service is None:
+        await query.message.answer(texts.TEMPORARY_ERROR); return
+    data = await state.get_data(); period = cbdata.arguments[0] if cbdata.arguments else "today"
+    if cbdata.action == "summary" and period == "custom":
         await state.set_state(AdminReportFlow.start_date); await state.update_data(report_period="custom"); await query.message.answer(texts.REPORT_ASK_START); return
-    flt=period_filter(period if period not in {"refresh","back"} else data.get("report_period","today"), datetime.now(timezone.utc), data.get("report_signalist_id"))
-    await state.update_data(report_period=period if period not in {"refresh","back"} else data.get("report_period","today"), report_start=flt.start_utc.isoformat(), report_end=flt.end_utc.isoformat())
-    if cbdata.action=="hist":
-        from chainura.application.reporting import ReportFilter
-        page=int(cbdata.arguments[0]) if cbdata.arguments else 1
-        flt=ReportFilter(datetime.fromisoformat(data.get("report_start",flt.start_utc.isoformat())),datetime.fromisoformat(data.get("report_end",flt.end_utc.isoformat())),data.get("report_signalist_id"))
-        hist=await reporting_service.history(flt,page); await query.message.answer(texts.trade_history_text(hist, data.get("report_signalist_id") is None), reply_markup=history_keyboard(hist.page,hist.pages)); return
-    summary=await reporting_service.summary(flt); await query.message.answer(texts.report_summary_text(summary), reply_markup=report_keyboard("summary"))
+    if cbdata.action == "hist":
+        flt = _report_state_filter(data)
+        if flt is None:
+            await query.message.answer(texts.STALE_ACTION); return
+        page = int(cbdata.arguments[0]) if cbdata.arguments else 1
+        hist = await reporting_service.history(flt, page)
+        await query.message.answer(texts.trade_history_text(hist, data.get("report_signalist_id") is None), reply_markup=history_keyboard(hist.page, hist.pages)); return
+    if period in {"refresh", "back"}:
+        period = data.get("report_period", "today")
+    try:
+        flt = period_filter(period, datetime.now(timezone.utc), data.get("report_signalist_id"))
+    except ValueError:
+        await query.message.answer(texts.STALE_ACTION); return
+    await state.update_data(report_period=period, report_start=flt.start_utc.isoformat(), report_end=flt.end_utc.isoformat())
+    await _show_summary(query.message, reporting_service, state, flt)
+
 
 @router.message(AdminReportFlow.start_date)
 async def report_start_date(message: Message, actor: Actor, state: FSMContext):
-    if not await require_admin(message,actor): return
-    try: start=date.fromisoformat((message.text or '').strip())
-    except ValueError: await message.answer(texts.REPORT_INVALID_RANGE); return
-    await state.update_data(report_custom_start=start.isoformat()); await state.set_state(AdminReportFlow.end_date); await message.answer(texts.REPORT_ASK_END)
+    if not await require_admin(message, actor):
+        return
+    try:
+        start = date.fromisoformat((message.text or "").strip())
+    except ValueError:
+        await message.answer(texts.REPORT_INVALID_RANGE); return
+    await state.update_data(report_custom_start=start.isoformat())
+    await state.set_state(AdminReportFlow.end_date)
+    await message.answer(texts.REPORT_ASK_END)
+
 
 @router.message(AdminReportFlow.end_date)
 async def report_end_date(message: Message, actor: Actor, state: FSMContext, reporting_service=None):
-    if not await require_admin(message,actor): return
-    data=await state.get_data()
+    if not await require_admin(message, actor):
+        return
+    data = await state.get_data()
     try:
-        start=date.fromisoformat(data['report_custom_start']); end=date.fromisoformat((message.text or '').strip()); flt=period_filter('custom',datetime.now(timezone.utc),data.get('report_signalist_id'),start,end)
-    except Exception: await message.answer(texts.REPORT_INVALID_RANGE); return
-    await state.clear(); await state.update_data(report_period='custom',report_start=flt.start_utc.isoformat(),report_end=flt.end_utc.isoformat())
-    summary=await reporting_service.summary(flt); await message.answer(texts.report_summary_text(summary), reply_markup=report_keyboard('summary'))
+        start = date.fromisoformat(data["report_custom_start"]); end = date.fromisoformat((message.text or "").strip())
+        flt = period_filter("custom", datetime.now(timezone.utc), data.get("report_signalist_id"), start, end)
+    except Exception:
+        await message.answer(texts.REPORT_INVALID_RANGE); return
+    await state.set_state(None)
+    await state.update_data(report_period="custom", report_start=flt.start_utc.isoformat(), report_end=flt.end_utc.isoformat())
+    await _show_summary(message, reporting_service, state, flt)

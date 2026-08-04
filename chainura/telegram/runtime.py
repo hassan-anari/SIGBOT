@@ -243,6 +243,8 @@ class Runtime:
             assignment_service = DestinationAssignmentService(transactions)
             market_probe = MarketProbe()
             health_repository=HealthRepository(sessions)
+            if hasattr(sessions,"class_"):
+                await self._startup_await(health_repository.seed_unknown_services(market_probe.clock()))
             reporting_service=ReportingService(ReportingRepository(sessions))
             symbol_catalog = SymbolCatalogProvider(market_probe, health_repository)
             monitoring_service=None
@@ -263,6 +265,7 @@ class Runtime:
                     return await self.bot.send_message(telegram_id,text)
             if hasattr(sessions,"class_"):
                 self.admin_alert_worker=AdminAlertWorker(health_repository,AdminAlertTransport(),self.settings.application.main_admin_telegram_id,concurrency=self.settings.admin_alert_concurrency,max_attempts=self.settings.admin_alert_max_attempts,retry_base_seconds=self.settings.admin_alert_retry_base_seconds,sweep_seconds=self.settings.admin_alert_sweep_seconds)
+                health_repository.wake_alerts=self.admin_alert_worker.wake
             notification_service=None
             if monitoring_service is not None:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
@@ -326,7 +329,7 @@ class Runtime:
                 if self.monitoring_worker:self.monitoring_worker.wake()
                 if self.admin_alert_worker:self.admin_alert_worker.wake()
             signal_service = SignalService(
-                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
+                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog, health_repository),
                 publication_wake=wake_background)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)

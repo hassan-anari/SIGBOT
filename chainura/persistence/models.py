@@ -421,7 +421,7 @@ ADMIN_ALERT_STATUS_ENUM=_enum(AdminAlertStatus,"admin_alert_status")
 
 class ServiceHealthRecord(Base):
     __tablename__="service_health_states"
-    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_service_health_key"),CheckConstraint("consecutive_successes >= 0 AND consecutive_failures >= 0",name="ck_service_health_counters"),CheckConstraint("(status='down' AND current_incident_id IS NOT NULL AND unhealthy_since IS NOT NULL) OR status<>'down'",name="ck_service_health_down_incident"),Index("ix_service_health_status_repeat","status","next_repeat_at"))
+    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_service_health_key"),CheckConstraint("consecutive_successes >= 0 AND consecutive_failures >= 0",name="ck_service_health_counters"),ForeignKeyConstraint(["current_incident_id"],["outage_incidents.id"],name="fk_service_health_states_current_incident_id_incidents"),CheckConstraint("(status='down' AND current_incident_id IS NOT NULL AND unhealthy_since IS NOT NULL) OR (status<>'down' AND current_incident_id IS NULL)",name="ck_service_health_current_incident"),Index("ix_service_health_status_repeat","status","next_repeat_at"))
     service_key:Mapped[str]=mapped_column(Text,primary_key=True)
     exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False)
     operation:Mapped[ApiOperation]=mapped_column(API_OPERATION_ENUM,nullable=False)
@@ -444,7 +444,7 @@ OutageIncidentRecord.__table__.primary_key.name="pk_outage_incidents"
 
 class AdminAlertRecord(Base):
     __tablename__="admin_alert_outbox"
-    __table_args__=(ForeignKeyConstraint(["incident_id"],["outage_incidents.id"],ondelete="CASCADE",name="fk_admin_alert_outbox_incident_id_incidents"),CheckConstraint("attempts >= 0",name="ck_admin_alert_outbox_attempts"),CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0",name="ck_admin_alert_outbox_message_positive"),UniqueConstraint("incident_id","kind","repeat_sequence",name="uq_admin_alert_outbox_logical"),Index("ix_admin_alert_outbox_status_retry","status","retry_at"))
+    __table_args__=(ForeignKeyConstraint(["incident_id"],["outage_incidents.id"],ondelete="CASCADE",name="fk_admin_alert_outbox_incident_id_incidents"),CheckConstraint("attempts >= 0",name="ck_admin_alert_outbox_attempts"),CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0",name="ck_admin_alert_outbox_message_positive"),CheckConstraint("(status='sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status<>'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)",name="ck_admin_alert_outbox_sent_consistency"),UniqueConstraint("incident_id","kind","repeat_sequence",name="uq_admin_alert_outbox_logical"),Index("ix_admin_alert_outbox_status_retry","status","retry_at"))
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);incident_id:Mapped[int]=mapped_column(Integer,nullable=False);service_key:Mapped[str]=mapped_column(Text,nullable=False)
     kind:Mapped[AdminAlertKind]=mapped_column(ADMIN_ALERT_KIND_ENUM,nullable=False);repeat_sequence:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
     status:Mapped[AdminAlertStatus]=mapped_column(ADMIN_ALERT_STATUS_ENUM,nullable=False,default=AdminAlertStatus.PENDING);attempts:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
