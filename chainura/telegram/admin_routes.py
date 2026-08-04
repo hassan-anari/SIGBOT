@@ -241,7 +241,7 @@ async def global_status(message: Message, actor: Actor, state: FSMContext, signa
     if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     async with phase5_lock(message): await state.clear()
     if actor.kind is ActorKind.MAIN_ADMIN and health_repository is not None:
-        await message.answer(texts.health_status_text(await health_repository.list_health()), reply_markup=status_navigation())
+        await message.answer(texts.health_status_text(await health_repository.list_health(), datetime.now(timezone.utc)), reply_markup=status_navigation())
     else:
         await show_status(message, actor)
 
@@ -677,7 +677,22 @@ def _report_state_filter(data):
     start = data.get("report_start"); end = data.get("report_end")
     if not start or not end:
         return None
-    return ReportFilter(datetime.fromisoformat(start), datetime.fromisoformat(end), data.get("report_signalist_id"))
+    try:
+        start_dt = datetime.fromisoformat(start)
+        end_dt = datetime.fromisoformat(end)
+    except (TypeError, ValueError):
+        return None
+    if start_dt.tzinfo is None or end_dt.tzinfo is None or start_dt >= end_dt:
+        return None
+    return ReportFilter(start_dt, end_dt, data.get("report_signalist_id"))
+
+
+def _positive_int(value, default=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 1 else default
 
 
 def _report_scope_label(data):
@@ -763,8 +778,11 @@ async def reports_callback(query: CallbackQuery, actor: Actor, state: FSMContext
     if cbdata.action == "sig":
         if signalist_service is None:
             await query.message.answer(texts.TEMPORARY_ERROR); return
-        page_no = int(cbdata.arguments[0]) if cbdata.arguments else 1
-        page_obj = await signalist_service.list_page(None, PageRequest(page_no))
+        page_no = _positive_int(cbdata.arguments[0] if cbdata.arguments else None, 1)
+        try:
+            page_obj = await signalist_service.list_page(None, PageRequest(page_no))
+        except Exception:
+            await query.message.answer(texts.STALE_ACTION); return
         content = texts.page_title(texts.SIGNALIST_LIST_TITLE, page_obj.page, page_obj.pages, texts.BUTTON_ALL)
         if not page_obj.items:
             content += "\n\n" + texts.EMPTY_LIST
@@ -772,8 +790,11 @@ async def reports_callback(query: CallbackQuery, actor: Actor, state: FSMContext
     if cbdata.action == "sigsel":
         if signalist_service is None:
             await query.message.answer(texts.TEMPORARY_ERROR); return
+        selected_id = _positive_int(cbdata.arguments[0] if cbdata.arguments else None)
+        if selected_id is None:
+            await query.message.answer(texts.STALE_ACTION); return
         try:
-            selected = await signalist_service.get_by_id(int(cbdata.arguments[0]))
+            selected = await signalist_service.get_by_id(selected_id)
         except Exception:
             await query.message.answer(texts.STALE_ACTION); return
         await state.update_data(report_scope="signalist", report_signalist_id=selected.id, report_signalist_name=selected.display_name)
@@ -787,13 +808,21 @@ async def reports_callback(query: CallbackQuery, actor: Actor, state: FSMContext
         flt = _report_state_filter(data)
         if flt is None:
             await query.message.answer(texts.STALE_ACTION); return
-        page = int(cbdata.arguments[0]) if cbdata.arguments else 1
-        hist = await reporting_service.history(flt, page)
+        page = _positive_int(cbdata.arguments[0] if cbdata.arguments else None, 1)
+        try:
+            hist = await reporting_service.history(flt, page)
+        except Exception:
+            await query.message.answer(texts.STALE_ACTION); return
         await query.message.answer(texts.trade_history_text(hist, data.get("report_signalist_id") is None), reply_markup=history_keyboard(hist.page, hist.pages)); return
     if period in {"refresh", "back"}:
         period = data.get("report_period", "today")
     try:
-        flt = period_filter(period, datetime.now(timezone.utc), data.get("report_signalist_id"))
+        if period == "custom":
+            flt = _report_state_filter(data)
+            if flt is None:
+                raise ValueError("stale custom range")
+        else:
+            flt = period_filter(period, datetime.now(timezone.utc), data.get("report_signalist_id"))
     except ValueError:
         await query.message.answer(texts.STALE_ACTION); return
     await state.update_data(report_period=period, report_start=flt.start_utc.isoformat(), report_end=flt.end_utc.isoformat())

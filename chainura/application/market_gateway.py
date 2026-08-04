@@ -229,13 +229,6 @@ class BatchedMarketSnapshotProvider:
         signals = tuple(signals)
         if not signals:
             return {}
-        has_composite = any(signal.mode is SignalMode.COMPOSITE for signal in signals)
-        shared_ready = not has_composite
-        if has_composite:
-            try:
-                await self.catalog._ensure_discovered(); shared_ready = True
-            except SymbolCatalogError:
-                shared_ready = False
         single_ready: set[Exchange] = set()
         for signal in signals:
             if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not None:
@@ -244,20 +237,21 @@ class BatchedMarketSnapshotProvider:
                 except SymbolCatalogError:
                     continue
         required = set(single_ready)
-        if shared_ready:
-            required.update(exchange for signal in signals if signal.mode is SignalMode.COMPOSITE for exchange, _ in signal.exchange_symbols)
+        # Persisted Composite Signals already store their exact exchange/native
+        # mappings. Monitoring must not depend on live catalog discovery after a
+        # restart; catalog outages affect discovery/search only.
+        required.update(exchange for signal in signals if signal.mode is SignalMode.COMPOSITE for exchange, _ in signal.exchange_symbols)
         if not required:
             return {}
         raw_by_exchange = await self.catalog._fetch_prices(tuple(sorted(required, key=lambda x: x.value)))
         now = self.probe.clock(); result = {}
         for signal in signals:
             if signal.mode is SignalMode.COMPOSITE:
-                if not shared_ready:
+                prices = self._composite_prices(signal, raw_by_exchange, now)
+                reference = self._composite_reference(tuple(price for _, price in prices))
+                if reference is None:
                     continue
-                item = self.probe._analyze_symbol(signal.canonical_symbol, now)
-                if item["status"] not in READY_STATUSES:
-                    continue
-                prices = tuple((Exchange(name), price) for name, price in sorted(item["prices"].items()))
+                item = {"reference_price": reference}
             else:
                 selected = signal.selected_exchange
                 if selected not in single_ready:
@@ -269,3 +263,25 @@ class BatchedMarketSnapshotProvider:
                 item = {"reference_price": tick.last_price}; prices = ((selected, tick.last_price),)
             result[signal.signal_id] = MarketDecision(item["reference_price"], prices, signal.price_source_type, now)
         return result
+
+    def _composite_prices(self, signal, raw_by_exchange, now):
+        rows = []
+        for exchange, native in signal.exchange_symbols:
+            tick = next((x for x in raw_by_exchange.get(exchange, ()) if x.exchange == exchange.value and x.exchange_symbol == native), None)
+            if tick is None:
+                continue
+            if now - self.probe._require_aware(tick.received_at) > self.probe.max_price_age:
+                continue
+            if not isinstance(tick.last_price, Decimal) or not tick.last_price.is_finite() or tick.last_price <= 0:
+                continue
+            rows.append((exchange, tick.last_price))
+        return tuple(sorted(rows, key=lambda item: item[0].value))
+
+    def _composite_reference(self, values: tuple[Decimal, ...]) -> Decimal | None:
+        if len(values) < 2:
+            return None
+        if len(values) == 2:
+            if self.probe._spread_percent(values[0], values[1]) <= self.probe.max_spread_percent:
+                return sum(values) / Decimal("2")
+            return None
+        return sorted(values)[len(values) // 2]

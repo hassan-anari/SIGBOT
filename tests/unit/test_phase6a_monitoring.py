@@ -109,7 +109,7 @@ class Phase6ACorrectionTests(unittest.TestCase):
    self.assertEqual([a.instrument_calls for a in probe.adapters],[1,0,0])
    self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
   asyncio.run(run())
- def test_mixed_batch_skips_composite_when_shared_discovery_fails_but_keeps_single(self):
+ def test_mixed_batch_catalog_failure_still_fetches_persisted_composite_prices(self):
   async def run():
    now=NOW; probe=FakeProbe(now)
    probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake')]
@@ -120,7 +120,7 @@ class Phase6ACorrectionTests(unittest.TestCase):
    single=MonitorWork(10,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
    snapshot=await provider.snapshot((composite,single))
    self.assertNotIn(9,snapshot); self.assertIn(10,snapshot)
-   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+   self.assertEqual([a.calls for a in probe.adapters],[1,1,1])
   asyncio.run(run())
  def test_selected_exchange_failure_skips_single_cleanly(self):
   async def run():

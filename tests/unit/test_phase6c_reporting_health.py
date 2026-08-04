@@ -49,6 +49,7 @@ from market import MarketProbe
 from models import Instrument, PriceTick
 from chainura.application.market_gateway import SymbolCatalogProvider, BatchedMarketSnapshotProvider, MarketReferencePriceProvider
 from chainura.domain.monitoring import MarketDecision
+from chainura.application.monitoring import MonitorWork
 
 class FakeAdapter:
     def __init__(self,name, instruments=None, prices=None, fail_instruments=False, fail_prices=False):
@@ -106,6 +107,20 @@ class Phase6CMarketObservationTests(unittest.IsolatedAsyncioTestCase):
         repo.observe=wrapped
         await catalog._fetch_prices((Exchange.OURBIT,))
         self.assertEqual(seen,[False])
+    async def test_persisted_composite_survives_catalog_outage_with_native_mappings(self):
+        adapters=(FakeAdapter('ourbit',fail_instruments=True,prices=[self.tick('ourbit','110')]),FakeAdapter('toobit',[self.inst('toobit')],[self.tick('toobit','110')]),FakeAdapter('lbank',[self.inst('lbank')],[self.tick('lbank','110')]))
+        p=self.probe(adapters); repo=HealthRepository(self.sessions); catalog=SymbolCatalogProvider(p,repo)
+        with self.assertRaises(Exception):
+            await catalog._ensure_discovered()
+        provider=BatchedMarketSnapshotProvider(p,catalog,repo)
+        work=MonitorWork(1,1,SignalMode.COMPOSITE,'BTCUSDT',None,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('90'),PriceSourceType.COMPOSITE,((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'BTCUSDT')),self.now)
+        result=await provider.snapshot((work,))
+        self.assertEqual(result[1].reference_price,Decimal('110'))
+        self.assertEqual(len(result[1].source_prices),3)
+        async with self.sessions() as s:
+            self.assertIsNotNone((await s.get(ServiceHealthRecord,'ourbit_catalog')).current_incident_id)
+            self.assertEqual((await s.get(ServiceHealthRecord,'ourbit_prices')).status,ServiceHealthStatus.HEALTHY)
+            self.assertEqual((await s.get(ServiceHealthRecord,'toobit_prices')).status,ServiceHealthStatus.HEALTHY)
 
 class Phase6CAlertLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -157,3 +172,25 @@ class Phase6CHealthSeedTests(unittest.IsolatedAsyncioTestCase):
     async def test_seed_materializes_all_six_unknown_services(self):
         repo=HealthRepository(self.sessions); await repo.seed_unknown_services(datetime(2026,8,4,tzinfo=timezone.utc))
         rows=await repo.list_health(); self.assertEqual(len(rows),6); self.assertEqual({r.status for r in rows},{ServiceHealthStatus.UNKNOWN})
+
+class Phase6CCustomReportStateTests(unittest.TestCase):
+    def test_custom_refresh_reuses_all_scope_range(self):
+        from chainura.telegram.admin_routes import _report_state_filter
+        data={"report_period":"custom","report_start":"2026-08-03T20:30:00+00:00","report_end":"2026-08-04T20:30:00+00:00","report_signalist_id":None}
+        flt=_report_state_filter(data)
+        self.assertEqual((flt.start_utc.isoformat(),flt.end_utc.isoformat(),flt.signalist_id),("2026-08-03T20:30:00+00:00","2026-08-04T20:30:00+00:00",None))
+    def test_custom_refresh_reuses_individual_scope_range(self):
+        from chainura.telegram.admin_routes import _report_state_filter
+        data={"report_period":"custom","report_start":"2026-08-01T20:30:00+00:00","report_end":"2026-08-08T20:30:00+00:00","report_signalist_id":42}
+        flt=_report_state_filter(data)
+        self.assertEqual((flt.start_utc.isoformat(),flt.end_utc.isoformat(),flt.signalist_id),("2026-08-01T20:30:00+00:00","2026-08-08T20:30:00+00:00",42))
+    def test_custom_history_back_uses_same_stored_range(self):
+        from chainura.telegram.admin_routes import _report_state_filter
+        data={"report_period":"custom","report_start":"2026-07-31T20:30:00+00:00","report_end":"2026-08-02T20:30:00+00:00","report_signalist_id":7}
+        first=_report_state_filter(data); second=_report_state_filter(data)
+        self.assertEqual(first,second)
+    def test_malformed_callbacks_and_ranges_fail_safely(self):
+        from chainura.telegram.admin_routes import _positive_int, _report_state_filter
+        self.assertIsNone(_positive_int("x"))
+        self.assertIsNone(_positive_int("0"))
+        self.assertIsNone(_report_state_filter({"report_start":"bad","report_end":"2026-08-04T00:00:00+00:00"}))

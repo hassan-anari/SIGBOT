@@ -1,5 +1,6 @@
 from __future__ import annotations
 from html import escape
+from datetime import timezone
 from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii_id,
     format_datetime, format_priority, persian_digits)
 
@@ -220,10 +221,26 @@ def trade_history_text(page, all_scope=True):
         rows.append(f"\n#{persian_digits(item.signal_id)}{who}\nنماد: {safe(item.canonical_symbol)}\nجهت: {safe(_report_direction(item.direction))}\nزمان: {datetime_value(item.created_at_tehran)}\nمنبع: {safe(_report_source(item.source_label))}\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {persian_digits(item.highest_tp) if item.highest_tp else REPORT_DASH}\nROI: {_dec(item.theoretical_roi)}\nانتشار قطعی: {REPORT_YES if item.confirmed_published else REPORT_NO}")
     if not page.items: rows.append(EMPTY_LIST)
     return "\n".join(rows)
+def _duration_text(start, end):
+    if start is None or end is None:
+        return REPORT_DASH
+    seconds = max(0, int((end.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds()))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return persian_digits(f"{hours} ساعت و {minutes} دقیقه")
+    if minutes:
+        return persian_digits(f"{minutes} دقیقه")
+    return persian_digits(f"{sec} ثانیه")
+
 def health_status_text(rows, now=None):
     out=[HEALTH_STATUS_TITLE]
     for row in rows:
         last=datetime_value(row.last_success_at) if row.last_success_at else REPORT_DASH
-        extra=f"\nشروع اختلال: {datetime_value(row.unhealthy_since)}" if getattr(row,'status',None) and row.status.value=='down' and row.unhealthy_since else ""
+        extra=""
+        if getattr(row,'status',None) and row.status.value=='down' and row.unhealthy_since:
+            extra=f"\nشروع اختلال: {datetime_value(row.unhealthy_since)}"
+            if now is not None:
+                extra += f"\nمدت فعلی: {_duration_text(row.unhealthy_since, now)}"
         out.append(f"\n{HEALTH_LABELS.get(row.service_key,row.service_key)}\nوضعیت: {HEALTH_STATUS_LABELS.get(row.status.value,row.status.value)}\nآخرین موفقیت: {last}{extra}")
     return "\n".join(out)
