@@ -17,6 +17,10 @@ the returned short-lived output and must invoke the service's safe, idempotent
 `cleanup()` after publication or abandonment. Renderer Lab overrides are never
 accepted by production APIs.
 
+Template uploads are limited to `MAX_TEMPLATE_BYTES` (currently 12 MiB).
+Template verification, hashing, durable writes, local-logo inspection, and Pillow
+composition are executed off the asyncio event loop under configured bounds.
+
 این پروژه علاوه بر Probe مستقل بازار، پایهٔ پایدار و مستقل از Transport برنامه را برای مدیریت هویت و وضعیت Signalist فراهم می‌کند. CLI بازار همچنان بدون تنظیمات یا اتصال دیتابیس اجرا می‌شود.
 
 ## کار فعلی پروژه

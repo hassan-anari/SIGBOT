@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib, os, tempfile
+from decimal import Decimal
 from pathlib import Path
 from PIL import Image, ImageDraw, UnidentifiedImageError
 from chainura.domain.destination import Exchange
@@ -34,7 +35,7 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
     leverage = format_leverage(payload.leverage)
 
     values = {
-        "symbol": format_symbol(payload.native_symbol),
+        "symbol": format_symbol(payload.canonical_symbol),
         "direction": direction,
         "leverage": leverage,
         "entry": format_entry_price(payload.entry_price),
@@ -51,7 +52,8 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
 
         values["time_clock"] = clock_value
         values["time_date"] = date_value
-        values["pnl"] = f"+{values['pnl']}"
+        if payload.initial_pnl_percent == Decimal("0"):
+            values["pnl"] = "+0.00%"
 
     if payload.exchange is Exchange.LBANK:
         values["separator"] = "|"

@@ -27,8 +27,10 @@ def format_grouped_decimal(value: Decimal) -> str:
 def format_entry_price(value: Decimal) -> str: return format_grouped_decimal(value)
 def format_display_price(value: Decimal) -> str: return format_grouped_decimal(value)
 def format_initial_pnl(value: Decimal) -> str:
-    if value != Decimal("0"):
-        raise ValueError("initial PnL must be zero")
+    if not isinstance(value,Decimal) or not value.is_finite():raise ValueError("PnL must be finite Decimal")
+    rounded=abs(value).quantize(Decimal("0.01"))
+    if value>0:return f"+{rounded:.2f}%"
+    if value<0:return f"-{rounded:.2f}%"
     return "0.00%"
 def format_leverage(value: int) -> str: return f"{value}X"
 def format_elapsed(seconds: int) -> str:

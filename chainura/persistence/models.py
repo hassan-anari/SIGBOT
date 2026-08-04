@@ -180,6 +180,18 @@ class SignalExchangeSymbolRecord(Base):
     exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
     native_symbol: Mapped[str] = mapped_column(Text, nullable=False)
 
+class SignalInitialPriceRecord(Base):
+    __tablename__ = "signal_initial_prices"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE",
+                             name="fk_signal_initial_prices_signal_id_signals"),
+        CheckConstraint("trim(price) <> ''", name="ck_signal_initial_prices_price_nonempty"),
+        CheckConstraint("CAST(price AS NUMERIC) > 0", name="ck_signal_initial_prices_price_positive"),
+    )
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
+    price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+
 class SignalTemplateRecord(Base):
     __tablename__="signal_templates"
     __table_args__=(

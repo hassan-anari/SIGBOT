@@ -269,6 +269,20 @@ Even if a signal is sent to no destination, it is still:
 
 # 9. Templates and Image Generation
 
+## 9.1 Initial-card financial snapshot
+
+The final successful Entry validation persists its immutable, exact Decimal
+per-exchange source-price snapshot with the Signal. Composite signals retain the
+two or three healthy sources used by validation; Single Exchange signals retain
+exactly the selected exchange. Initial image generation never refreshes prices.
+
+For an exchange card, Reference Price remains the persisted validation reference,
+while Display Price is that exchange's persisted snapshot price. Initial leveraged
+PnL uses the temporary formula in section 12 with persisted Entry, Display Price,
+direction, and leverage, without intermediate rounding. The visible card symbol is
+the persisted canonical symbol; native symbols remain available only for exchange
+integration and local Toobit logo lookup.
+
 Each exchange has one default templates.
 
 Each destination may have a destination-specific template for each exchange.
@@ -710,7 +724,15 @@ Phase 5A records only complete, active Signals; drafts and pending Signals remai
 
 Entry is the exact Decimal entered by the Signalist. It is checked with `abs(entry - reference) / reference * 100 <= 0.05`, then freshly revalidated immediately before the short atomic persistence transaction. A random opaque creation token makes final confirmation idempotent. The transaction rechecks active Signalist status and stores the Signal, ordered TPs, and native exchange mappings atomically. There is no publication in Phase 5A.
 
-The public rendering contract is separate from signal creation and has no production image compositor. For the initial open card, Entry is the user value, display price equals final Reference Price, PnL is `0.00%`, and elapsed duration is zero. TP and SL are retained for a future caption and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M` initially), while Toobit and LBank display the externally supplied render time converted to Asia/Tehran. Renderers receive all clock values; they do not read a clock. Coordinates, fonts, templates, and final layout tuning remain outside this phase.
+The rendering contract remains separate from signal creation. For the initial open
+card, Entry is the exact persisted user value, Reference Price remains the final
+validation reference, and Display Price/PnL derive deterministically from the
+selected exchange's persisted final-validation source snapshot as specified in
+section 9.1. Elapsed duration is zero. TP and SL are retained for a future caption
+and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M`
+initially), while Toobit and LBank display the externally supplied render time
+converted to Asia/Tehran. Renderers receive all clock values; they do not read a
+clock. Approved coordinates, fonts, templates, and layout tuning remain unchanged.
 
 ## Phase 5A finalized image specifications
 

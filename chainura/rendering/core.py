@@ -14,9 +14,8 @@ from typing import Mapping
 LAYOUTS={Exchange.OURBIT:OURBIT_LAYOUT,Exchange.TOOBIT:TOOBIT_LAYOUT,Exchange.LBANK:LBANK_LAYOUT}
 
 def render_initial(payload:SignalRenderPayload, template_path:Path|str,
-                   output_path:Path|str, font_provider:FontProvider,
-                   *, layout:InitialCardLayout|None=None)->RenderedSignalImage:
-    try: selected=layout or LAYOUTS[payload.exchange]
+                   output_path:Path|str, font_provider:FontProvider)->RenderedSignalImage:
+    try: selected=LAYOUTS[payload.exchange]
     except KeyError as exc: raise RendererLayoutError("unsupported production exchange") from exc
     if selected.exchange is not payload.exchange:
         raise RendererLayoutError("layout exchange does not match payload exchange")

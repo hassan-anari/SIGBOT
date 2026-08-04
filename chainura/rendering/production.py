@@ -10,6 +10,7 @@ from chainura.rendering.pillow.text import RoleFontProvider, FontProvider
 from chainura.rendering.signal_image import register_signal_renderer, unregister_signal_renderer
 
 FONT_ROLES=("regular","medium","semibold","bold")
+MAX_RENDER_CONCURRENCY=32
 @dataclass(frozen=True,slots=True)
 class RenderingSettings:
     template_asset_root:Path; output_root:Path; toobit_logo_root:Path
@@ -21,7 +22,7 @@ class RenderingSettings:
                "RENDER_FONT_REGULAR_PATH","RENDER_FONT_MEDIUM_PATH","RENDER_FONT_SEMIBOLD_PATH","RENDER_FONT_BOLD_PATH")
         try: values=[Path(m[n].strip()) for n in names]; concurrency=int(m["RENDER_CONCURRENCY"])
         except (KeyError,ValueError,AttributeError) as exc: raise RenderingConfigurationError("rendering configuration is incomplete or invalid") from exc
-        if concurrency<=0: raise RenderingConfigurationError("RENDER_CONCURRENCY must be positive")
+        if concurrency<=0 or concurrency>MAX_RENDER_CONCURRENCY: raise RenderingConfigurationError("RENDER_CONCURRENCY must be between 1 and 32")
         if any(not str(v) or str(v)=="." for v in values): raise RenderingConfigurationError("rendering paths must be non-empty")
         return cls(*values,concurrency)
 
