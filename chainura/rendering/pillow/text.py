@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Protocol
+from threading import local
 from PIL import ImageDraw, ImageFont
 from chainura.rendering.layouts.models import (HorizontalAlignment, InlineRowLayer,
     InlineTextItem, Rectangle, TextLayer, VerticalAlignment)
@@ -29,16 +30,18 @@ class RoleFontProvider:
             raise RendererAssetError("font roles must be non-empty strings")
         if self.fallback_path is None and not resolved:
             raise RendererAssetError("configure --font or at least one --font-role")
-        self.role_paths=MappingProxyType(resolved); self._cache={}
+        self.role_paths=MappingProxyType(resolved); self._local=local()
         for path in dict.fromkeys(filter(None,(self.fallback_path,*resolved.values()))): self._load(path,10)
 
     def _load(self,path:Path,size:int):
+        cache=getattr(self._local,"cache",None)
+        if cache is None:cache={};self._local.cache=cache
         key=(path,size)
-        if key not in self._cache:
-            try: font=ImageFont.truetype(str(path),size)
-            except (OSError,ValueError) as exc: raise RendererAssetError(f"invalid font: {path}") from exc
-            self._cache[key]=font
-        return self._cache[key]
+        if key not in cache:
+            try:font=ImageFont.truetype(str(path),size)
+            except (OSError,ValueError) as exc:raise RendererAssetError(f"invalid font: {path}") from exc
+            cache[key]=font
+        return cache[key]
 
     def get(self,role:str,size:int):
         path=self.role_paths.get(role,self.fallback_path)
@@ -99,6 +102,7 @@ def draw_text_layer(
     layer: TextLayer,
     value: str,
     provider: FontProvider,
+    semantic_state: str | None = None,
 ):
     text = f"{layer.prefix}{value}{layer.suffix}"
 
@@ -168,11 +172,9 @@ def draw_text_layer(
             fill=badge_fill,
         )
 
-    text_fill = _resolved_color(
-        layer.fill,
-        layer.fill_by_value,
-        value,
-    )
+    text_fill = (_resolved_color(layer.fill, layer.fill_by_state, semantic_state)
+                 if semantic_state is not None else
+                 _resolved_color(layer.fill, layer.fill_by_value, value))
 
     text_x = left + padding_x - measured[0]
     text_y = top + padding_y - measured[1]

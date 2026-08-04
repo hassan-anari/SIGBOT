@@ -1,5 +1,30 @@
 # Haz Market Data — REST Probe + File Logging
 
+## Production initial rendering
+
+Configure `RENDER_TEMPLATE_ASSET_ROOT`, `RENDER_OUTPUT_ROOT`,
+`TOOBIT_COIN_LOGO_ROOT`, all four `RENDER_FONT_{REGULAR,MEDIUM,SEMIBOLD,BOLD}_PATH`
+values, and positive `RENDER_CONCURRENCY`. Fonts and managed assets belong on
+persistent local disk and are never committed. Templates are immutable
+SHA-256-addressed PNGs; SQLite points to the active default or destination
+override. Resolution prefers an override and falls back only when it is absent.
+A missing or corrupt override is a hard failure.
+
+Future admin upload handlers pass downloaded bytes—not filenames—to
+`TemplateService.install`. Production composition is local and network-isolated.
+`InitialImageService` renders off-loop under a bounded semaphore. Its caller owns
+the returned short-lived output and must invoke the service's safe, idempotent
+`cleanup()` after publication or abandonment. Renderer Lab overrides are never
+accepted by production APIs.
+
+Template uploads are limited to `MAX_TEMPLATE_BYTES` (currently 12 MiB).
+Template verification, hashing, durable writes, local-logo inspection, and Pillow
+composition are executed off the asyncio event loop under configured bounds.
+The application owner must call `InitialImageService.aclose()` during shutdown;
+Phase 5C publication will own this service and must also clean each returned image.
+Shutdown ordering is: stop accepting publication work, cancel and await publication
+tasks, await `InitialImageService.aclose()`, then close renderer registration.
+
 این پروژه علاوه بر Probe مستقل بازار، پایهٔ پایدار و مستقل از Transport برنامه را برای مدیریت هویت و وضعیت Signalist فراهم می‌کند. CLI بازار همچنان بدون تنظیمات یا اتصال دیتابیس اجرا می‌شود.
 
 ## کار فعلی پروژه

@@ -134,7 +134,7 @@ class SignalService:
             result.canonical_symbol,command.base_asset,command.quote_asset,command.selected_exchange,
             command.direction,command.entry_price,command.leverage,command.take_profits,
             command.stop_loss,result.reference_price,result.price_source_type,
-            SignalLifecycleStatus.ACTIVE,result.native_symbols,now,now)
+            SignalLifecycleStatus.ACTIVE,result.native_symbols,now,now,result.source_prices)
         try:
             async with self._transactions() as tx:
                 existing=await tx.signals.get_by_creation_token(command.creation_token)

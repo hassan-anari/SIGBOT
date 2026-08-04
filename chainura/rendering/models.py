@@ -91,10 +91,8 @@ class SignalRenderPayload:
             valid_sl = self.stop_loss > self.entry_price
         if not ordered or not valid_sl:
             raise InvalidSignalInputError("render trade prices violate direction")
-        if self.display_price != self.reference_price:
-            raise InvalidSignalInputError("initial display price must equal reference price")
-        if not isinstance(self.initial_pnl_percent, Decimal) or self.initial_pnl_percent != Decimal("0"):
-            raise InvalidSignalInputError("initial PnL must be Decimal zero")
+        if not isinstance(self.initial_pnl_percent, Decimal) or not self.initial_pnl_percent.is_finite():
+            raise InvalidSignalInputError("initial PnL must be a finite Decimal")
         if isinstance(self.elapsed_seconds, bool) or self.elapsed_seconds != 0:
             raise InvalidSignalInputError("initial elapsed duration must be zero")
         for name in ("signal_created_at", "rendered_at"):

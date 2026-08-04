@@ -10,7 +10,9 @@ from chainura.persistence.error_translation import persistence_error
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.destination_repository import SqlAlchemyDestinationRepository
 from chainura.persistence.signal_repository import SqlAlchemySignalRepository
+from chainura.persistence.template_repository import SqlAlchemyTemplateRepository
 from chainura.persistence.error_translation import commit_persistence_error
+from chainura.errors import TemplatePersistenceError
 
 
 class SqlAlchemySignalistTransaction:
@@ -23,6 +25,7 @@ class SqlAlchemySignalistTransaction:
         self.signalists: SqlAlchemySignalistRepository
         self.destinations: SqlAlchemyDestinationRepository
         self.signals: SqlAlchemySignalRepository
+        self.templates: SqlAlchemyTemplateRepository
 
     async def __aenter__(self) -> Self:
         self._session = self._sessions()
@@ -35,10 +38,14 @@ class SqlAlchemySignalistTransaction:
         self.signalists = self.repository
         self.destinations = SqlAlchemyDestinationRepository(self._session)
         self.signals = SqlAlchemySignalRepository(self._session)
+        self.templates = SqlAlchemyTemplateRepository(self._session)
         return self
 
     def use_destination_errors(self) -> None:
         self._error_family = "destination"
+
+    def use_template_errors(self) -> None:
+        self._error_family = "template"
 
     async def commit(self) -> None:
         if self._session is None:
@@ -47,6 +54,8 @@ class SqlAlchemySignalistTransaction:
             await self._session.commit()
         except SQLAlchemyError as exc:
             await self._session.rollback()
+            if self._error_family == "template":
+                raise TemplatePersistenceError("template metadata commit failed") from exc
             raise commit_persistence_error(exc, self._error_family) from exc
         self._committed = True
 

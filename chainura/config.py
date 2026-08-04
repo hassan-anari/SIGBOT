@@ -9,6 +9,7 @@ from sqlalchemy.exc import ArgumentError
 from urllib.parse import urlsplit
 
 from chainura.errors import InvalidApplicationConfigurationError
+from chainura.rendering.production import RenderingSettings
 
 MAX_SIGNED_BIGINT = 2**63 - 1
 
@@ -95,6 +96,7 @@ class TelegramRuntimeSettings:
     application: ApplicationSettings
     bot_token: str = field(repr=False)
     redis_url: str = field(repr=False)
+    rendering: RenderingSettings | None = None
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, str]) -> "TelegramRuntimeSettings":
@@ -103,7 +105,10 @@ class TelegramRuntimeSettings:
         if any(ord(character) < 32 for character in token):
             raise InvalidApplicationConfigurationError("TELEGRAM_BOT_TOKEN is invalid")
         redis_url = validate_redis_url(_required(mapping, "REDIS_URL"))
-        return cls(application=application, bot_token=token, redis_url=redis_url)
+        render_keys=("RENDER_TEMPLATE_ASSET_ROOT","RENDER_OUTPUT_ROOT","TOOBIT_COIN_LOGO_ROOT",
+          "RENDER_FONT_REGULAR_PATH","RENDER_FONT_MEDIUM_PATH","RENDER_FONT_SEMIBOLD_PATH","RENDER_FONT_BOLD_PATH","RENDER_CONCURRENCY")
+        rendering=RenderingSettings.from_mapping(mapping) if any(key in mapping for key in render_keys) else None
+        return cls(application=application, bot_token=token, redis_url=redis_url,rendering=rendering)
 
 
 def load_telegram_runtime_settings() -> TelegramRuntimeSettings:

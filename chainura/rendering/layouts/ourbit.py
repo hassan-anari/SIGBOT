@@ -31,7 +31,7 @@ LAYOUT = InitialCardLayout(
             fill=GRAY,
         ),
 
-        # Initial PnL is currently always 0.00%.
+        # Initial PnL value.
         TextLayer(
             "pnl",
             Rectangle(48, 535, 520, 640),
@@ -39,9 +39,10 @@ LAYOUT = InitialCardLayout(
             HorizontalAlignment.LEFT,
             VerticalAlignment.CENTER,
             fill=PNL_NEUTRAL,
-            fill_by_value=(
-                ("+12.34%", PNL_POSITIVE),
-                ("-12.34%", PNL_NEGATIVE),
+            fill_by_state=(
+                ("positive", PNL_POSITIVE),
+                ("negative", PNL_NEGATIVE),
+                ("neutral", PNL_NEUTRAL),
             ),
         ),
 

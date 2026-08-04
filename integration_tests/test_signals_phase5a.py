@@ -29,7 +29,17 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
  async def test_exact_round_trip_order_and_idempotency(self):
   one=await self.service.create(self.command()); two=await self.service.create(self.command())
   self.assertEqual(one.id,two.id); self.assertEqual(one.entry_price,Decimal('100.000')); self.assertEqual(one.take_profits,(Decimal('101.010'),Decimal('102.020')))
-  async with self.engine.connect() as c: self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
+  self.assertEqual(one.initial_source_prices,((Exchange.OURBIT,Decimal('100')),(Exchange.TOOBIT,Decimal('100'))))
+  async with self.engine.connect() as c:
+   self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
+   self.assertEqual(await c.scalar(text('select count(*) from signal_initial_prices')),2)
+ async def test_snapshot_mapping_composite_fk_and_uniqueness(self):
+  from sqlalchemy.exc import IntegrityError
+  one=await self.service.create(self.command())
+  async with self.engine.begin() as c:
+   await c.execute(text("delete from signal_exchange_symbols where signal_id=:id and exchange='lbank'"),{'id':one.id})
+   with self.assertRaises(IntegrityError):
+    await c.execute(text("insert into signal_initial_prices(signal_id,exchange,price) values (:id,'lbank','100')"),{'id':one.id})
 
 class GatePrices(Prices):
  def __init__(self):

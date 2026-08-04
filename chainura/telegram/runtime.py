@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from pathlib import Path
 from contextlib import suppress
 from enum import Enum
 from typing import Awaitable, TypeVar
@@ -41,6 +42,7 @@ from chainura.application.market_gateway import MarketReferencePriceProvider, Sy
 from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
 from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_logo_sync
+from chainura.rendering.production import ProductionRendererRegistration
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -104,6 +106,7 @@ class Runtime:
         self._redis_closed = False
         self._bot_closed = False
         self._engine_disposed = False
+        self.renderer_registration = None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -176,6 +179,8 @@ class Runtime:
         identity = bot_identity(self.settings.bot_token)
         try:
             self._checkpoint()
+            if self.settings.rendering is not None:
+                self.renderer_registration=ProductionRendererRegistration(self.settings.rendering).start()
             self.engine = create_database_engine(self.settings.application.database_url)
             await self._startup_await(initialize_database_engine(self.engine))
             sessions = create_session_factory(self.engine)
@@ -224,7 +229,7 @@ class Runtime:
 
             self.state = RuntimeState.RUNNING
             self.logo_sync_task = asyncio.create_task(run_logo_sync(
-                ToobitLogoSynchronizer(CoinLogoStore()), self.logo_sync_stop))
+                ToobitLogoSynchronizer(CoinLogoStore(self.settings.rendering.toobit_logo_root if self.settings.rendering else Path("var/coin_logos"))), self.logo_sync_stop))
             self.polling_task = asyncio.create_task(self.dispatcher.start_polling(
                 self.bot, handle_signals=False, close_bot_session=False,
                 handle_as_tasks=False, allowed_updates=["message", "callback_query"]))
@@ -342,6 +347,10 @@ class Runtime:
             if self.engine and not self._engine_disposed:
                 if await self._best_effort(self.engine.dispose(), "database engine"):
                     self._engine_disposed = True
+
+            if self.renderer_registration is not None:
+                self.renderer_registration.close()
+                self.renderer_registration = None
 
             self.state = RuntimeState.STOPPED
             self._cleanup_complete.set()

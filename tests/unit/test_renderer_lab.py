@@ -107,7 +107,11 @@ class RendererLabTests(unittest.TestCase):
         standard={"symbol":"bold","direction":"semibold","leverage":"semibold","entry":"medium","price":"medium","pnl":"semibold","time":"regular"}
         ourbit={"symbol":"bold","meta":"semibold","pnl":"bold","entry":"bold","price":"bold","time":"regular"}
         self.assertEqual({layer.field:layer.font.role for layer in LAYOUT.text_layers},ourbit)
-        self.assertEqual({layer.field:layer.font.role for layer in lbank.text_layers},standard)
+        lbank_roles={layer.field:layer.font.role for layer in lbank.text_layers}
+        lbank_roles.update({item.field:item.font.role for row in lbank.inline_rows for item in row.items})
+        self.assertEqual(lbank_roles,{"symbol":"medium","direction":"medium",
+            "lbank_leverage":"medium","entry":"medium","price":"medium","pnl":"semibold",
+            "lbank_time":"regular","separator":"regular"})
         toobit_roles={layer.field:layer.font.role for layer in toobit.text_layers}
         toobit_roles.update({item.field:item.font.role for row in toobit.inline_rows for item in row.items})
         self.assertEqual(toobit_roles, {"symbol":"bold","direction":"medium",
@@ -193,7 +197,7 @@ class RendererLabTests(unittest.TestCase):
 
     def test_fixture_and_layout_immutability(self):
         self.assertEqual(fixture("small-price",Exchange.OURBIT),fixture("small-price",Exchange.OURBIT))
-        self.assertEqual(len(FIXTURES),7)
+        self.assertEqual(len(FIXTURES),25)
         with self.assertRaises(FrozenInstanceError): LAYOUT.exchange="changed"
 
     def test_no_clock_or_production_registration(self):

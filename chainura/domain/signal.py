@@ -96,6 +96,7 @@ class Signal:
     exchange_symbols: tuple[tuple[Exchange, str], ...]
     created_at: datetime
     updated_at: datetime
+    initial_source_prices: tuple[tuple[Exchange, Decimal], ...]
 
     def __post_init__(self) -> None:
         if self.id is not None and (isinstance(self.id, bool) or not isinstance(self.id, int) or self.id < 1):
@@ -136,6 +137,17 @@ class Signal:
         exchanges = [x[0] for x in self.exchange_symbols]
         if len(set(exchanges)) != len(exchanges) or any(not isinstance(e, Exchange) or not isinstance(s, str) or not s for e, s in self.exchange_symbols):
             raise InvalidSignalInputError("exchange symbol mappings are invalid")
+        snapshot_exchanges = [item[0] for item in self.initial_source_prices]
+        if (len(set(snapshot_exchanges)) != len(snapshot_exchanges)
+                or any(not isinstance(exchange, Exchange) or not isinstance(price, Decimal)
+                       or not price.is_finite() or price <= 0
+                       for exchange, price in self.initial_source_prices)
+                or not set(snapshot_exchanges).issubset(set(exchanges))):
+            raise InvalidSignalInputError("initial source-price snapshot is invalid")
+        if self.mode is SignalMode.COMPOSITE and len(snapshot_exchanges) < 2:
+            raise InvalidSignalInputError("composite snapshot requires at least two sources")
+        if self.mode is SignalMode.SINGLE_EXCHANGE and snapshot_exchanges != [self.selected_exchange]:
+            raise InvalidSignalInputError("single-exchange snapshot is inconsistent")
         if self.mode is SignalMode.COMPOSITE:
             if self.selected_exchange is not None or self.price_source_type is not PriceSourceType.COMPOSITE:
                 raise InvalidSignalInputError("composite signal invariants are invalid")
@@ -145,4 +157,3 @@ class Signal:
                 raise InvalidSignalInputError("single-exchange signal invariants are invalid")
         object.__setattr__(self, "created_at", _utc(self.created_at, "created_at"))
         object.__setattr__(self, "updated_at", _utc(self.updated_at, "updated_at"))
-
