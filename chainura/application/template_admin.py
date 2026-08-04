@@ -23,8 +23,11 @@ async def download_png_document(bot, document, *, max_bytes=MAX_TEMPLATE_BYTES):
  return data
 
 class TemplateAdministrationService:
- def __init__(self,templates,wake):self.templates=templates;self.wake=wake
+ def __init__(self,templates,publication,wake):self.templates=templates;self.publication=publication;self.wake=wake
+ async def configured(self,exchange,*,destination_id=None):return await self.templates.configured(exchange,destination_id=destination_id)
  async def install(self,exchange,data,*,destination_id=None):
-  asset=await self.templates.install(exchange,data,destination_id=destination_id);self.wake();return asset
+  asset=await self.templates.install(exchange,data,destination_id=destination_id)
+  await self.publication.unblock_templates();self.wake();return asset
  async def remove_override(self,exchange,destination_id):
-  await self.templates.remove_override(exchange,destination_id);self.wake()
+  await self.templates.remove_override(exchange,destination_id)
+  await self.publication.unblock_templates();self.wake()

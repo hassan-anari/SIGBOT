@@ -4,7 +4,7 @@ from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi
     format_datetime, format_priority, persian_digits)
 
 MENU_MAIN="🏠 منوی اصلی"; MENU_ADMIN_STATUS="🛡 وضعیت دسترسی"; MENU_SIGNALIST_STATUS="👤 وضعیت حساب"
-MENU_HELP="❓ راهنما"; MENU_ADMIN_SIGNALISTS="👥 مدیریت سیگنالیست‌ها"; MENU_ADMIN_DESTINATIONS="📡 مدیریت مقصدها"
+MENU_HELP="❓ راهنما"; MENU_ADMIN_SIGNALISTS="👥 مدیریت سیگنالیست‌ها"; MENU_ADMIN_DESTINATIONS="📡 مدیریت مقصدها"; MENU_ADMIN_TEMPLATES="🖼 مدیریت قالب‌ها"
 MENU_CREATE_SIGNAL="➕ ساخت سیگنال"
 BUTTON_BACK="⬅️ بازگشت به منوی اصلی"; BUTTON_REFRESH="تازه‌سازی وضعیت"
 WELCOME_ADMIN="<b>👋 خوش آمدید</b>\n\nشما مدیر اصلی سامانه هستید."
@@ -61,6 +61,17 @@ DATETIME_TEMPLATE="{date}، ساعت {time}"
 PRIORITY_HEADING="🏦 اولویت صرافی‌ها:"
 SIGNALIST_FILTER_LABELS={"a":"همه","v":"🟢 فعال","i":"🟡 غیرفعال","r":"🔴 بایگانی‌شده"}
 DESTINATION_FILTER_LABELS={"a":"همه","v":"🟢 فعال","i":"🟡 غیرفعال"}
+TEMPLATE_MENU="<b>🖼 مدیریت قالب‌ها</b>\n\nصرافی را انتخاب کنید."
+TEMPLATE_DEFAULT_STATUS="قالب پیش‌فرض {exchange}: {status}"
+TEMPLATE_OVERRIDE_STATUS="قالب اختصاصی مقصد «{destination}» برای {exchange}: {status}"
+TEMPLATE_CONFIGURED="✅ تنظیم شده"; TEMPLATE_MISSING="تنظیم نشده"
+TEMPLATE_UPLOAD_DEFAULT="بارگذاری/جایگزینی پیش‌فرض"; TEMPLATE_SELECT_DESTINATION="انتخاب مقصد"
+TEMPLATE_UPLOAD_OVERRIDE="بارگذاری/جایگزینی اختصاصی"; TEMPLATE_REMOVE_OVERRIDE="حذف قالب اختصاصی"
+TEMPLATE_SEND_DOCUMENT="فایل PNG را به‌صورت سند ارسال کنید؛ ارسال به‌صورت عکس پذیرفته نیست."
+TEMPLATE_DOCUMENT_REQUIRED="فقط سند PNG معتبر پذیرفته می‌شود."
+TEMPLATE_INSTALLED="✅ قالب با موفقیت نصب شد."; TEMPLATE_REMOVED="✅ قالب اختصاصی حذف شد و قالب پیش‌فرض استفاده می‌شود."
+TEMPLATE_REMOVE_CONFIRM="آیا حذف قالب اختصاصی این مقصد را تأیید می‌کنید؟"
+TEMPLATE_ALL="همه"
 
 def safe(value): return escape(str(value),quote=True)
 def welcome_signalist(name): return WELCOME_SIGNALIST.format(name=safe(name))

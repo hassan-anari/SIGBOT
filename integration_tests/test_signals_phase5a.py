@@ -42,6 +42,21 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
    with self.assertRaises(IntegrityError):
     await c.execute(text("insert into signal_initial_prices(signal_id,exchange,price) values (:id,'lbank','100')"),{'id':one.id})
 
+ async def test_stale_sending_recovery_retains_capacity_and_completes_request(self):
+  from chainura.application.publication import InitialPublicationService
+  signal=await self.service.create(self.command());now=datetime(2026,8,1,tzinfo=timezone.utc)
+  async with self.engine.begin() as c:
+   result=await c.execute(text("insert into destinations(internal_name,telegram_chat_id,destination_type,access_level,status,daily_limit) values('D',-1,'channel','private','active',1) returning id"));did=result.scalar_one()
+   result=await c.execute(text("insert into destination_publications(signal_id,destination_id,event_kind,selected_exchange,status,attempt_count,created_at,updated_at) values(:s,:d,'initial','ourbit','sending',1,:n,:n) returning id"),{"s":signal.id,"d":did,"n":now});pid=result.scalar_one()
+   await c.execute(text("insert into initial_publication_daily_slots(destination_id,local_date,slot_number,publication_id,created_at) values(:d,'2026-08-01',1,:p,:n)"),{"d":did,"p":pid,"n":now})
+   await c.execute(text("update initial_publication_requests set status='planned',planned_at=:n where signal_id=:s"),{"n":now,"s":signal.id})
+  service=InitialPublicationService(SqlAlchemySignalistTransactionFactory(self.sessions),None,None,lambda:now)
+  await service.recover()
+  async with self.engine.connect() as c:
+   self.assertEqual(await c.scalar(text("select status from destination_publications where id=:p"),{"p":pid}),"delivery_unknown")
+   self.assertEqual(await c.scalar(text("select count(*) from initial_publication_daily_slots where publication_id=:p"),{"p":pid}),1)
+   self.assertEqual(await c.scalar(text("select status from initial_publication_requests where signal_id=:s"),{"s":signal.id}),"completed")
+
 class GatePrices(Prices):
  def __init__(self):
   import asyncio

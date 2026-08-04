@@ -28,8 +28,13 @@ class SqlAlchemyPublicationRepository:
                 DestinationPublicationRecord.status == PublicationStatus.SENDING).values(
                 status=PublicationStatus.DELIVERY_UNKNOWN, last_error_category="restart_after_send_started", updated_at=now))
             await self.session.execute(update(DestinationPublicationRecord).where(
-                DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT).values(
-                status=PublicationStatus.PENDING, updated_at=now))
+                DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT,
+                DestinationPublicationRecord.retry_at <= now).values(
+                status=PublicationStatus.PENDING, retry_at=None, updated_at=now))
+            signal_ids=tuple((await self.session.scalars(select(InitialPublicationRequestRecord.signal_id).where(
+                InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,
+                    PublicationRequestStatus.PLANNING])))).all())
+            for signal_id in signal_ids:await self.complete_request(signal_id,now)
         except SQLAlchemyError as exc: raise PublicationPersistenceError("publication recovery failed") from exc
 
     async def pending_request_ids(self, limit=50):
@@ -66,16 +71,21 @@ class SqlAlchemyPublicationRepository:
         await self.complete_request(claimed,now)
         return True
 
-    async def pending_delivery_ids(self, limit=100):
+    async def pending_delivery_ids(self, now, limit=100):
         return tuple((await self.session.scalars(select(DestinationPublicationRecord.id).where(
-            DestinationPublicationRecord.status == PublicationStatus.PENDING).order_by(
+            ((DestinationPublicationRecord.status == PublicationStatus.PENDING) |
+             ((DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT) &
+              (DestinationPublicationRecord.retry_at <= now)))).order_by(
             DestinationPublicationRecord.created_at).limit(limit))).all())
 
     async def claim(self, publication_id, now):
+        available=((DestinationPublicationRecord.status == PublicationStatus.PENDING) |
+            ((DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT) &
+             (DestinationPublicationRecord.retry_at <= now)))
         claimed=(await self.session.execute(update(DestinationPublicationRecord).where(
-            DestinationPublicationRecord.id==publication_id,
-            DestinationPublicationRecord.status.in_([PublicationStatus.PENDING,PublicationStatus.BLOCKED_TEMPLATE])).values(
+            DestinationPublicationRecord.id==publication_id,available).values(
             status=PublicationStatus.RENDERING,updated_at=now,
+            retry_at=None,
             first_attempt_at=func.coalesce(DestinationPublicationRecord.first_attempt_at,now)).returning(
             DestinationPublicationRecord.signal_id,DestinationPublicationRecord.destination_id,
             DestinationPublicationRecord.selected_exchange,DestinationPublicationRecord.attempt_count))).one_or_none()
@@ -89,14 +99,31 @@ class SqlAlchemyPublicationRepository:
         return PublicationDelivery(publication_id,signal_id,destination_id,exchange,PublicationStatus.RENDERING,
             attempts,destination.telegram_chat_id,destination.access_level is DestinationAccessLevel.PRIVATE,destination.daily_limit),destination.status,assigned
 
-    async def transition(self, publication_id, expected, target, now, *, error=None, message_id=None, template_sha=None, increment=False):
+    async def transition(self, publication_id, expected, target, now, *, error=None, message_id=None, template_sha=None, increment=False,retry_at=None):
         values={"status":target,"updated_at":now,"last_error_category":error,
-                "template_sha256":template_sha}
+                "template_sha256":template_sha,"retry_at":retry_at}
         if increment:values["attempt_count"]=DestinationPublicationRecord.attempt_count+1
         if target is PublicationStatus.SENT:values.update(telegram_message_id=message_id,sent_at=now)
         result=await self.session.execute(update(DestinationPublicationRecord).where(
             DestinationPublicationRecord.id==publication_id,DestinationPublicationRecord.status==expected).values(**values))
         return result.rowcount==1
+
+    async def prepare_send(self,publication_id,signal_id,destination_id,now):
+        destination=await self.session.get(DestinationRecord,destination_id)
+        signalist_id=await self.session.scalar(select(SignalRecord.signalist_id).where(SignalRecord.id==signal_id))
+        assigned=bool(await self.session.scalar(select(exists().where(
+            DestinationSignalistRecord.destination_id==destination_id,
+            DestinationSignalistRecord.signalist_id==signalist_id))))
+        if destination is None or destination.status is not DestinationStatus.ACTIVE:
+            target=PublicationStatus.SKIPPED_INACTIVE
+        elif not assigned:target=PublicationStatus.SKIPPED_UNASSIGNED
+        else:
+            changed=await self.transition(publication_id,PublicationStatus.RENDERING,
+                PublicationStatus.SENDING,now,increment=True)
+            return "sending" if changed else "lost"
+        changed=await self.transition(publication_id,PublicationStatus.RENDERING,target,now)
+        if changed:await self.release_capacity(publication_id)
+        return target.value if changed else "lost"
 
     async def claim_capacity(self, publication_id,destination_id,local_date,limit,now):
         existing=await self.session.scalar(select(InitialPublicationDailySlotRecord).where(

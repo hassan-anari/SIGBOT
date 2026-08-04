@@ -31,6 +31,14 @@ class AdminDestinationPriority(StatesGroup):
 class AdminSignalistArchive(StatesGroup):
     confirming = State()
 
+class AdminTemplateManagement(StatesGroup):
+    exchange = State()
+    destination = State()
+    upload_default = State()
+    override = State()
+    upload_override = State()
+    remove_confirm = State()
+
 
 class SignalCreate(StatesGroup):
     shared_search = State()

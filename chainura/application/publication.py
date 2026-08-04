@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio, logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
@@ -39,7 +39,7 @@ class InitialPublicationService:
   for request_id in ids:
    async with self.transactions() as tx:await tx.publications.plan(request_id,self.clock());await tx.commit()
  async def pending_ids(self):
-  async with self.transactions() as tx:ids=await tx.publications.pending_delivery_ids();await tx.commit();return ids
+  async with self.transactions() as tx:ids=await tx.publications.pending_delivery_ids(self.clock());await tx.commit();return ids
  async def unblock_templates(self):
   async with self.transactions() as tx:await tx.publications.unblock_templates(self.clock());await tx.commit()
  async def process(self,publication_id):
@@ -69,23 +69,36 @@ class InitialPublicationService:
    caption=build_initial_caption(signal,private=delivery.private)
    output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now)
    async with self.transactions() as tx:
-    await tx.publications.transition(delivery.id,PublicationStatus.RENDERING,PublicationStatus.SENDING,self.clock(),increment=True);await tx.commit()
+    ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,delivery.destination_id,self.clock())
+    await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+   if ownership!="sending":return
    try:message_id=await self.publisher.send_initial(delivery.telegram_chat_id,output.file_path,caption)
    except DeliveryRateLimited as exc:
     attempts=delivery.attempt_count+1
     if attempts<self.max_attempts:
-     await asyncio.sleep(max(exc.retry_after,self.retry_base_seconds*(2**(attempts-1))))
-     # Sending has begun; Telegram explicitly rejected this request, so this is safe.
+     delay=max(exc.retry_after,self.retry_base_seconds*(2**(attempts-1)))
+     retry_at=self.clock()+timedelta(seconds=delay)
      async with self.transactions() as tx:
-      await tx.publications.transition(delivery.id,PublicationStatus.SENDING,PublicationStatus.PENDING,self.clock(),error="rate_limited");await tx.commit()
+      changed=await tx.publications.transition(delivery.id,PublicationStatus.SENDING,
+       PublicationStatus.RETRY_WAIT,self.clock(),error="rate_limited",retry_at=retry_at)
+      if not changed:raise TelegramDeliveryError("publication ownership was lost")
+      await tx.commit()
      return
     await self._finish(delivery,PublicationStatus.FAILED,"rate_limit_exhausted",expected=PublicationStatus.SENDING,release=True);return
    except DeliveryRejected as exc:
     await self._finish(delivery,PublicationStatus.FAILED,str(exc),expected=PublicationStatus.SENDING,release=True);return
    except DeliveryAmbiguous as exc:
     await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,str(exc),expected=PublicationStatus.SENDING);return
-   async with self.transactions() as tx:
-    await tx.publications.transition(delivery.id,PublicationStatus.SENDING,PublicationStatus.SENT,self.clock(),message_id=message_id);await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+   try:
+    async with self.transactions() as tx:
+     changed=await tx.publications.transition(delivery.id,PublicationStatus.SENDING,
+      PublicationStatus.SENT,self.clock(),message_id=message_id)
+     if not changed:raise TelegramDeliveryError("publication ownership was lost")
+     await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+   except Exception as exc:
+    LOGGER.warning("sent result persistence ambiguous publication_id=%s category=%s",delivery.id,type(exc).__name__)
+    try:await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,"sent_commit_failed",expected=PublicationStatus.SENDING)
+    except Exception as recovery_exc:LOGGER.warning("ambiguous recovery failed publication_id=%s category=%s",delivery.id,type(recovery_exc).__name__)
   except TemplateNotConfiguredError:
    await self._finish(delivery,PublicationStatus.BLOCKED_TEMPLATE,"template_missing",release=True)
   except (TemplateAssetError,CaptionGenerationError) as exc:
@@ -100,9 +113,11 @@ class InitialPublicationService:
     except Exception as exc:LOGGER.warning("publication cleanup failed publication_id=%s category=%s",delivery.id,type(exc).__name__)
  async def _finish(self,delivery,target,error=None,*,expected=PublicationStatus.RENDERING,release=False):
   async with self.transactions() as tx:
+   changed=await tx.publications.transition(delivery.id,expected,target,self.clock(),error=error)
+   if not changed:return False
    if release:await tx.publications.release_capacity(delivery.id)
-   await tx.publications.transition(delivery.id,expected,target,self.clock(),error=error)
    await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+   return True
 
 class InitialPublicationWorker:
  def __init__(self,service,concurrency=3,sweep_seconds=5.0):
@@ -111,12 +126,21 @@ class InitialPublicationWorker:
  def wake(self):self._wake.set()
  async def start(self):
   if self._task is None:self._task=asyncio.create_task(self._run())
+ @property
+ def task(self):return self._task
  async def _run(self):
   while not self._stop.is_set():
-   await self.service.plan_pending();ids=await self.service.pending_ids()
-   for offset in range(0,len(ids),self.concurrency):
-    await asyncio.gather(*(self.service.process(item) for item in ids[offset:offset+self.concurrency]),return_exceptions=False)
    self._wake.clear()
+   try:
+    await self.service.plan_pending();ids=await self.service.pending_ids()
+    for offset in range(0,len(ids),self.concurrency):
+     batch=ids[offset:offset+self.concurrency]
+     results=await asyncio.gather(*(self.service.process(item) for item in batch),return_exceptions=True)
+     for publication_id,result in zip(batch,results):
+      if isinstance(result,BaseException):LOGGER.warning("publication delivery isolated publication_id=%s category=%s",publication_id,type(result).__name__)
+   except asyncio.CancelledError:raise
+   except Exception as exc:LOGGER.error("publication sweep failed category=%s",type(exc).__name__)
+   if self._stop.is_set():break
    try:await asyncio.wait_for(self._wake.wait(),self.sweep_seconds)
    except asyncio.TimeoutError:pass
  async def close(self):

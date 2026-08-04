@@ -111,7 +111,7 @@ class TelegramRuntimeSettings:
         redis_url = validate_redis_url(_required(mapping, "REDIS_URL"))
         render_keys=("RENDER_TEMPLATE_ASSET_ROOT","RENDER_OUTPUT_ROOT","TOOBIT_COIN_LOGO_ROOT",
           "RENDER_FONT_REGULAR_PATH","RENDER_FONT_MEDIUM_PATH","RENDER_FONT_SEMIBOLD_PATH","RENDER_FONT_BOLD_PATH","RENDER_CONCURRENCY")
-        rendering=RenderingSettings.from_mapping(mapping) if any(key in mapping for key in render_keys) else None
+        rendering=RenderingSettings.from_mapping(mapping)
         try:
             concurrency=int(mapping.get("TELEGRAM_PUBLICATION_CONCURRENCY","3"))
             attempts=int(mapping.get("TELEGRAM_SEND_MAX_ATTEMPTS","3"))

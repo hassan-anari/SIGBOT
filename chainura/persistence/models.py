@@ -263,6 +263,7 @@ class DestinationPublicationRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 DestinationPublicationRecord.__table__.primary_key.name = "pk_destination_publications"
 

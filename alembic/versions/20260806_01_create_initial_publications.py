@@ -23,7 +23,7 @@ def upgrade():
   sa.Column("event_kind",sa.Text(),nullable=False),sa.Column("selected_exchange",sa.String(6),nullable=False),sa.Column("status",sa.String(18),nullable=False),
   sa.Column("telegram_message_id",sa.BigInteger()),sa.Column("reply_to_message_id",sa.BigInteger()),sa.Column("attempt_count",sa.Integer(),nullable=False),
   sa.Column("last_error_category",sa.Text()),sa.Column("template_sha256",sa.Text()),sa.Column("created_at",sa.DateTime(),nullable=False),
-  sa.Column("updated_at",sa.DateTime(),nullable=False),sa.Column("first_attempt_at",sa.DateTime()),sa.Column("sent_at",sa.DateTime()),
+  sa.Column("updated_at",sa.DateTime(),nullable=False),sa.Column("first_attempt_at",sa.DateTime()),sa.Column("retry_at",sa.DateTime()),sa.Column("sent_at",sa.DateTime()),
   sa.PrimaryKeyConstraint("id",name="pk_destination_publications"),
   sa.ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_destination_publications_signal_id_signals"),
   sa.ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE",name="fk_destination_publications_destination_id_destinations"),

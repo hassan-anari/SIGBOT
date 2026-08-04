@@ -34,7 +34,7 @@ FLOW_STATES = {
     "dsp": AdminDestinationPriority,
 }
 TOP_LEVEL = {texts.MENU_MAIN, texts.MENU_ADMIN_SIGNALISTS, texts.MENU_ADMIN_DESTINATIONS,
-             texts.MENU_ADMIN_STATUS, texts.MENU_HELP}
+             texts.MENU_ADMIN_TEMPLATES,texts.MENU_ADMIN_STATUS, texts.MENU_HELP}
 EXCHANGE_FROM_CODE = {"o": "ourbit", "t": "toobit", "l": "lbank"}
 CODE_FROM_EXCHANGE = {value: key for key, value in EXCHANGE_FROM_CODE.items()}
 
