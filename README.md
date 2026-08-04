@@ -357,3 +357,7 @@ move, a return to the 0.10% Entry zone creates one durable prompt. Rearming need
 a 0.20% exit and a 15-minute cooldown, and acceptance always rechecks a fresh
 price. Symbol-search buttons display current composite or selected-exchange prices
 and unavailable results cannot advance.
+
+### Phase 6B update publication
+
+Approved TP/SL/Breakeven candidates now create durable update-publication requests. The worker waits for completed initial publication, plans only destinations with confirmed initial messages, renders a new event-time image with the existing template hierarchy, sends a concise Persian caption as a Telegram photo reply, preserves per-destination Reply Chains, and recovers safely after restart. Updates do not consume initial daily capacity and never include `#پیامک`.

@@ -340,6 +340,69 @@ class SignalUpdateCandidateRecord(Base):
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);signal_id:Mapped[int]=mapped_column(Integer,nullable=False);event_id:Mapped[int]=mapped_column(Integer,nullable=False);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False)
     status:Mapped[CandidateStatus]=mapped_column(CANDIDATE_STATUS_ENUM,nullable=False);superseded_by_event_id:Mapped[int|None]=mapped_column(Integer);approved_at:Mapped[datetime|None]=mapped_column(UTCDateTime());declined_at:Mapped[datetime|None]=mapped_column(UTCDateTime());created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
 
+
+class UpdatePublicationRequestRecord(Base):
+    __tablename__ = "update_publication_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(["candidate_id"], ["signal_update_candidates.id"], ondelete="CASCADE", name="fk_update_publication_requests_candidate_id_candidates"),
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_update_publication_requests_signal_id_signals"),
+        ForeignKeyConstraint(["event_id"], ["signal_events.id"], ondelete="CASCADE", name="fk_update_publication_requests_event_id_events"),
+        UniqueConstraint("candidate_id", name="uq_update_publication_requests_candidate_id"),
+        UniqueConstraint("event_id", name="uq_update_publication_requests_event_id"),
+        Index("ix_update_publication_requests_status_created", "status", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationRequestStatus] = mapped_column(PUBLICATION_REQUEST_STATUS_ENUM, nullable=False, default=PublicationRequestStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    planned_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+UpdatePublicationRequestRecord.__table__.primary_key.name = "pk_update_publication_requests"
+
+class DestinationUpdatePublicationRecord(Base):
+    __tablename__ = "destination_update_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["request_id"], ["update_publication_requests.id"], ondelete="CASCADE", name="fk_destination_update_publications_request_id_requests"),
+        ForeignKeyConstraint(["candidate_id"], ["signal_update_candidates.id"], ondelete="CASCADE", name="fk_destination_update_publications_candidate_id_candidates"),
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_destination_update_publications_signal_id_signals"),
+        ForeignKeyConstraint(["event_id"], ["signal_events.id"], ondelete="CASCADE", name="fk_destination_update_publications_event_id_events"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_destination_update_publications_destination_id_destinations"),
+        ForeignKeyConstraint(["event_id","selected_exchange"], ["signal_event_source_prices.event_id","signal_event_source_prices.exchange"], ondelete="CASCADE", name="fk_destination_update_publications_event_source_price"),
+        UniqueConstraint("candidate_id", "destination_id", name="uq_destination_update_publications_candidate_destination"),
+        UniqueConstraint("event_id", "destination_id", name="uq_destination_update_publications_event_destination"),
+        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')", name="ck_destination_update_publications_exchange"),
+        CheckConstraint("attempt_count >= 0", name="ck_destination_update_publications_attempt_nonnegative"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_destination_update_publications_message_positive"),
+        CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0", name="ck_destination_update_publications_reply_positive"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND reply_to_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)", name="ck_destination_update_publications_sent_consistency"),
+        Index("ix_destination_update_publications_status_retry", "status", "retry_at"),
+        Index("ix_destination_update_publications_chain", "signal_id", "destination_id", "sent_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, nullable=False)
+    event_kind: Mapped[SignalEventKind] = mapped_column(EVENT_KIND_ENUM, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(PUBLICATION_STATUS_ENUM, nullable=False, default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    template_sha256: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+DestinationUpdatePublicationRecord.__table__.primary_key.name = "pk_destination_update_publications"
+
 class BreakevenPromptRecord(Base):
     __tablename__="breakeven_prompts"
     __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_breakeven_prompts_signal_id_signals"),UniqueConstraint("signal_id","cycle_number",name="uq_breakeven_prompts_signal_cycle"),CheckConstraint("cycle_number > 0",name="ck_breakeven_prompts_cycle_positive"),Index("uq_breakeven_prompts_one_open","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("status IN ('pending_notification','awaiting_response')")))

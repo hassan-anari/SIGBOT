@@ -18,7 +18,7 @@ LOGGER=logging.getLogger("chainura.monitoring")
 from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
  SignalExchangeSymbolRecord,SignalInitialPriceRecord,SignalMonitorStateRecord,
  SignalEventRecord,SignalEventSourcePriceRecord,SignalUpdateCandidateRecord,
- BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord)
+ BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord,UpdatePublicationRequestRecord)
 
 
 @dataclass(frozen=True,slots=True)
@@ -53,8 +53,8 @@ class BatchMarketProvider(Protocol):
 
 class MonitoringService:
     def __init__(self,sessions:async_sessionmaker,market:BatchMarketProvider|None=None,
-                 settings:BreakevenSettings=BreakevenSettings(),clock=lambda:datetime.now(timezone.utc),notification_wake:Callable[[],None]|None=None):
-        self.sessions=sessions;self.market=market;self.settings=settings;self.clock=clock;self.notification_wake=notification_wake
+                 settings:BreakevenSettings=BreakevenSettings(),clock=lambda:datetime.now(timezone.utc),notification_wake:Callable[[],None]|None=None,update_publication_wake:Callable[[],None]|None=None):
+        self.sessions=sessions;self.market=market;self.settings=settings;self.clock=clock;self.notification_wake=notification_wake;self.update_publication_wake=update_publication_wake
 
     async def reconcile(self)->None:
         """Enroll valid legacy signals once without deriving historical events."""
@@ -153,7 +153,12 @@ class MonitoringService:
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted
             if row.status is not CandidateStatus.AWAITING_DECISION:raise ValueError("candidate is not actionable")
-            row.status=wanted;row.approved_at=now if approve else None;row.declined_at=None if approve else now;row.updated_at=now;return wanted
+            row.status=wanted;row.approved_at=now if approve else None;row.declined_at=None if approve else now;row.updated_at=now
+            if approve:
+                s.add(UpdatePublicationRequestRecord(candidate_id=row.id,signal_id=row.signal_id,event_id=row.event_id,status=__import__('chainura.domain.publication',fromlist=['PublicationRequestStatus']).PublicationRequestStatus.PENDING,created_at=now,updated_at=now))
+            result=wanted
+        if approve and self.update_publication_wake:self.update_publication_wake()
+        return result
 
     async def decline_breakeven(self,prompt_id:int,signalist_id:int,cycle:int|None=None)->None:
         now=self.clock()

@@ -145,3 +145,33 @@ class InitialImageService:
    candidate.unlink(missing_ok=True)
    for temporary in candidate.parent.glob(f".{candidate.name}.*.tmp"):temporary.unlink(missing_ok=True)
   except OSError as exc:raise RenderingError("render output cleanup failed") from exc
+
+class UpdatePayloadFactory(InitialPayloadFactory):
+ def build_update(self,signal,event,event_price,exchange,rendered_at=None):
+  from chainura.domain.monitoring import SignalEventKind
+  from chainura.rendering.models import SignalRenderEventKind
+  if rendered_at is None:rendered_at=event.occurred_at
+  mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
+  if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
+  logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
+  if event.kind is SignalEventKind.BREAKEVEN:pnl=__import__('decimal').Decimal('0')
+  else:pnl=leveraged_return_percent(signal.entry_price,event_price,signal.leverage,signal.direction)
+  kind={SignalEventKind.TP_HIT:SignalRenderEventKind.TP,SignalEventKind.SL_HIT:SignalRenderEventKind.SL,SignalEventKind.BREAKEVEN:SignalRenderEventKind.BREAKEVEN}[event.kind]
+  elapsed=max(0,int((event.occurred_at-signal.created_at).total_seconds()))
+  return SignalRenderPayload(signal.id,kind,exchange,signal.direction,signal.price_source_type,
+   signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,signal.entry_price,
+   signal.leverage,signal.take_profits,signal.stop_loss,event.observed_reference_price,event_price,
+   pnl,signal.created_at,event.occurred_at,elapsed,logo)
+
+async def _render_update_signal(self,signal,event,event_price,exchange,destination_id):
+ old=self.payload_factory
+ class F:
+  def build(_,sig,ex,at):return old.build_update(sig,event,event_price,ex,at) if hasattr(old,'build_update') else UpdatePayloadFactory(old.logo_store).build_update(sig,event,event_price,ex,at)
+ self.payload_factory=F()
+ try:
+  result=await self.render_initial_signal(signal,exchange,destination_id,event.occurred_at)
+  new_path=result.file_path.with_name(result.file_path.name.replace('initial-','update-',1))
+  result.file_path.rename(new_path)
+  return RenderedSignalImage(file_path=new_path,spec=result.spec)
+ finally:self.payload_factory=old
+InitialImageService.render_update_signal=_render_update_signal

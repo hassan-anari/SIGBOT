@@ -120,3 +120,7 @@ Before changing the code:
 - Breakeven is a contextual manual prompt after five minutes, 1.00% favorable movement, a 0.10% execution zone, 0.20% rearm distance, and 15-minute cooldown.
 - Signalist approval records Phase 6B publication intent only; Phase 6A never publishes updates to destinations.
 - Monitoring refreshes exchanges in batches and direct notification delivery uses the SQLite outbox.
+
+## Phase 6B implementation note
+
+Approved update publication is now a durable SQLite outbox separate from Phase 5 initial publication. Keep update images on the same template/layout pipeline, keep update captions centralized, and keep Reply Chain parent resolution immediately before Telegram send.

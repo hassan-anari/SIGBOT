@@ -795,3 +795,25 @@ The monitoring and direct-notification workers use in-memory wake events plus
 durable periodic SQLite sweeps, bounded concurrency, restart recovery, and runtime
 supervision. Destination updates, reports, Win Rate screens, and outage alerts are
 outside Phase 6A.
+
+---
+
+## Phase 6B — Approved Update Publication and Reply Chains
+
+Phase 6B completes destination publication for approved TP, SL, and Breakeven update candidates. Signalist approval is durable publication intent only: the approval transition and one update-publication request are committed atomically, duplicate approvals do not create duplicate requests, and publication results remain hidden from the Signalist.
+
+Update requests wait for the Phase 5 initial-publication lifecycle. Planning uses only destinations with a confirmed initial `sent` publication and a positive Telegram message ID; failed, unknown, blocked, skipped, or unsent initial rows are not eligible. Updates do not consume initial-publication daily-capacity slots.
+
+For Composite events, each destination freezes the first exchange in its priority list that has a persisted event-time source-price snapshot. For Single Exchange events, only the Signal's selected exchange is compatible. No market request is made to reconstruct or refresh event prices.
+
+Update images reuse the same current destination override/default template hierarchy and the existing exchange geometry. There are no update-specific templates or event-specific backgrounds. The image uses the persisted Signal identity, Entry, direction, leverage, TP/SL compatibility fields, event observed reference price, selected exchange event source price, and the event occurrence time. TP/SL PnL is calculated from original Entry and selected event-time display price with Decimal; Breakeven renders zero PnL by rule.
+
+Destination update captions are centralized, concise Persian HTML captions with explicit BiDi isolation. They include only canonical Symbol, event reference price, event ROI (or zero for Breakeven), and TP index when applicable. Updates never include `#پیامک`, destination names/counts, source exchange, approval questions, internal IDs, or Signalist usernames.
+
+The Reply Chain is per `(signal_id, destination_id)`. The first successful update replies to the confirmed initial message; each later successful update replies to the latest confirmed successful update for that same destination. Declined, skipped, failed, blocked, superseded, and `delivery_unknown` rows are not chain parents. Per-destination chains may diverge after mixed outcomes.
+
+If a newer TP is detected before an older TP update is actually published to a destination, the older unsent TP delivery is durably superseded and must not be revived by restart. Already sent lower-TP messages remain in the real chain.
+
+Update delivery persists retry state, attempts, sanitized error categories, selected exchange, reply target, Telegram message ID, sent time, and template identity when available. Ambiguous Telegram delivery becomes `delivery_unknown` and is not retried automatically. Template mutations unblock both initial and update `blocked_template` rows. Runtime recovery reclaims stale rendering/planning states, marks stale sending as unknown, reconciles approved candidates missing requests, and drains update work before closing shared rendering resources.
+
+Reports, Win Rate screens, outage/recovery alerts, and final Phase 6 acceptance remain Phase 6C responsibilities and are not implemented in Phase 6B.
