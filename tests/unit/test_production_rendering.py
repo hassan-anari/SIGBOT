@@ -1,4 +1,4 @@
-import io,tempfile,unittest,inspect,asyncio,threading
+import io,tempfile,unittest,inspect,asyncio,threading,os
 from unittest.mock import patch
 import errno
 import hashlib
@@ -151,31 +151,70 @@ class BoundedTemplateInspectionTests(unittest.TestCase):
 if __name__=="__main__":unittest.main()
 
 class CancellationTests(unittest.IsolatedAsyncioTestCase):
+ def make_service(self,root,concurrency=1):
+  class Templates:
+   async def resolve(self,*_):return type("T",(),{"path":Path(root)/"template.png"})()
+  return InitialImageService(InitialPayloadFactory(CoinLogoStore(root)),Templates(),Path(root)/"out",concurrency)
+ async def wait_for_files(self,service,count=1):
+  for _ in range(200):
+   files=list(service.output_root.iterdir())
+   if len(files)>=count:return files
+   await asyncio.sleep(.005)
+  self.fail("output reservation was not created")
+ async def test_cancellation_during_reservation_is_supervised(self):
+  with tempfile.TemporaryDirectory() as root:
+   service=self.make_service(root);entered=threading.Event();release=threading.Event()
+   original=service._reserve_output
+   def reserve():entered.set();release.wait(5);return original()
+   service._reserve_output=reserve
+   errors=[];loop=asyncio.get_running_loop();previous=loop.get_exception_handler()
+   loop.set_exception_handler(lambda _loop,context:errors.append(context))
+   try:
+    task=asyncio.create_task(service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW))
+    self.assertTrue(await asyncio.to_thread(entered.wait,2));task.cancel()
+    with self.assertRaises(asyncio.CancelledError):await task
+    release.set();await service.aclose()
+   finally:loop.set_exception_handler(previous);release.set()
+   self.assertEqual(list(service.output_root.iterdir()),[]);self.assertEqual(errors,[])
  async def test_worker_cancellation_eventually_removes_output_and_propagates(self):
   with tempfile.TemporaryDirectory() as root:
-   class Templates:
-    async def resolve(self,*_):return type("T",(),{"path":Path(root)/"template.png"})()
-   service=InitialImageService(InitialPayloadFactory(CoinLogoStore(root)),Templates(),Path(root)/"out",1)
+   service=self.make_service(root)
    started=threading.Event();release=threading.Event()
    def worker(payload,template,output):
-    started.set();release.wait(5);Path(output).write_bytes(b"png");raise RuntimeError("worker failed")
+    started.set();release.wait(5);Path(output).write_bytes(b"png")
+    temporary=Path(output).parent/f".{Path(output).name}.worker.tmp";temporary.write_bytes(b"tmp")
+    raise RuntimeError("worker failed")
    with patch("chainura.application.initial_rendering.render_signal_image",worker):
     task=asyncio.create_task(service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW))
-    await asyncio.to_thread(started.wait,2);task.cancel();task.cancel()
+    self.assertTrue(await asyncio.to_thread(started.wait,2));reserved=(await self.wait_for_files(service))[0]
+    task.cancel();task.cancel()
     with self.assertRaises(asyncio.CancelledError):await task
+    self.assertTrue(reserved.exists())
+    with self.assertRaises(FileExistsError):os.open(reserved,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     release.set()
     await service.aclose()
     self.assertEqual(list(service.output_root.iterdir()),[])
  async def test_cancellation_before_render_permit_leaves_nothing(self):
   with tempfile.TemporaryDirectory() as root:
-   class Templates:
-    async def resolve(self,*_):return type("T",(),{"path":Path(root)/"template.png"})()
-   service=InitialImageService(InitialPayloadFactory(CoinLogoStore(root)),Templates(),Path(root)/"out",1)
+   service=self.make_service(root)
    await service._semaphore.acquire()
    task=asyncio.create_task(service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW))
-   await asyncio.sleep(0);task.cancel()
+   await self.wait_for_files(service);task.cancel()
    with self.assertRaises(asyncio.CancelledError):await task
-   service._semaphore.release();self.assertEqual(list(service.output_root.iterdir()),[])
+   service._semaphore.release();await service.aclose()
+   self.assertEqual(list(service.output_root.iterdir()),[])
+ async def test_concurrent_close_drains_active_worker(self):
+  with tempfile.TemporaryDirectory() as root:
+   service=self.make_service(root);started=threading.Event();release=threading.Event()
+   def worker(*args):started.set();release.wait(5);Path(args[2]).write_bytes(b"done");return type("R",(),{"file_path":Path(args[2])})()
+   with patch("chainura.application.initial_rendering.render_signal_image",worker):
+    render=asyncio.create_task(service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW))
+    self.assertTrue(await asyncio.to_thread(started.wait,2));render.cancel()
+    with self.assertRaises(asyncio.CancelledError):await render
+    closes=[asyncio.create_task(service.aclose()) for _ in range(2)]
+    await asyncio.sleep(0);self.assertTrue(all(not item.done() for item in closes));release.set()
+    await asyncio.gather(*closes)
+   self.assertEqual(list(service.output_root.iterdir()),[]);self.assertEqual(service._owned_tasks,set())
  async def test_close_is_idempotent_and_rejects_new_render(self):
   with tempfile.TemporaryDirectory() as root:
    class Templates:pass
@@ -196,4 +235,5 @@ class OutputOwnershipTests(unittest.IsolatedAsyncioTestCase):
    with patch("chainura.application.initial_rendering.uuid.uuid4",side_effect=lambda:next(names)),patch("chainura.application.initial_rendering.render_signal_image",renderer):
     result=await service.render_initial_signal(signal(),Exchange.OURBIT,None,NOW)
    self.assertEqual(unrelated.read_bytes(),b"owner");self.assertEqual(result.file_path.name,"initial-owned.png")
-   service.cleanup(result.file_path);await service.aclose()
+   await service.aclose();self.assertEqual(result.file_path.read_bytes(),b"rendered")
+   service.cleanup(result.file_path);self.assertFalse(result.file_path.exists())
