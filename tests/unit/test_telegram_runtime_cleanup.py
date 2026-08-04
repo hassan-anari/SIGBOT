@@ -259,3 +259,24 @@ class RuntimePhase6BCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('monitoring_service.notification_wake=self.notification_worker.wake',source)
         self.assertIn('monitoring_service.update_publication_wake=self.update_publication_worker.wake',source)
         self.assertNotIn('if self.update_publication_worker: monitoring_service.update_publication_wake=self.update_publication_worker.wake;await self._startup_await(self.notification_worker.start())',source)
+
+
+class RuntimeOrphanCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_owned_initial_and_update_outputs_only(self):
+        import tempfile
+        from pathlib import Path
+        from dataclasses import replace
+        from chainura.rendering.production import RenderingSettings
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);out=root/'out';out.mkdir();assets=root/'templates';assets.mkdir();logos=root/'logos';logos.mkdir();font=root/'font.otf';font.write_text('font')
+            settings_obj=settings();settings_obj=replace(settings_obj,rendering=RenderingSettings(assets,out,logos,font,font,font,font,1))
+            runtime=Runtime(settings_obj)
+            for name in ('initial-a.png','.initial-a.png.worker.tmp','update-b.png','.update-b.png.worker.tmp','other.png'):
+                (out/name).write_text('x')
+            nested=out/'nested';nested.mkdir();(nested/'update-c.png').write_text('x')
+            (assets/'update-template.png').write_text('x');(logos/'update-logo.png').write_text('x')
+            await runtime._cleanup_orphan_outputs();await runtime._cleanup_orphan_outputs()
+            self.assertFalse((out/'initial-a.png').exists());self.assertFalse((out/'.initial-a.png.worker.tmp').exists())
+            self.assertFalse((out/'update-b.png').exists());self.assertFalse((out/'.update-b.png.worker.tmp').exists())
+            self.assertTrue((out/'other.png').exists());self.assertTrue((nested/'update-c.png').exists())
+            self.assertTrue((assets/'update-template.png').exists());self.assertTrue((logos/'update-logo.png').exists());self.assertTrue(font.exists())

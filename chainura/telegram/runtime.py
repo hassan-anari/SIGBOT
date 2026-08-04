@@ -495,7 +495,7 @@ class Runtime:
         root=self.settings.rendering.output_root.resolve()
         root.mkdir(parents=True,exist_ok=True)
         def clean():
-            for pattern in ("initial-*.png", ".initial-*.png.*.tmp"):
+            for pattern in ("initial-*.png", ".initial-*.png.*.tmp", "update-*.png", ".update-*.png.*.tmp"):
                 for path in root.glob(pattern):
                     if path.is_file() and path.resolve().parent==root:path.unlink(missing_ok=True)
         await asyncio.to_thread(clean)

@@ -27,10 +27,16 @@ class SqlAlchemyUpdatePublicationRepository:
   return len(ids)
  async def recover(self,now):
   await self.reconcile_requests(now)
+  affected=set((await self.session.scalars(select(DestinationUpdatePublicationRecord.request_id).where(
+   DestinationUpdatePublicationRecord.status.in_((PublicationStatus.RENDERING,PublicationStatus.SENDING))
+   | ((DestinationUpdatePublicationRecord.status==PublicationStatus.RETRY_WAIT)&(DestinationUpdatePublicationRecord.retry_at<=now))))).all())
+  affected.update((await self.session.scalars(select(UpdatePublicationRequestRecord.id).where(
+   UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL,PublicationRequestStatus.PLANNING,PublicationRequestStatus.PLANNED))))).all())
   await self.session.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.status==PublicationRequestStatus.PLANNING).values(status=PublicationRequestStatus.PENDING,updated_at=now))
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.RENDERING).values(status=PublicationStatus.PENDING,updated_at=now))
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category='restart_after_send_started',updated_at=now))
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.RETRY_WAIT,DestinationUpdatePublicationRecord.retry_at<=now).values(status=PublicationStatus.PENDING,retry_at=None,updated_at=now))
+  for request_id in affected:await self.complete_request(request_id,now)
  async def plan_pending(self,now,limit=50):
   ids=(await self.session.scalars(select(UpdatePublicationRequestRecord.id).where(UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL))).order_by(UpdatePublicationRequestRecord.created_at).limit(limit))).all()
   for rid in ids:await self.plan(rid,now)
