@@ -10,6 +10,8 @@ from chainura.domain.destination import Exchange
 from chainura.domain.signal import PriceSourceType, SignalMode
 from chainura.errors import SymbolCatalogError
 from chainura.domain.monitoring import MarketDecision
+from chainura.domain.health import HealthObservation, ServiceHealthStatus, ApiOperation
+from datetime import timezone
 from market import MarketProbe, READY_STATUSES
 
 PAGE_SIZE = 8
@@ -49,8 +51,9 @@ class ExchangeSymbolCatalog(Protocol):
 class SymbolCatalogProvider:
     """Application adapter over the existing MarketProbe and exchange adapters."""
 
-    def __init__(self, probe: MarketProbe) -> None:
+    def __init__(self, probe: MarketProbe, health_repository=None) -> None:
         self._probe = probe
+        self._health_repository = health_repository
         self._discovery_lock = asyncio.Lock()
         self._snapshot_lock = asyncio.Lock()
         self._shared_ready = False
@@ -152,9 +155,10 @@ class SymbolCatalogProvider:
 
 class MarketReferencePriceProvider:
     def __init__(self, probe: MarketProbe,
-                 catalog: SymbolCatalogProvider | None = None) -> None:
+                 catalog: SymbolCatalogProvider | None = None, health_repository=None) -> None:
         self._probe = probe
-        self._catalog = catalog or SymbolCatalogProvider(probe)
+        self._health_repository = health_repository
+        self._catalog = catalog or SymbolCatalogProvider(probe, health_repository)
 
     async def get_reference_price(self, *, mode: SignalMode, canonical_symbol: str,
             selected_exchange: Exchange | None, native_symbol: str | None) -> ReferencePriceResult:
@@ -187,7 +191,7 @@ class MarketReferencePriceProvider:
 
 class BatchedMarketSnapshotProvider:
     """One coherent per-cycle exchange refresh for composite and native signals."""
-    def __init__(self,probe:MarketProbe,catalog:SymbolCatalogProvider):self.probe=probe;self.catalog=catalog
+    def __init__(self,probe:MarketProbe,catalog:SymbolCatalogProvider,health_repository=None):self.probe=probe;self.catalog=catalog;self.health_repository=health_repository
     async def snapshot(self,signals):
         signals=tuple(signals)
         if not signals:return {}
@@ -216,6 +220,14 @@ class BatchedMarketSnapshotProvider:
             ordered=tuple(e for e in sorted(required,key=lambda x:x.value) if e in adapters)
             fetched=await asyncio.gather(*(adapters[e].fetch_prices() for e in ordered),return_exceptions=True)
             raw_by_exchange={}
+            if self.health_repository is not None:
+                for exchange,response in zip(ordered,fetched):
+                    if isinstance(response,Exception):
+                        await self.health_repository.observe(HealthObservation(f"{exchange.value}_prices",exchange,ApiOperation.PRICES,ServiceHealthStatus.DOWN,now=self.probe.clock() if False else __import__("datetime").datetime.now(timezone.utc),error_category="network"))
+                    else:
+                        ticks=tuple(response); usable=tuple(x for x in ticks if isinstance(x.last_price,Decimal) and x.last_price.is_finite() and x.last_price>0)
+                        status=ServiceHealthStatus.HEALTHY if usable and len(usable)==len(ticks) else (ServiceHealthStatus.DEGRADED if usable else ServiceHealthStatus.DOWN)
+                        await self.health_repository.observe(HealthObservation(f"{exchange.value}_prices",exchange,ApiOperation.PRICES,status,__import__("datetime").datetime.now(timezone.utc),None if status is not ServiceHealthStatus.DOWN else "empty_response"))
             for exchange,response in zip(ordered,fetched):
                 if isinstance(response,Exception):
                     continue

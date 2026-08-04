@@ -15,7 +15,7 @@ class PresentationTests(unittest.TestCase):
         signalist={b.text for row in signalist_menu().keyboard for b in row}
         self.assertEqual(admin, {texts.MENU_MAIN,texts.MENU_ADMIN_STATUS,texts.MENU_HELP,
                              texts.MENU_ADMIN_SIGNALISTS,texts.MENU_ADMIN_DESTINATIONS,
-                             texts.MENU_ADMIN_TEMPLATES})
+                             texts.MENU_ADMIN_TEMPLATES,texts.MENU_ADMIN_REPORTS})
         self.assertEqual(signalist, {texts.MENU_CREATE_SIGNAL,texts.MENU_MAIN,texts.MENU_SIGNALIST_STATUS,texts.MENU_HELP})
         self.assertIsInstance(remove_menu(), ReplyKeyboardRemove)
     def test_callbacks_are_ascii_stable_and_short(self):

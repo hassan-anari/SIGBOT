@@ -51,3 +51,7 @@ class SignalCreate(StatesGroup):
     stop_loss = State()
     review = State()
     finalizing = State()
+
+class AdminReportFlow(StatesGroup):
+    start_date = State()
+    end_date = State()

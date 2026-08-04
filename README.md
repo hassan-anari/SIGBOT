@@ -361,3 +361,9 @@ and unavailable results cannot advance.
 ### Phase 6B update publication
 
 Approved TP/SL/Breakeven candidates now create durable update-publication requests. The worker waits for completed initial publication, plans only destinations with confirmed initial messages, renders a new event-time image with the existing template hierarchy, sends a concise Persian caption as a Telegram photo reply, preserves per-destination Reply Chains, and recovers safely after restart. Updates do not consume initial daily capacity and never include `#پیامک`.
+
+## Phase 6C reports and API health
+
+Main Admin reports are on-demand only. Report dates use the Asia/Tehran calendar and are converted to half-open UTC intervals based on Signal creation time. Win Rate is `wins / (wins + losses) * 100`; Breakeven and active no-result Signals are excluded. Theoretical ROI uses only persisted event ROI: highest reached TP for wins, SL ROI for losses, zero for Breakeven, and never current market prices.
+
+The API-health subsystem durably monitors six services: Ourbit/Toobit/LBank prices and Ourbit/Toobit/LBank catalogs. `down` opens one outage incident per service and sends immediate Main Admin alert, one repeat every 60 seconds while still down, and one recovery alert after usable connectivity returns. `degraded` is shown in health status but does not open an incident. The bot does not reconstruct historical events missed during outages.

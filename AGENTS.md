@@ -124,3 +124,7 @@ Before changing the code:
 ## Phase 6B implementation note
 
 Approved update publication is now a durable SQLite outbox separate from Phase 5 initial publication. Keep update images on the same template/layout pipeline, keep update captions centralized, and keep Reply Chain parent resolution immediately before Telegram send.
+
+## Phase 6C permanent rules
+
+Main Admin reports are on-demand only, use Asia/Tehran date semantics, and calculate Win Rate from wins and losses only. Durable API health tracks six services independently (price/catalog for Ourbit, Toobit, and LBank). Only `down` opens one incident per service; repeat alerts use the fixed 60-second cadence and must not send catch-up bursts. Phase 6 is complete after the Phase 6C PR; do not add scheduled reports, historical outage reconstruction, Webhook migration, PostgreSQL, or external queues.
