@@ -39,9 +39,10 @@ LAYOUT = InitialCardLayout(
             HorizontalAlignment.LEFT,
             VerticalAlignment.CENTER,
             fill=PNL_NEUTRAL,
-            fill_by_value=(
-                ("+12.34%", PNL_POSITIVE),
-                ("-12.34%", PNL_NEGATIVE),
+            fill_by_state=(
+                ("positive", PNL_POSITIVE),
+                ("negative", PNL_NEGATIVE),
+                ("neutral", PNL_NEUTRAL),
             ),
         ),
 

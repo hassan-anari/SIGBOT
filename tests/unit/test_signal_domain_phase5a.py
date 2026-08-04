@@ -8,7 +8,9 @@ from chainura.errors import InvalidSignalInputError
 
 NOW=datetime(2026,8,1,tzinfo=timezone.utc)
 def signal(direction=TradeDirection.LONG, tps=(Decimal('101'),), sl=Decimal('99'), **kw):
- return Signal(None,1,'opaque',kw.get('mode',SignalMode.COMPOSITE),'BTCUSDT','BTC','USDT',kw.get('exchange'),direction,Decimal('100'),3,tps,sl,Decimal('100'),kw.get('source',PriceSourceType.COMPOSITE),SignalLifecycleStatus.ACTIVE,kw.get('maps',((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt'))),NOW,NOW)
+ maps=kw.get('maps',((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')))
+ snapshots=kw.get('snapshots',tuple((exchange,Decimal('100')) for exchange,_ in maps))
+ return Signal(None,1,'opaque',kw.get('mode',SignalMode.COMPOSITE),'BTCUSDT','BTC','USDT',kw.get('exchange'),direction,Decimal('100'),3,tps,sl,Decimal('100'),kw.get('source',PriceSourceType.COMPOSITE),SignalLifecycleStatus.ACTIVE,maps,NOW,NOW,snapshots)
 class SignalDomainTests(unittest.TestCase):
  def test_valid_long_short_and_immutable(self):
   a=signal(); b=signal(TradeDirection.SHORT,(Decimal('99'),Decimal('98')),Decimal('101'))
@@ -21,6 +23,8 @@ class SignalDomainTests(unittest.TestCase):
   for tps in [(),(Decimal('101'),Decimal('101')),(Decimal('-1'),)]:
    with self.assertRaises(InvalidSignalInputError): signal(tps=tps)
   with self.assertRaises(InvalidSignalInputError): signal(tps=(101,))
+  with self.assertRaises(InvalidSignalInputError): signal(snapshots=())
+  with self.assertRaises(InvalidSignalInputError): signal(snapshots=((Exchange.OURBIT,Decimal('100')),))
  def test_mode_invariants(self):
   s=signal(mode=SignalMode.SINGLE_EXCHANGE,exchange=Exchange.OURBIT,source=PriceSourceType.OURBIT_ONLY,maps=((Exchange.OURBIT,'BTCUSDT'),))
   self.assertEqual(s.selected_exchange,Exchange.OURBIT)

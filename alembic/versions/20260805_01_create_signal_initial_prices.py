@@ -13,6 +13,7 @@ def upgrade():
         sa.Column("price",sa.Text(),nullable=False),
         sa.PrimaryKeyConstraint("signal_id","exchange",name="pk_signal_initial_prices"),
         sa.ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_signal_initial_prices_signal_id_signals"),
+        sa.ForeignKeyConstraint(["signal_id","exchange"],["signal_exchange_symbols.signal_id","signal_exchange_symbols.exchange"],ondelete="CASCADE",name="fk_signal_initial_prices_signal_exchange_symbols"),
         sa.CheckConstraint("exchange IN ('ourbit','toobit','lbank')",name="signal_initial_price_exchange"),
         sa.CheckConstraint("trim(price) <> ''",name="ck_signal_initial_prices_price_nonempty"),
         sa.CheckConstraint("CAST(price AS NUMERIC) > 0",name="ck_signal_initial_prices_price_positive"))

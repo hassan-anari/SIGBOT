@@ -102,6 +102,7 @@ def draw_text_layer(
     layer: TextLayer,
     value: str,
     provider: FontProvider,
+    semantic_state: str | None = None,
 ):
     text = f"{layer.prefix}{value}{layer.suffix}"
 
@@ -171,11 +172,9 @@ def draw_text_layer(
             fill=badge_fill,
         )
 
-    text_fill = _resolved_color(
-        layer.fill,
-        layer.fill_by_value,
-        value,
-    )
+    text_fill = (_resolved_color(layer.fill, layer.fill_by_state, semantic_state)
+                 if semantic_state is not None else
+                 _resolved_color(layer.fill, layer.fill_by_value, value))
 
     text_x = left + padding_x - measured[0]
     text_y = top + padding_y - measured[1]

@@ -57,6 +57,8 @@ class TextLayer:
 
     # Optional dynamic text colors, e.g. Long/Short
     fill_by_value: tuple[tuple[str, RGBA], ...] = ()
+    # Semantic states avoid coupling production styles to formatted fixture values.
+    fill_by_state: tuple[tuple[str, RGBA], ...] = ()
 
     # Optional rounded background
     badge: BadgeStyle | None = None

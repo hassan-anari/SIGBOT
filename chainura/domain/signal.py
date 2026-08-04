@@ -96,7 +96,7 @@ class Signal:
     exchange_symbols: tuple[tuple[Exchange, str], ...]
     created_at: datetime
     updated_at: datetime
-    initial_source_prices: tuple[tuple[Exchange, Decimal], ...] = ()
+    initial_source_prices: tuple[tuple[Exchange, Decimal], ...]
 
     def __post_init__(self) -> None:
         if self.id is not None and (isinstance(self.id, bool) or not isinstance(self.id, int) or self.id < 1):
@@ -144,11 +144,10 @@ class Signal:
                        for exchange, price in self.initial_source_prices)
                 or not set(snapshot_exchanges).issubset(set(exchanges))):
             raise InvalidSignalInputError("initial source-price snapshot is invalid")
-        if self.initial_source_prices:
-            if self.mode is SignalMode.COMPOSITE and len(snapshot_exchanges) < 2:
-                raise InvalidSignalInputError("composite snapshot requires at least two sources")
-            if self.mode is SignalMode.SINGLE_EXCHANGE and snapshot_exchanges != [self.selected_exchange]:
-                raise InvalidSignalInputError("single-exchange snapshot is inconsistent")
+        if self.mode is SignalMode.COMPOSITE and len(snapshot_exchanges) < 2:
+            raise InvalidSignalInputError("composite snapshot requires at least two sources")
+        if self.mode is SignalMode.SINGLE_EXCHANGE and snapshot_exchanges != [self.selected_exchange]:
+            raise InvalidSignalInputError("single-exchange snapshot is inconsistent")
         if self.mode is SignalMode.COMPOSITE:
             if self.selected_exchange is not None or self.price_source_type is not PriceSourceType.COMPOSITE:
                 raise InvalidSignalInputError("composite signal invariants are invalid")

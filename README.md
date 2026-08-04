@@ -20,6 +20,8 @@ accepted by production APIs.
 Template uploads are limited to `MAX_TEMPLATE_BYTES` (currently 12 MiB).
 Template verification, hashing, durable writes, local-logo inspection, and Pillow
 composition are executed off the asyncio event loop under configured bounds.
+The application owner must call `InitialImageService.aclose()` during shutdown;
+Phase 5C publication will own this service and must also clean each returned image.
 
 این پروژه علاوه بر Probe مستقل بازار، پایهٔ پایدار و مستقل از Transport برنامه را برای مدیریت هویت و وضعیت Signalist فراهم می‌کند. CLI بازار همچنان بدون تنظیمات یا اتصال دیتابیس اجرا می‌شود.
 

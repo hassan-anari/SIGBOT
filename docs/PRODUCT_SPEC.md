@@ -282,6 +282,13 @@ PnL uses the temporary formula in section 12 with persisted Entry, Display Price
 direction, and leverage, without intermediate rounding. The visible card symbol is
 the persisted canonical symbol; native symbols remain available only for exchange
 integration and local Toobit logo lookup.
+Toobit logo files use one traversal-safe canonical logo key (for example,
+`TONUSDT`) derived at the logo-store boundary; the hyphenated native/API identity
+(for example, `TON-SWAP-USDT`) remains unchanged for exchange calls.
+
+Signals created before the initial-price migration are detected as legacy rows
+without snapshots and cannot be rendered as initial cards. The system must not
+fabricate their snapshot from Reference Price or perform a fresh market request.
 
 Each exchange has one default templates.
 

@@ -14,6 +14,9 @@ from .geometry import contain_size
 from .text import FontProvider, draw_inline_row, draw_text_layer
 from typing import Mapping
 
+def pnl_semantic_state(value):
+    return "positive" if value>0 else "negative" if value<0 else "neutral"
+
 def _open_png(path:Path, *, label:str)->Image.Image:
     if not path.is_file(): raise RendererAssetError(f"{label} does not exist: {path}")
     try:
@@ -96,8 +99,16 @@ def compose_initial(
 
         values.update(value_overrides)
 
+    pnl_value = payload.initial_pnl_percent
+    if value_overrides and "pnl" in value_overrides:
+        preview=value_overrides["pnl"].strip()
+        pnl_state="negative" if preview.startswith("-") else "positive" if preview.startswith("+") and preview not in {"+0%","+0.00%"} else "neutral"
+    else:
+        pnl_state=pnl_semantic_state(pnl_value)
     fitted = []
-    for layer in layout.text_layers: fitted.append((layer,draw_text_layer(draw,layer,values[layer.field],font_provider)))
+    for layer in layout.text_layers:
+        state=pnl_state if layer.field=="pnl" else None
+        fitted.append((layer,draw_text_layer(draw,layer,values[layer.field],font_provider,state)))
     rows=[]
     for row in layout.inline_rows: rows.append((row, draw_inline_row(draw,row,values,font_provider)))
     if payload.coin_logo_path is not None:

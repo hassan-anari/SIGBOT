@@ -24,7 +24,7 @@ class InitialPayloadFactory:
   if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not exchange:raise RenderPayloadError("exchange is incompatible with single-exchange signal")
   prices=[price for mapped,price in signal.initial_source_prices if mapped is exchange]
   if len(prices)!=1:raise RenderPayloadError("exchange has no unique initial price snapshot")
-  logo=self.logo_store.resolve(exchange,mappings[0]) if exchange is Exchange.TOOBIT else None
+  logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
   pnl=leveraged_return_percent(signal.entry_price,prices[0],signal.leverage,signal.direction)
   try:return SignalRenderPayload(signal.id,SignalRenderEventKind.INITIAL,exchange,signal.direction,
    signal.price_source_type,signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,
@@ -66,6 +66,13 @@ class InitialImageService:
  async def _safe_cleanup(self,output):
   try:await asyncio.to_thread(self.cleanup,output)
   except Exception as exc:LOGGER.warning("render cleanup failed category=%s",type(exc).__name__)
+ async def drain_pending_cleanup(self):
+  """Wait for all cancelled workers owned by this service; safe to call repeatedly."""
+  while self._cleanup_tasks:
+   tasks=tuple(self._cleanup_tasks)
+   await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+ async def aclose(self):
+  await self.drain_pending_cleanup()
  def cleanup(self,path:Path|str):
   candidate=Path(path).resolve()
   if not candidate.is_relative_to(self.output_root) or candidate==self.output_root:raise UnsafeRenderPathError("render cleanup path is outside output root")

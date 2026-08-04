@@ -1,11 +1,11 @@
 from __future__ import annotations
-import asyncio,hashlib,io,os,tempfile,warnings
+import asyncio,errno,hashlib,io,os,tempfile,warnings
 from dataclasses import dataclass
 from pathlib import Path
 from PIL import Image,UnidentifiedImageError
 from chainura.domain.destination import Exchange
 from chainura.errors import (TemplateAssetError,TemplateNotConfiguredError,
-    TemplatePersistenceError,TemplateValidationError)
+    TemplatePersistenceError,TemplateValidationError,TemplateError)
 from chainura.rendering.models import EXCHANGE_IMAGE_SPECS
 
 MAX_TEMPLATE_BYTES=12*1024*1024
@@ -50,6 +50,17 @@ class TemplateAssetStore:
         with path.open("rb") as stream:
             for chunk in iter(lambda:stream.read(1024*1024),b""):digest.update(chunk)
         return digest.hexdigest()
+    @staticmethod
+    def _fsync_directory(path):
+        try:directory=os.open(path,os.O_RDONLY)
+        except OSError as exc:
+            if os.name=="nt" or exc.errno in {errno.EINVAL,errno.ENOTSUP,errno.EISDIR}:return
+            raise
+        try:
+            try:os.fsync(directory)
+            except OSError as exc:
+                if os.name!="nt" and exc.errno not in {errno.EINVAL,errno.ENOTSUP}:raise
+        finally:os.close(directory)
     def persist(self,asset,data):
         path=(self.root/asset.storage_key).resolve()
         if not path.is_relative_to(self.root):raise TemplateAssetError("template storage key escapes configured root")
@@ -61,9 +72,7 @@ class TemplateAssetStore:
             try:os.link(temporary,path)
             except FileExistsError:pass
             if self._hash(path)!=asset.sha256:raise TemplateAssetError("content-addressed asset collision")
-            directory=os.open(path.parent,os.O_RDONLY)
-            try:os.fsync(directory)
-            finally:os.close(directory)
+            self._fsync_directory(path.parent)
             return path
         except TemplateAssetError:raise
         except OSError as exc:raise TemplateAssetError("template asset persistence failed") from exc
@@ -85,23 +94,32 @@ class TemplateService:
         if destination_id is not None:validate_destination_id(destination_id)
         asset=await self._local_call(self.store.validate,exchange,data)
         await self._local_call(self.store.persist,asset,data)
-        async with self.transactions() as tx:
-            tx.use_template_errors()
-            if destination_id is not None and await tx.destinations.get_by_id(destination_id) is None:
-                raise TemplatePersistenceError("destination does not exist")
-            await tx.templates.replace(asset,destination_id);await tx.commit()
+        try:
+            async with self.transactions() as tx:
+                tx.use_template_errors()
+                if destination_id is not None and await tx.destinations.get_by_id(destination_id) is None:
+                    raise TemplatePersistenceError("destination does not exist")
+                await tx.templates.replace(asset,destination_id);await tx.commit()
+        except TemplateError:raise
+        except Exception as exc:raise TemplatePersistenceError("template metadata installation failed") from exc
         return asset
     async def remove_override(self,exchange,destination_id):
         validate_destination_id(destination_id)
-        async with self.transactions() as tx:
-            tx.use_template_errors();await tx.templates.remove_override(exchange,destination_id);await tx.commit()
+        try:
+            async with self.transactions() as tx:
+                tx.use_template_errors();await tx.templates.remove_override(exchange,destination_id);await tx.commit()
+        except TemplateError:raise
+        except Exception as exc:raise TemplatePersistenceError("template metadata removal failed") from exc
     async def resolve(self,exchange,destination_id=None):
         if destination_id is not None:validate_destination_id(destination_id)
-        async with self.transactions() as tx:
-            tx.use_template_errors()
-            metadata=await tx.templates.get(exchange,destination_id) if destination_id is not None else None
-            specific=metadata is not None
-            if metadata is None:metadata=await tx.templates.get(exchange,None)
+        try:
+            async with self.transactions() as tx:
+                tx.use_template_errors()
+                metadata=await tx.templates.get(exchange,destination_id) if destination_id is not None else None
+                specific=metadata is not None
+                if metadata is None:metadata=await tx.templates.get(exchange,None)
+        except TemplateError:raise
+        except Exception as exc:raise TemplatePersistenceError("template metadata resolution failed") from exc
         if metadata is None:raise TemplateNotConfiguredError("default template is not configured")
         path=(self.store.root/metadata.storage_key).resolve()
         if not path.is_relative_to(self.store.root):raise TemplateAssetError("template metadata escapes configured root")

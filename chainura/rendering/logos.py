@@ -23,6 +23,7 @@ SYNC_INTERVAL_SECONDS = 6 * 60 * 60
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_PIXELS = 16_000_000
 _SYMBOL = re.compile(r"[A-Z0-9]{1,64}")
+_TOOBIT_FUTURES_SYMBOL = re.compile(r"([A-Z0-9]{1,32})-SWAP-([A-Z0-9]{1,16})")
 _READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -46,19 +47,32 @@ def normalize_symbol(value: object) -> str | None:
     normalized = value.strip().upper()
     return normalized if _SYMBOL.fullmatch(normalized) else None
 
+def toobit_logo_key(native_symbol: object, canonical_symbol: object | None = None) -> str | None:
+    """Return the single traversal-safe disk key used by sync and rendering."""
+    canonical=normalize_symbol(canonical_symbol)
+    if canonical is not None:return canonical
+    if not isinstance(native_symbol,str):return None
+    native=native_symbol.strip().upper()
+    plain=normalize_symbol(native)
+    if plain is not None:return plain
+    match=_TOOBIT_FUTURES_SYMBOL.fullmatch(native)
+    return f"{match.group(1)}{match.group(2)}" if match else None
+
 
 class CoinLogoStore:
     def __init__(self, root: Path | str = Path("var/coin_logos")) -> None:
         self.root = Path(root)
 
-    def path(self, exchange: Exchange, native_symbol: object) -> Path | None:
-        symbol = normalize_symbol(native_symbol)
+    def path(self, exchange: Exchange, native_symbol: object,
+             canonical_symbol: object | None = None) -> Path | None:
+        symbol = toobit_logo_key(native_symbol,canonical_symbol)
         if symbol is None or exchange is not Exchange.TOOBIT:
             return None
         return self.root / exchange.value / f"{symbol}.png"
 
-    def resolve(self, exchange: Exchange, native_symbol: object) -> Path | None:
-        path = self.path(exchange, native_symbol)
+    def resolve(self, exchange: Exchange, native_symbol: object,
+                canonical_symbol: object | None = None) -> Path | None:
+        path = self.path(exchange, native_symbol,canonical_symbol)
         return path if path is not None and self.is_valid_png(path) else None
 
     @staticmethod
@@ -110,7 +124,7 @@ class ToobitLogoSynchronizer:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    symbol = normalize_symbol(item.get("sn"))
+                    symbol = toobit_logo_key(item.get("sn"))
                     url = item.get("i")
                     if symbol and isinstance(url, str) and urlsplit(url).scheme == "https":
                         pairs.append((symbol, url))

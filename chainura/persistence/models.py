@@ -185,6 +185,9 @@ class SignalInitialPriceRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE",
                              name="fk_signal_initial_prices_signal_id_signals"),
+        ForeignKeyConstraint(["signal_id","exchange"],
+            ["signal_exchange_symbols.signal_id","signal_exchange_symbols.exchange"],
+            ondelete="CASCADE",name="fk_signal_initial_prices_signal_exchange_symbols"),
         CheckConstraint("trim(price) <> ''", name="ck_signal_initial_prices_price_nonempty"),
         CheckConstraint("CAST(price AS NUMERIC) > 0", name="ck_signal_initial_prices_price_positive"),
     )
