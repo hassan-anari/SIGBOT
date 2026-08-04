@@ -40,7 +40,7 @@ def status_navigation() -> InlineKeyboardMarkup:
 def signal_results(items, page: int, pages: int, flow: str, *, native: bool = False) -> InlineKeyboardMarkup:
     from chainura.telegram.presentation.signal_callbacks import signal_callback
     kind = "ns" if native else "ss"; page_kind = "np" if native else "sp"
-    rows = [[InlineKeyboardButton(text=item.native_symbol if native else item.canonical_symbol,
+    rows = [[InlineKeyboardButton(text=f"{item.native_symbol if native else item.canonical_symbol} — {item.current_price if item.current_price is not None else 'قیمت ناموجود'}",
              callback_data=signal_callback(kind, flow, str(index), page))]
             for index,item in enumerate(items)]
     nav=[]

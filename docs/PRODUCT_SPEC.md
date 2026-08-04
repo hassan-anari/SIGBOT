@@ -759,3 +759,39 @@ Every destination is rendered independently with its configured override or exch
 Initial captions contain the canonical Symbol, direction, exact Entry, leverage, ordered TPs, and SL using HTML escaping and explicit LTR isolation. Private destinations alone receive the fixed initial `#پیامک` hashtag. Telegram message IDs are persisted. A send is durably marked `sending` before the API call; timeout, connection interruption, or restart in that state becomes `delivery_unknown` and is never automatically resent because Bot API photo sends have no durable idempotency key.
 
 Runtime recovery precedes worker intake. Shutdown stops polling, drains the publication worker, closes `InitialImageService`, then releases infrastructure and finally unregisters production renderers. Phase 6 remains responsible for monitoring, TP/SL/Breakeven detection, approval and update publication, reports, and outage alerts.
+
+# Phase 6A — Monitoring and Signalist Event Decisions
+
+Phase 6A automatically detects ordered TP events and SL before TP1. After TP1,
+SL and Breakeven are permanently disabled and later targets alone remain active.
+A market cycle that crosses multiple targets stores each event in order but creates
+only the highest current notification/candidate. Configured threshold price and
+the observed event-time reference price are separate; exact leveraged ROI uses the
+configured threshold, while all healthy event-time exchange source prices are
+retained durably.
+
+The owning active Signalist receives a concise Persian event notification and may
+approve or decline future publication. Approval is durable intent only. Phase 6B
+remains responsible for destination-specific update rendering, publication,
+retry, and Reply Chain behavior. Inactive or archived Signalists receive no
+notification and cannot approve, while their Signal result continues monitoring.
+
+Breakeven is manual and contextual, never an automatic Entry-range result or a
+permanent menu action. It arms only after a five-minute minimum age and 1.00%
+favorable movement. A later entry into the 0.10% Entry-distance zone creates one
+durable prompt. A declined or ignored cycle can rearm only after price exits by
+0.20%, the 15-minute cooldown elapses, and price later re-enters. The acceptance
+callback rechecks a fresh price; successful acceptance completes the Signal as
+Neutral with exact zero ROI. Durable SQLite prompt state prevents restart or poll
+barrages.
+
+Shared Symbol search displays the current composite reference price (three-source
+median or agreeing two-source average). Outside-list search displays the selected
+exchange Last Price. Each page uses one batched refresh. An unavailable/stale price
+is labelled «قیمت ناموجود» and cannot advance to Entry; final Entry validation
+still performs its own fresh refresh.
+
+The monitoring and direct-notification workers use in-memory wake events plus
+durable periodic SQLite sweeps, bounded concurrency, restart recovery, and runtime
+supervision. Destination updates, reports, Win Rate screens, and outage alerts are
+outside Phase 6A.

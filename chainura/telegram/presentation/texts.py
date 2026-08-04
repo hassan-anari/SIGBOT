@@ -168,3 +168,7 @@ def signal_review(data):
         f"🛑 <b>حد ضرر:</b> {format_decimal(Decimal(data['stop_loss']))}",
     ]
     return "\n".join(rows)
+SIGNAL_PRICE_UNAVAILABLE = "⚠️ قیمت فعلی این نماد ناموجود است. لطفاً دوباره تلاش کنید."
+EVENT_APPROVED = "✅ درخواست انتشار این آپدیت ثبت شد."
+EVENT_DECLINED = "این آپدیت برای مقصدها منتشر نخواهد شد."
+EVENT_DECISION_STALE = "⚠️ این درخواست دیگر قابل انجام نیست."

@@ -9,6 +9,7 @@ from chainura.application.signal_service import ReferencePriceResult
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import PriceSourceType, SignalMode
 from chainura.errors import SymbolCatalogError
+from chainura.domain.monitoring import MarketDecision
 from market import MarketProbe, READY_STATUSES
 
 PAGE_SIZE = 8
@@ -21,6 +22,9 @@ class SymbolContract:
     base_asset: str
     quote_asset: str
     exchange: Exchange | None
+    # Compatibility default for identity-only catalog fakes; production search
+    # always supplies an explicit current price or ``None``.
+    current_price: Decimal | None = Decimal("1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +52,7 @@ class SymbolCatalogProvider:
     def __init__(self, probe: MarketProbe) -> None:
         self._probe = probe
         self._discovery_lock = asyncio.Lock()
+        self._snapshot_lock = asyncio.Lock()
         self._shared_ready = False
         self._exchange_ready: set[Exchange] = set()
 
@@ -106,7 +111,19 @@ class SymbolCatalogProvider:
             if needle in symbol.casefold():
                 item = next(x for x in self._probe.instruments["ourbit"] if x.canonical_symbol == symbol)
                 rows.append(SymbolContract(symbol, mappings["ourbit"][symbol], item.base_asset, item.quote_asset, None))
-        return _page(rows, page, needle)
+        result=_page(rows, page, needle)
+        if not hasattr(self._probe,"fetch_once"):
+            return result
+        async with self._snapshot_lock:
+            try:await self._probe.fetch_once()
+            except RuntimeError:pass
+            now=self._probe.clock()
+            priced=[]
+            for item in result.items:
+                analysis=self._probe._analyze_symbol(item.canonical_symbol,now)
+                price=analysis["reference_price"] if analysis["status"] in READY_STATUSES else None
+                priced.append(SymbolContract(item.canonical_symbol,item.native_symbol,item.base_asset,item.quote_asset,item.exchange,price))
+        return SymbolSearchPage(tuple(priced),result.page,result.pages)
 
     async def get_shared(self, canonical_symbol: str) -> SymbolContract | None:
         page = await self.search_shared(canonical_symbol, 1)
@@ -118,7 +135,14 @@ class SymbolCatalogProvider:
         rows = [SymbolContract(x.canonical_symbol, x.exchange_symbol, x.base_asset, x.quote_asset, exchange)
                 for x in self._probe.instruments.get(exchange.value, ())
                 if needle in x.canonical_symbol.casefold() or needle in x.exchange_symbol.casefold()]
-        return _page(rows, page, needle)
+        result=_page(rows,page,needle)
+        adapter=next((x for x in self._probe.adapters if x.name==exchange.value),None)
+        if adapter is None:return result
+        async with self._snapshot_lock:
+            try:ticks=await adapter.fetch_prices()
+            except Exception:ticks=()
+            prices={x.exchange_symbol:x.last_price for x in ticks if isinstance(x.last_price,Decimal) and x.last_price.is_finite() and x.last_price>0}
+        return SymbolSearchPage(tuple(SymbolContract(x.canonical_symbol,x.native_symbol,x.base_asset,x.quote_asset,x.exchange,prices.get(x.native_symbol)) for x in result.items),result.page,result.pages)
 
     async def get_exchange_contract(self, exchange: Exchange, native_symbol: str) -> SymbolContract | None:
         await self._ensure_exchange(exchange)
@@ -136,12 +160,10 @@ class MarketReferencePriceProvider:
             selected_exchange: Exchange | None, native_symbol: str | None) -> ReferencePriceResult:
         if mode is SignalMode.COMPOSITE:
             await self._catalog._ensure_discovered()
-            try:
-                await self._probe.fetch_once()
-            except RuntimeError:
-                # MarketProbe has already recorded successful snapshots and failures.
-                pass
-            item = self._probe._analyze_symbol(canonical_symbol, self._probe.clock())
+            async with self._catalog._snapshot_lock:
+                try:await self._probe.fetch_once()
+                except RuntimeError:pass
+                item = self._probe._analyze_symbol(canonical_symbol, self._probe.clock())
             mappings = tuple((exchange, self._probe._mapping_for(exchange.value)[canonical_symbol])
                              for exchange in Exchange if canonical_symbol in self._probe._mapping_for(exchange.value))
             prices = tuple((Exchange(name), price) for name,price in sorted(item["prices"].items()))
@@ -154,13 +176,35 @@ class MarketReferencePriceProvider:
         if contract is None:
             raise SymbolCatalogError("selected contract is no longer available")
         adapter = next(x for x in self._probe.adapters if x.name == selected_exchange.value)
-        ticks = await adapter.fetch_prices()
+        async with self._catalog._snapshot_lock:ticks = await adapter.fetch_prices()
         tick = next((x for x in ticks if x.exchange_symbol == native_symbol), None)
         source = {Exchange.OURBIT:PriceSourceType.OURBIT_ONLY,Exchange.TOOBIT:PriceSourceType.TOOBIT_ONLY,Exchange.LBANK:PriceSourceType.LBANK_ONLY}[selected_exchange]
         healthy = tick is not None and isinstance(tick.last_price,Decimal) and tick.last_price.is_finite() and tick.last_price > 0
         return ReferencePriceResult(tick.last_price if healthy else None,source,
             ((selected_exchange,tick.last_price),) if healthy else (),healthy,contract.canonical_symbol,
             ((selected_exchange,native_symbol),),None if healthy else "missing_price")
+
+
+class BatchedMarketSnapshotProvider:
+    """One coordinated all-exchange refresh shared by every Signal in a cycle."""
+    def __init__(self,probe:MarketProbe,catalog:SymbolCatalogProvider):self.probe=probe;self.catalog=catalog
+    async def snapshot(self,signals):
+        await self.catalog._ensure_discovered()
+        async with self.catalog._snapshot_lock:
+            try:await self.probe.fetch_once()
+            except RuntimeError:pass
+            now=self.probe.clock();result={}
+            for signal in signals:
+                if signal.mode is SignalMode.COMPOSITE:
+                    item=self.probe._analyze_symbol(signal.canonical_symbol,now)
+                    if item["status"] not in READY_STATUSES:continue
+                    prices=tuple((Exchange(name),price) for name,price in sorted(item["prices"].items()))
+                else:
+                    tick=self.probe.latest.get((signal.canonical_symbol,signal.selected_exchange.value))
+                    if tick is None or now-tick.received_at>self.probe.max_price_age or tick.last_price<=0:continue
+                    item={"reference_price":tick.last_price};prices=((signal.selected_exchange,tick.last_price),)
+                result[signal.signal_id]=MarketDecision(item["reference_price"],prices,signal.price_source_type,now)
+            return result
 
 
 def _query(value: str) -> str:

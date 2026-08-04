@@ -343,6 +343,9 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             if callback_data.page != current.get("search_page"): return
             try: selected=current["search_results"][int(callback_data.ref)]
             except (KeyError,ValueError,IndexError): return
+            if selected.get("current_price") is None:
+                await callback.message.answer(texts.SIGNAL_PRICE_UNAVAILABLE)
+                return
             if kind == "ss":
                 context={"search_page":callback_data.page,
                          "shared_query":current.get("shared_query"),
@@ -480,7 +483,7 @@ async def _back_state(state,data,target,flow):
     elif target=="tp": await state.set_state(SignalCreate.take_profits); return texts.SIGNAL_ASK_TP,signal_tp_actions(flow,bool(data.get("take_profits")))
     elif target=="sl": await state.set_state(SignalCreate.stop_loss); return texts.SIGNAL_ASK_SL,signal_form_navigation(flow,"tp")
 
-def _item(value): return {"canonical_symbol":value.canonical_symbol,"native_symbol":value.native_symbol,"base_asset":value.base_asset,"quote_asset":value.quote_asset}
+def _item(value): return {"canonical_symbol":value.canonical_symbol,"native_symbol":value.native_symbol,"base_asset":value.base_asset,"quote_asset":value.quote_asset,"current_price":str(value.current_price) if value.current_price is not None else None}
 
 def _command(data):
     return CreateSignalCommand(signalist_id=data["signalist_id"] if "signalist_id" in data else data.get("actor_signalist_id",1),creation_token=data["creation_token"],mode=SignalMode(data["mode"]),canonical_symbol=data["canonical_symbol"],base_asset=data["base_asset"],quote_asset=data["quote_asset"],selected_exchange=Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,native_symbol=data.get("native_symbol"),direction=TradeDirection(data["direction"]),entry_price=Decimal(data["entry_price"]),leverage=int(data["leverage"]),take_profits=tuple(Decimal(x) for x in data["take_profits"]),stop_loss=Decimal(data["stop_loss"]))

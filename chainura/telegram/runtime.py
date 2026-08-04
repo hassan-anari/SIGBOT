@@ -38,8 +38,15 @@ from chainura.telegram.routers import router
 from chainura.telegram.admin_routes import router as admin_router
 from chainura.telegram.signal_routes import router as signal_router
 from chainura.telegram.template_routes import router as template_router
+from chainura.telegram.event_routes import router as event_router
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
+from chainura.application.market_gateway import BatchedMarketSnapshotProvider
+from chainura.application.monitoring import MonitoringService,MonitoringWorker,BreakevenSettings
+from chainura.application.signalist_notification import SignalistNotificationService,SignalistNotificationWorker
+from chainura.telegram.event_routes import EventDecisionCallback
+from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton
+from chainura.domain.monitoring import NotificationKind
 from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
 from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_logo_sync
@@ -85,6 +92,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.include_router(admin_router)
     dispatcher.include_router(template_router)
     dispatcher.include_router(signal_router)
+    dispatcher.include_router(event_router)
     dispatcher.include_router(router)
     for name, service in services.items(): dispatcher[name] = service
     return dispatcher
@@ -117,6 +125,8 @@ class Runtime:
         self.initial_image_service = None
         self.publication_worker = None
         self.publication_task = None
+        self.monitoring_worker=None;self.monitoring_task=None
+        self.notification_worker=None;self.notification_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -224,6 +234,24 @@ class Runtime:
             assignment_service = DestinationAssignmentService(transactions)
             market_probe = MarketProbe()
             symbol_catalog = SymbolCatalogProvider(market_probe)
+            monitoring_service=None
+            if hasattr(sessions,"class_"):
+                monitoring_service=MonitoringService(sessions,BatchedMarketSnapshotProvider(market_probe,symbol_catalog),
+                BreakevenSettings(self.settings.breakeven_min_open_seconds,self.settings.breakeven_favorable_move_percent,self.settings.breakeven_execution_tolerance_percent,self.settings.breakeven_rearm_distance_percent,self.settings.breakeven_prompt_cooldown_seconds))
+                await self._startup_await(monitoring_service.reconcile())
+            class DirectTransport:
+                async def send(inner,telegram_id,text,kind,source_id):
+                    if kind is NotificationKind.EVENT:
+                        markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ارسال به مقصدها",callback_data=EventDecisionCallback(action="a",candidate_id=source_id).pack()),InlineKeyboardButton(text="❌ عدم انتشار",callback_data=EventDecisionCallback(action="d",candidate_id=source_id).pack())]])
+                    else:markup=None
+                    message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
+                    return message.message_id
+            if monitoring_service is not None:
+                notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
+                await self._startup_await(notification_service.recover())
+                if self.settings.monitoring_enabled:
+                    self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency);await self._startup_await(self.monitoring_worker.start());self.monitoring_task=self.monitoring_worker.task;self.monitoring_task.add_done_callback(self._publication_done)
+                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds);await self._startup_await(self.notification_worker.start());self.notification_task=self.notification_worker.task;self.notification_task.add_done_callback(self._publication_done)
             template_admin_service=None
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
@@ -242,15 +270,19 @@ class Runtime:
                 self.publication_task.add_done_callback(self._publication_done)
                 template_admin_service=TemplateAdministrationService(template_service,
                     publication_service,self.publication_worker.wake)
+            def wake_background():
+                if self.publication_worker:self.publication_worker.wake()
+                if self.monitoring_worker:self.monitoring_worker.wake()
             signal_service = SignalService(
                 transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
-                publication_wake=self.publication_worker.wake if self.publication_worker else None)
+                publication_wake=wake_background)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
                 signalist_service=service, destination_service=destination_service,
                 assignment_service=assignment_service,
                 signal_service=signal_service, symbol_catalog=symbol_catalog,
+                monitoring_service=monitoring_service,
                 admin_signalist_service=admin_signalist_service,
                 template_admin_service=template_admin_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
@@ -357,6 +389,10 @@ class Runtime:
             if self.polling_task:
                 await self._best_effort(self.polling_task, "polling task")
 
+            if self.monitoring_worker:
+                await self._best_effort(self.monitoring_worker.stop(), "monitoring worker")
+            if self.notification_worker:
+                await self._best_effort(self.notification_worker.stop(), "Signalist notification worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:

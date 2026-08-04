@@ -13,6 +13,8 @@ from chainura.persistence.types import UTCDateTime, ExactDecimal
 from chainura.domain.signal import (PriceSourceType, SignalLifecycleStatus, SignalMode,
                                     TradeDirection)
 from chainura.domain.publication import PublicationRequestStatus, PublicationStatus
+from chainura.domain.monitoring import (MonitorStage, SignalEventKind, ResultKind,
+    CandidateStatus, PromptStatus, NotificationKind, NotificationStatus)
 
 SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
@@ -284,3 +286,66 @@ class InitialPublicationDailySlotRecord(Base):
     publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 InitialPublicationDailySlotRecord.__table__.primary_key.name = "pk_initial_publication_daily_slots"
+
+MONITOR_STAGE_ENUM=_enum(MonitorStage,"signal_monitor_stage")
+EVENT_KIND_ENUM=_enum(SignalEventKind,"signal_event_kind")
+RESULT_KIND_ENUM=_enum(ResultKind,"signal_result_kind")
+CANDIDATE_STATUS_ENUM=_enum(CandidateStatus,"signal_update_candidate_status")
+PROMPT_STATUS_ENUM=_enum(PromptStatus,"breakeven_prompt_status")
+NOTIFICATION_KIND_ENUM=_enum(NotificationKind,"signalist_notification_kind")
+NOTIFICATION_STATUS_ENUM=_enum(NotificationStatus,"signalist_notification_status")
+
+class SignalMonitorStateRecord(Base):
+    __tablename__="signal_monitor_states"
+    __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_signal_monitor_states_signal_id_signals"),
+      CheckConstraint("next_tp_index > 0 AND highest_tp_index >= 0 AND breakeven_cycle >= 0 AND version > 0",name="ck_signal_monitor_states_counters"),
+      CheckConstraint("stage <> 'pre_tp1' OR highest_tp_index = 0",name="ck_signal_monitor_states_pre_tp1"),
+      CheckConstraint("stage NOT IN ('completed_sl','completed_breakeven','completed_targets') OR completed_at IS NOT NULL",name="ck_signal_monitor_states_completion"),
+      CheckConstraint("stage <> 'completed_breakeven' OR current_leveraged_roi = '0'",name="ck_signal_monitor_states_breakeven_zero"),
+      Index("ix_signal_monitor_states_stage_checked","stage","last_checked_at"))
+    signal_id:Mapped[int]=mapped_column(Integer,primary_key=True)
+    stage:Mapped[MonitorStage]=mapped_column(MONITOR_STAGE_ENUM,nullable=False,default=MonitorStage.PRE_TP1)
+    next_tp_index:Mapped[int]=mapped_column(Integer,nullable=False,default=1);highest_tp_index:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    favorable_threshold_reached_at:Mapped[datetime|None]=mapped_column(UTCDateTime());breakeven_armed_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    breakeven_cycle:Mapped[int]=mapped_column(Integer,nullable=False,default=0);currently_inside_breakeven_zone:Mapped[bool]=mapped_column(nullable=False,default=False)
+    breakeven_rearm_reached_at:Mapped[datetime|None]=mapped_column(UTCDateTime());last_breakeven_prompt_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    last_checked_at:Mapped[datetime|None]=mapped_column(UTCDateTime());last_reference_price:Mapped[object|None]=mapped_column(ExactDecimal())
+    current_result_kind:Mapped[ResultKind|None]=mapped_column(RESULT_KIND_ENUM);current_result_price:Mapped[object|None]=mapped_column(ExactDecimal())
+    current_leveraged_roi:Mapped[object|None]=mapped_column(ExactDecimal());completed_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    disabled_reason:Mapped[str|None]=mapped_column(Text);version:Mapped[int]=mapped_column(Integer,nullable=False,default=1)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+class SignalEventRecord(Base):
+    __tablename__="signal_events"
+    __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_signal_events_signal_id_signals"),
+      UniqueConstraint("signal_id","tp_index",name="uq_signal_events_signal_tp"),
+      CheckConstraint("(kind='tp_hit' AND tp_index > 0 AND threshold_price IS NOT NULL) OR (kind<>'tp_hit' AND tp_index IS NULL)",name="ck_signal_events_tp_shape"),
+      Index("uq_signal_events_one_sl","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("kind='sl_hit'")),
+      Index("uq_signal_events_one_breakeven","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("kind='breakeven'")),Index("ix_signal_events_signal_occurred","signal_id","occurred_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);signal_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    kind:Mapped[SignalEventKind]=mapped_column(EVENT_KIND_ENUM,nullable=False);tp_index:Mapped[int|None]=mapped_column(Integer)
+    threshold_price:Mapped[object|None]=mapped_column(ExactDecimal());observed_reference_price:Mapped[object]=mapped_column(ExactDecimal(),nullable=False)
+    roi_basis_price:Mapped[object]=mapped_column(ExactDecimal(),nullable=False);leveraged_roi:Mapped[object]=mapped_column(ExactDecimal(),nullable=False)
+    price_source_type:Mapped[PriceSourceType]=mapped_column(PRICE_SOURCE_ENUM,nullable=False);occurred_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+class SignalEventSourcePriceRecord(Base):
+    __tablename__="signal_event_source_prices"
+    __table_args__=(ForeignKeyConstraint(["event_id"],["signal_events.id"],ondelete="CASCADE",name="fk_signal_event_source_prices_event_id_signal_events"),)
+    event_id:Mapped[int]=mapped_column(Integer,primary_key=True);exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,primary_key=True);price:Mapped[object]=mapped_column(ExactDecimal(),nullable=False)
+
+class SignalUpdateCandidateRecord(Base):
+    __tablename__="signal_update_candidates"
+    __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_signal_update_candidates_signal_id_signals"),ForeignKeyConstraint(["event_id"],["signal_events.id"],ondelete="CASCADE",name="fk_signal_update_candidates_event_id_signal_events"),ForeignKeyConstraint(["signalist_id"],["signalists.id"],name="fk_signal_update_candidates_signalist_id_signalists"),ForeignKeyConstraint(["superseded_by_event_id"],["signal_events.id"],name="fk_signal_update_candidates_superseded_event"),UniqueConstraint("event_id",name="uq_signal_update_candidates_event_id"),CheckConstraint("NOT (approved_at IS NOT NULL AND declined_at IS NOT NULL)",name="ck_signal_update_candidates_decision"),Index("ix_signal_update_candidates_status_created","status","created_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);signal_id:Mapped[int]=mapped_column(Integer,nullable=False);event_id:Mapped[int]=mapped_column(Integer,nullable=False);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    status:Mapped[CandidateStatus]=mapped_column(CANDIDATE_STATUS_ENUM,nullable=False);superseded_by_event_id:Mapped[int|None]=mapped_column(Integer);approved_at:Mapped[datetime|None]=mapped_column(UTCDateTime());declined_at:Mapped[datetime|None]=mapped_column(UTCDateTime());created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+class BreakevenPromptRecord(Base):
+    __tablename__="breakeven_prompts"
+    __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_breakeven_prompts_signal_id_signals"),UniqueConstraint("signal_id","cycle_number",name="uq_breakeven_prompts_signal_cycle"),CheckConstraint("cycle_number > 0",name="ck_breakeven_prompts_cycle_positive"),Index("uq_breakeven_prompts_one_open","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("status IN ('pending_notification','awaiting_response')")))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);signal_id:Mapped[int]=mapped_column(Integer,nullable=False);cycle_number:Mapped[int]=mapped_column(Integer,nullable=False);status:Mapped[PromptStatus]=mapped_column(PROMPT_STATUS_ENUM,nullable=False);observed_price_at_creation:Mapped[object]=mapped_column(ExactDecimal(),nullable=False);telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);notified_at:Mapped[datetime|None]=mapped_column(UTCDateTime());declined_at:Mapped[datetime|None]=mapped_column(UTCDateTime());accepted_at:Mapped[datetime|None]=mapped_column(UTCDateTime());expired_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+
+class SignalistNotificationRecord(Base):
+    __tablename__="signalist_notifications"
+    __table_args__=(ForeignKeyConstraint(["candidate_id"],["signal_update_candidates.id"],ondelete="CASCADE",name="fk_signalist_notifications_candidate_id_candidates"),ForeignKeyConstraint(["prompt_id"],["breakeven_prompts.id"],ondelete="CASCADE",name="fk_signalist_notifications_prompt_id_prompts"),ForeignKeyConstraint(["signalist_id"],["signalists.id"],name="fk_signalist_notifications_signalist_id_signalists"),UniqueConstraint("candidate_id",name="uq_signalist_notifications_candidate_id"),UniqueConstraint("prompt_id",name="uq_signalist_notifications_prompt_id"),CheckConstraint("(kind='event' AND candidate_id IS NOT NULL AND prompt_id IS NULL) OR (kind='breakeven_prompt' AND prompt_id IS NOT NULL AND candidate_id IS NULL)",name="ck_signalist_notifications_source"),CheckConstraint("attempt_count >= 0",name="ck_signalist_notifications_attempts"),Index("ix_signalist_notifications_status_retry","status","retry_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);kind:Mapped[NotificationKind]=mapped_column(NOTIFICATION_KIND_ENUM,nullable=False);candidate_id:Mapped[int|None]=mapped_column(Integer);prompt_id:Mapped[int|None]=mapped_column(Integer);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False);status:Mapped[NotificationStatus]=mapped_column(NOTIFICATION_STATUS_ENUM,nullable=False,default=NotificationStatus.PENDING);attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime());telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);last_error_category:Mapped[str|None]=mapped_column(Text);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
