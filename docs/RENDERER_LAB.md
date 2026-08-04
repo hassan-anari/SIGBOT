@@ -1,5 +1,8 @@
 # Phase 5B-1 local Renderer Lab
 
+Renderer Lab debug overlays and value overrides remain preview-only. Production
+uses the shared non-Lab core and exposes neither option.
+
 The Renderer Lab is a developer-only Pillow calibration tool for the three initial
 signal cards. It is deliberately not registered with the production rendering
 dispatcher and makes no Telegram, market, database, Redis, or clock calls. Phase

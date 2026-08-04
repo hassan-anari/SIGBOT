@@ -179,3 +179,23 @@ class SignalExchangeSymbolRecord(Base):
     signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
     native_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+
+class SignalTemplateRecord(Base):
+    __tablename__="signal_templates"
+    __table_args__=(
+      ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE",name="fk_signal_templates_destination_id_destinations"),
+      CheckConstraint("trim(storage_key) <> '' AND substr(storage_key,1,1) <> '/' AND instr(storage_key,'..') = 0",name="ck_signal_templates_storage_key_safe"),
+      CheckConstraint("width > 0 AND height > 0",name="ck_signal_templates_dimensions_positive"),
+      CheckConstraint("(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005)",name="ck_signal_templates_exchange_dimensions"),
+      CheckConstraint("content_type = 'image/png'",name="ck_signal_templates_content_type_png"),
+      Index("uq_signal_templates_default_exchange","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NULL")),
+      Index("uq_signal_templates_destination_exchange","destination_id","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NOT NULL")),)
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False)
+    destination_id:Mapped[int|None]=mapped_column(Integer,nullable=True)
+    storage_key:Mapped[str]=mapped_column(Text,nullable=False)
+    sha256:Mapped[str]=mapped_column(Text,nullable=False)
+    width:Mapped[int]=mapped_column(Integer,nullable=False); height:Mapped[int]=mapped_column(Integer,nullable=False)
+    content_type:Mapped[str]=mapped_column(Text,nullable=False)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+    updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)

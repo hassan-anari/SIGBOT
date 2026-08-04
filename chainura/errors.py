@@ -81,6 +81,17 @@ class SignalistCannotCreateSignalError(SignalCreationError):
 class RendererNotConfiguredError(ApplicationError):
     pass
 
+class RenderingError(ApplicationError): pass
+class RenderingConfigurationError(RenderingError): pass
+class RenderingLifecycleError(RenderingError): pass
+class RenderPayloadError(RenderingError): pass
+class TemplateError(RenderingError): pass
+class TemplateValidationError(TemplateError): pass
+class TemplatePersistenceError(TemplateError): pass
+class TemplateNotConfiguredError(TemplateError): pass
+class TemplateAssetError(TemplateError): pass
+class UnsafeRenderPathError(RenderingError): pass
+
 
 class DuplicateSignalCreationTokenError(SignalCreationError):
     """The one known idempotency uniqueness constraint was raced."""

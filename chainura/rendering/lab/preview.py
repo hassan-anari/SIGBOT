@@ -7,6 +7,7 @@ from chainura.rendering.pillow.compositor import compose_initial
 from chainura.rendering.pillow.errors import RendererLayoutError
 from chainura.rendering.pillow.text import FontProvider
 from typing import Mapping
+from chainura.rendering.core import render_lab_initial
 
 _LAYOUT_MODULES = {
     Exchange.OURBIT: "chainura.rendering.layouts.ourbit",
@@ -52,15 +53,9 @@ def _render_expected(
             f"{payload.exchange.value} payload"
         )
 
-    return compose_initial(
-        payload,
-        template_path,
-        output_path,
-        layout or load_exchange_layout(expected),
-        font_provider,
-        DebugOverlayConfig(debug),
-        value_overrides=value_overrides,
-    )
+    return render_lab_initial(payload,template_path,output_path,font_provider,
+        layout=layout or load_exchange_layout(expected),debug=debug,
+        value_overrides=value_overrides)
 
 def render_ourbit_initial(
     payload: SignalRenderPayload,
