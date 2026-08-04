@@ -41,3 +41,54 @@ class PresentationTests(unittest.TestCase):
  def test_prompt_copy(self):
   text=prompt_text('BTCUSDT',Decimal('100'),Decimal('100.05'))
   self.assertIn('بریک‌ایون',text);self.assertIn('قیمت ورود',text)
+
+import asyncio
+from datetime import timedelta
+from models import PriceTick
+from chainura.application.market_gateway import BatchedMarketSnapshotProvider, SymbolCatalogProvider
+from chainura.application.monitoring import MonitorWork
+from chainura.domain.signal import SignalMode
+from chainura.telegram.event_routes import breakeven_prompt_keyboard, BreakevenPromptCallback
+
+class FakeAdapter:
+ def __init__(self,name,ticks=(),fail=False): self.name=name; self.ticks=list(ticks); self.calls=0; self.symbol_map={}
+ async def fetch_instruments(self): return []
+ async def fetch_prices(self):
+  self.calls+=1
+  if getattr(self,'fail',False): raise RuntimeError('down')
+  return self.ticks
+
+class FakeProbe:
+ def __init__(self,now):
+  self.clock=lambda:now; self.max_price_age=timedelta(seconds=15); self.latest={}; self.common_symbols=set(); self.instruments={'ourbit':[],'toobit':[],'lbank':[]}
+  self.adapters=[FakeAdapter('ourbit'),FakeAdapter('toobit'),FakeAdapter('lbank')]
+ def _require_aware(self,value): return value
+ def _analyze_symbol(self,symbol,now):
+  prices={e:self.latest[(symbol,e)].last_price for e in ('ourbit','toobit','lbank') if (symbol,e) in self.latest and now-self.latest[(symbol,e)].received_at<=self.max_price_age}
+  if len(prices)<2:return {'status':'insufficient','prices':prices,'reference_price':None}
+  vals=sorted(prices.values())
+  return {'status':'healthy' if len(vals)==3 else 'degraded','prices':prices,'reference_price':vals[1] if len(vals)==3 else sum(vals)/Decimal('2')}
+
+class Phase6ACorrectionTests(unittest.TestCase):
+ def test_breakeven_prompt_keyboard_contains_typed_compact_buttons(self):
+  markup=breakeven_prompt_keyboard(42,3)
+  buttons=markup.inline_keyboard[0]
+  self.assertEqual([b.text for b in buttons],['✅ ثبت بریک‌ایون','❌ فعلاً نه'])
+  packed=buttons[0].callback_data
+  parsed=BreakevenPromptCallback.unpack(packed)
+  self.assertEqual((parsed.action,parsed.prompt_id,parsed.cycle),('a',42,3))
+  self.assertLess(len(packed),64)
+ def test_single_exchange_snapshot_uses_native_symbol_outside_common_list(self):
+  async def run():
+   now=NOW; probe=FakeProbe(now); probe.common_symbols={'BTCUSDT'}
+   tick=PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake')
+   probe.adapters[0].ticks=[tick]; probe.adapters[1].fail=True; probe.adapters[2].fail=True
+   catalog=SymbolCatalogProvider(probe); catalog._shared_ready=True; catalog._exchange_ready={Exchange.OURBIT}
+   provider=BatchedMarketSnapshotProvider(probe,catalog)
+   work=MonitorWork(7,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
+   snapshot=await provider.snapshot((work,))
+   self.assertIn(7,snapshot)
+   self.assertEqual(snapshot[7].reference_price,Decimal('111'))
+   self.assertEqual(snapshot[7].source_prices,((Exchange.OURBIT,Decimal('111')),))
+   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+  asyncio.run(run())

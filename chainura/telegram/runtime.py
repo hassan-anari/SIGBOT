@@ -44,8 +44,7 @@ from chainura.application.market_gateway import MarketReferencePriceProvider, Sy
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider
 from chainura.application.monitoring import MonitoringService,MonitoringWorker,BreakevenSettings
 from chainura.application.signalist_notification import SignalistNotificationService,SignalistNotificationWorker
-from chainura.telegram.event_routes import EventDecisionCallback
-from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton
+from chainura.telegram.event_routes import event_decision_keyboard, breakeven_prompt_keyboard
 from chainura.domain.monitoring import NotificationKind
 from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
@@ -146,6 +145,11 @@ class Runtime:
             self._observe_task_failure(task,"publication worker")
             self.request_shutdown()
 
+    def _observed_worker_done(self, task: asyncio.Task[None], component: str) -> None:
+        if self.state is RuntimeState.RUNNING and not self.shutdown_requested.is_set():
+            self._observe_task_failure(task,component)
+            self.request_shutdown()
+
     async def _startup_await(self, awaitable: Awaitable[T]) -> T:
         """Await one startup stage while renewal and shutdown remain supervised."""
         self._checkpoint()
@@ -242,16 +246,17 @@ class Runtime:
             class DirectTransport:
                 async def send(inner,telegram_id,text,kind,source_id):
                     if kind is NotificationKind.EVENT:
-                        markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ارسال به مقصدها",callback_data=EventDecisionCallback(action="a",candidate_id=source_id).pack()),InlineKeyboardButton(text="❌ عدم انتشار",callback_data=EventDecisionCallback(action="d",candidate_id=source_id).pack())]])
-                    else:markup=None
+                        markup=event_decision_keyboard(source_id)
+                    else:
+                        markup=breakeven_prompt_keyboard(source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
                     return message.message_id
             if monitoring_service is not None:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
                 await self._startup_await(notification_service.recover())
                 if self.settings.monitoring_enabled:
-                    self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency);await self._startup_await(self.monitoring_worker.start());self.monitoring_task=self.monitoring_worker.task;self.monitoring_task.add_done_callback(self._publication_done)
-                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds);await self._startup_await(self.notification_worker.start());self.notification_task=self.notification_worker.task;self.notification_task.add_done_callback(self._publication_done)
+                    self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency);await self._startup_await(self.monitoring_worker.start());self.monitoring_task=self.monitoring_worker.task;self.monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"monitoring worker"))
+                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds);monitoring_service.notification_wake=self.notification_worker.wake;await self._startup_await(self.notification_worker.start());self.notification_task=self.notification_worker.task;self.notification_task.add_done_callback(lambda task:self._observed_worker_done(task,"notification worker"))
             template_admin_service=None
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
@@ -319,6 +324,8 @@ class Runtime:
         shutdown_was_requested = self.shutdown_requested.is_set()
         watched={self.polling_task,self.renewal_task,shutdown_waiter}
         if self.publication_task is not None:watched.add(self.publication_task)
+        if self.monitoring_task is not None:watched.add(self.monitoring_task)
+        if self.notification_task is not None:watched.add(self.notification_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -337,6 +344,14 @@ class Runtime:
             self._observe_task_failure(self.publication_task,"publication worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "publication worker stopped unexpectedly"
+        if self.monitoring_task is not None and self.monitoring_task in done:
+            self._observe_task_failure(self.monitoring_task,"monitoring worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "monitoring worker stopped unexpectedly"
+        if self.notification_task is not None and self.notification_task in done:
+            self._observe_task_failure(self.notification_task,"notification worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "notification worker stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):

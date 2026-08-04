@@ -1,6 +1,7 @@
 """Durable Phase 6A monitoring application boundary."""
 from __future__ import annotations
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from chainura.domain.monitoring import *
 from chainura.domain.signal import SignalMode
 from chainura.domain.signalist import SignalistStatus
+LOGGER=logging.getLogger("chainura.monitoring")
+
 from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
  SignalExchangeSymbolRecord,SignalInitialPriceRecord,SignalMonitorStateRecord,
  SignalEventRecord,SignalEventSourcePriceRecord,SignalUpdateCandidateRecord,
@@ -50,8 +53,8 @@ class BatchMarketProvider(Protocol):
 
 class MonitoringService:
     def __init__(self,sessions:async_sessionmaker,market:BatchMarketProvider|None=None,
-                 settings:BreakevenSettings=BreakevenSettings(),clock=lambda:datetime.now(timezone.utc)):
-        self.sessions=sessions;self.market=market;self.settings=settings;self.clock=clock
+                 settings:BreakevenSettings=BreakevenSettings(),clock=lambda:datetime.now(timezone.utc),notification_wake:Callable[[],None]|None=None):
+        self.sessions=sessions;self.market=market;self.settings=settings;self.clock=clock;self.notification_wake=notification_wake
 
     async def reconcile(self)->None:
         """Enroll valid legacy signals once without deriving historical events."""
@@ -131,9 +134,16 @@ class MonitoringService:
         async def one(item):
             if item.signal_id not in snapshots:return False
             async with sem:
-                try:return await self.evaluate(item,snapshots[item.signal_id])
-                except Exception:return False
-        return sum(await asyncio.gather(*(one(x) for x in work)))
+                try:
+                    return await self.evaluate(item,snapshots[item.signal_id])
+                except Exception as exc:
+                    LOGGER.warning("monitor signal evaluation failed signal_id=%s category=%s",item.signal_id,type(exc).__name__)
+                    return False
+        try:
+            return sum(await asyncio.gather(*(one(x) for x in work)))
+        except Exception as exc:
+            LOGGER.warning("monitor cycle failed category=%s",type(exc).__name__)
+            return 0
 
     async def decide_candidate(self,candidate_id:int,signalist_id:int,approve:bool)->CandidateStatus:
         now=self.clock()
@@ -145,19 +155,44 @@ class MonitoringService:
             if row.status is not CandidateStatus.AWAITING_DECISION:raise ValueError("candidate is not actionable")
             row.status=wanted;row.approved_at=now if approve else None;row.declined_at=None if approve else now;row.updated_at=now;return wanted
 
-    async def decline_breakeven(self,prompt_id:int,signalist_id:int)->None:
+    async def decline_breakeven(self,prompt_id:int,signalist_id:int,cycle:int|None=None)->None:
         now=self.clock()
         async with self.sessions() as s,s.begin():
             prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id)
-            if not prompt or not signal or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE or prompt.status is not PromptStatus.AWAITING_RESPONSE:raise ValueError("prompt is not actionable")
+            if not prompt or not signal or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
+            if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
+            if prompt.status is PromptStatus.DECLINED:return
+            if prompt.status is not PromptStatus.AWAITING_RESPONSE:raise ValueError("prompt is not actionable")
             prompt.status=PromptStatus.DECLINED;prompt.declined_at=now;prompt.updated_at=now
 
-    async def register_breakeven(self,prompt_id:int,signalist_id:int,market:MarketDecision)->bool:
+    async def _prompt_work(self,prompt_id:int,signalist_id:int,cycle:int|None=None)->MonitorWork:
+        async with self.sessions() as s:
+            prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;state=await s.get(SignalMonitorStateRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id)
+            if not prompt or not signal or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE or prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")
+            if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
+            tps=(await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id).order_by(SignalTakeProfitRecord.position))).all()
+            maps=(await s.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id==signal.id))).all()
+            return MonitorWork(signal.id,signal.signalist_id,signal.mode,signal.canonical_symbol,signal.selected_exchange,signal.direction,signal.entry_price,signal.leverage,tuple(x.price for x in tps),signal.stop_loss,signal.price_source_type,tuple((x.exchange,x.native_symbol) for x in maps),signal.created_at)
+
+    async def register_breakeven_with_fresh_price(self,prompt_id:int,signalist_id:int,cycle:int|None=None)->bool:
+        if self.market is None:raise ValueError("market snapshot is unavailable")
+        work=await self._prompt_work(prompt_id,signalist_id,cycle)
+        snapshots=await self.market.snapshot((work,))
+        market=snapshots.get(work.signal_id)
+        if market is None:raise ValueError("market snapshot is unavailable")
+        result=await self.register_breakeven(prompt_id,signalist_id,market,cycle)
+        if result and self.notification_wake:self.notification_wake()
+        return result
+
+    async def register_breakeven(self,prompt_id:int,signalist_id:int,market:MarketDecision,cycle:int|None=None)->bool:
         """CAS a prompt after its caller obtained a fresh market decision."""
         now=market.observed_at
         async with self.sessions() as s,s.begin():
             prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id);state=await s.get(SignalMonitorStateRecord,prompt.signal_id) if prompt else None
-            if not prompt or not signal or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE or prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")
+            if not prompt or not signal or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
+            if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
+            if prompt.status is PromptStatus.ACCEPTED:return True
+            if prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")
             distance=entry_distance_percent(signal.entry_price,market.reference_price)
             if distance>self.settings.execution_tolerance_percent:
                 if distance>=self.settings.rearm_distance_percent:prompt.status=PromptStatus.EXPIRED;prompt.expired_at=now;state.breakeven_rearm_reached_at=now
@@ -176,7 +211,8 @@ class MonitoringWorker:
     async def _run(self):
         while not self._stop.is_set():
             try:await self.service.run_cycle(self.batch_size,self.concurrency)
-            except Exception:pass
+            except Exception as exc:
+                LOGGER.warning("monitor worker cycle failed category=%s",type(exc).__name__)
             self._wake.clear()
             try:await asyncio.wait_for(self._wake.wait(),self.interval)
             except asyncio.TimeoutError:pass

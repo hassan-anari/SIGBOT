@@ -186,13 +186,30 @@ class MarketReferencePriceProvider:
 
 
 class BatchedMarketSnapshotProvider:
-    """One coordinated all-exchange refresh shared by every Signal in a cycle."""
+    """One coherent per-cycle exchange refresh for composite and native signals."""
     def __init__(self,probe:MarketProbe,catalog:SymbolCatalogProvider):self.probe=probe;self.catalog=catalog
     async def snapshot(self,signals):
+        signals=tuple(signals)
+        if not signals:return {}
+        # Ensure catalog metadata once; outside-list native contracts rely on per-exchange catalogs,
+        # not on membership in the common/shared symbol set.
         await self.catalog._ensure_discovered()
+        for signal in signals:
+            if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not None:
+                await self.catalog._ensure_exchange(signal.selected_exchange)
         async with self.catalog._snapshot_lock:
-            try:await self.probe.fetch_once()
-            except RuntimeError:pass
+            adapters={Exchange(adapter.name):adapter for adapter in self.probe.adapters}
+            required={exchange for signal in signals for exchange,_ in signal.exchange_symbols}
+            if not required:required=set(Exchange)
+            fetched=await asyncio.gather(*(adapters[e].fetch_prices() for e in sorted(required,key=lambda x:x.value) if e in adapters),return_exceptions=True)
+            raw_by_exchange={}
+            for exchange,response in zip((e for e in sorted(required,key=lambda x:x.value) if e in adapters),fetched):
+                if isinstance(response,Exception):
+                    continue
+                ticks=tuple(response)
+                raw_by_exchange[exchange]=ticks
+                for tick in ticks:
+                    self.probe.latest[(tick.canonical_symbol,tick.exchange)]=tick
             now=self.probe.clock();result={}
             for signal in signals:
                 if signal.mode is SignalMode.COMPOSITE:
@@ -200,9 +217,11 @@ class BatchedMarketSnapshotProvider:
                     if item["status"] not in READY_STATUSES:continue
                     prices=tuple((Exchange(name),price) for name,price in sorted(item["prices"].items()))
                 else:
-                    tick=self.probe.latest.get((signal.canonical_symbol,signal.selected_exchange.value))
-                    if tick is None or now-tick.received_at>self.probe.max_price_age or tick.last_price<=0:continue
-                    item={"reference_price":tick.last_price};prices=((signal.selected_exchange,tick.last_price),)
+                    selected=signal.selected_exchange
+                    native=next((native for exchange,native in signal.exchange_symbols if exchange is selected),None)
+                    tick=next((x for x in raw_by_exchange.get(selected,()) if x.exchange==selected.value and x.exchange_symbol==native),None) if selected and native else None
+                    if tick is None or now-self.probe._require_aware(tick.received_at)>self.probe.max_price_age or not isinstance(tick.last_price,Decimal) or not tick.last_price.is_finite() or tick.last_price<=0:continue
+                    item={"reference_price":tick.last_price};prices=((selected,tick.last_price),)
                 result[signal.signal_id]=MarketDecision(item["reference_price"],prices,signal.price_source_type,now)
             return result
 
