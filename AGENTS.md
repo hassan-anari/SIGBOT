@@ -112,3 +112,11 @@ Before changing the code:
 - Initial captions are centralized, Persian, HTML-safe, BiDi-isolated, and include `#پیامک` only for private destinations.
 - Main Admin templates are PNG documents; generated initial images are cleaned on all outcomes.
 - Drain publication and InitialImageService work before unregistering production renderers.
+
+## Permanent Phase 6A monitoring rules
+
+- TP/SL detection is automatic; SL and Breakeven are disabled permanently after TP1.
+- Event threshold, observed reference price, exact ROI, and event-time source prices are distinct durable facts.
+- Breakeven is a contextual manual prompt after five minutes, 1.00% favorable movement, a 0.10% execution zone, 0.20% rearm distance, and 15-minute cooldown.
+- Signalist approval records Phase 6B publication intent only; Phase 6A never publishes updates to destinations.
+- Monitoring refreshes exchanges in batches and direct notification delivery uses the SQLite outbox.

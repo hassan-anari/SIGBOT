@@ -342,3 +342,18 @@ alembic upgrade head
 A confirmed Signal now creates a SQLite-backed publication outbox atomically and returns immediately to the Signalist. The background worker plans compatible active assigned destinations from persisted source snapshots, enforces Asia/Tehran daily initial-message slots, renders destination templates, sends Persian HTML photo captions, and stores Telegram message IDs. Private initial captions include `#پیامک`; destination information is never disclosed to Signalists.
 
 Templates are immutable, content-addressed PNG documents installed as exchange defaults or destination overrides by the Main Admin workflow. Missing templates remain retryable. Definite failures release capacity; ambiguous sends become `delivery_unknown`, retain capacity, and are not automatically resent. Generated initial images are cleaned after use and owned-pattern orphans are cleaned before worker startup. Monitoring and approved update publication remain Phase 6 work.
+## Phase 6A monitoring
+
+Open Signals are durably enrolled in SQLite and evaluated from one batched,
+coherent market snapshot. TP events are traversed in order, SL is terminal only
+before TP1, and exact event-time exchange prices are retained separately from the
+configured ROI threshold. Active Signalists receive durable direct notifications
+and may approve or decline future destination publication. Phase 6A records that
+intent only; destination rendering, publication, retries, and Reply Chains remain
+Phase 6B work.
+
+Breakeven is contextual and manual: after five minutes and a 1.00% favorable
+move, a return to the 0.10% Entry zone creates one durable prompt. Rearming needs
+a 0.20% exit and a 15-minute cooldown, and acceptance always rechecks a fresh
+price. Symbol-search buttons display current composite or selected-exchange prices
+and unavailable results cannot advance.

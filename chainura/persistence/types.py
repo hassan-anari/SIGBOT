@@ -37,6 +37,8 @@ class ExactDecimal(TypeDecorator[Decimal]):
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
         if not isinstance(value, Decimal) or not value.is_finite():
             raise SignalistPersistenceError("financial value must be a finite Decimal")
         return str(value)

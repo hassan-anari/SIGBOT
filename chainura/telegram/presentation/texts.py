@@ -168,3 +168,17 @@ def signal_review(data):
         f"🛑 <b>حد ضرر:</b> {format_decimal(Decimal(data['stop_loss']))}",
     ]
     return "\n".join(rows)
+SIGNAL_PRICE_UNAVAILABLE = "⚠️ قیمت فعلی این نماد ناموجود است. لطفاً دوباره تلاش کنید."
+EVENT_APPROVED = "✅ درخواست انتشار این آپدیت ثبت شد."
+EVENT_DECLINED = "این آپدیت برای مقصدها منتشر نخواهد شد."
+EVENT_DECISION_STALE = "⚠️ این درخواست دیگر قابل انجام نیست."
+
+# Phase 6A event and Breakeven actions
+EVENT_PUBLISH_BUTTON="✅ ارسال به مقصدها"
+EVENT_DECLINE_BUTTON="❌ عدم انتشار"
+BREAKEVEN_ACCEPT_BUTTON="✅ ثبت بریک‌ایون"
+BREAKEVEN_DECLINE_BUTTON="❌ فعلاً نه"
+BREAKEVEN_DECLINED="این درخواست بریک‌ایون ثبت نشد."
+BREAKEVEN_REGISTERED="✅ بریک‌ایون ثبت شد. آپدیت رویداد برای تصمیم انتشار نمایش داده خواهد شد."
+BREAKEVEN_OUT_OF_RANGE="⚠️ قیمت در حال حاضر خارج از محدوده بریک‌ایون است.\nبریک‌ایون ثبت نشد."
+BREAKEVEN_STALE="این درخواست بریک‌ایون دیگر قابل استفاده نیست."
