@@ -12,6 +12,7 @@ from chainura.persistence.destination_repository import SqlAlchemyDestinationRep
 from chainura.persistence.signal_repository import SqlAlchemySignalRepository
 from chainura.persistence.template_repository import SqlAlchemyTemplateRepository
 from chainura.persistence.publication_repository import SqlAlchemyPublicationRepository
+from chainura.persistence.update_publication_repository import SqlAlchemyUpdatePublicationRepository
 from chainura.persistence.error_translation import commit_persistence_error
 from chainura.errors import TemplatePersistenceError
 
@@ -28,6 +29,7 @@ class SqlAlchemySignalistTransaction:
         self.signals: SqlAlchemySignalRepository
         self.templates: SqlAlchemyTemplateRepository
         self.publications: SqlAlchemyPublicationRepository
+        self.update_publications: SqlAlchemyUpdatePublicationRepository
 
     async def __aenter__(self) -> Self:
         self._session = self._sessions()
@@ -42,6 +44,7 @@ class SqlAlchemySignalistTransaction:
         self.signals = SqlAlchemySignalRepository(self._session)
         self.templates = SqlAlchemyTemplateRepository(self._session)
         self.publications = SqlAlchemyPublicationRepository(self._session)
+        self.update_publications = SqlAlchemyUpdatePublicationRepository(self._session)
         return self
 
     def use_destination_errors(self) -> None:

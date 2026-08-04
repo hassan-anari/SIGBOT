@@ -52,7 +52,7 @@ from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_
 from chainura.rendering.production import ProductionRendererRegistration
 from chainura.rendering.templates import TemplateAssetStore, TemplateService
 from chainura.application.initial_rendering import InitialPayloadFactory, InitialImageService
-from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker,
+from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker, UpdatePublicationService, UpdatePublicationWorker,
                                                TelegramPhotoPublisher)
 from chainura.application.template_admin import TemplateAdministrationService
 
@@ -124,6 +124,8 @@ class Runtime:
         self.initial_image_service = None
         self.publication_worker = None
         self.publication_task = None
+        self.update_publication_worker = None
+        self.update_publication_task = None
         self.monitoring_worker=None;self.monitoring_task=None
         self.notification_worker=None;self.notification_task=None
 
@@ -251,32 +253,62 @@ class Runtime:
                         markup=breakeven_prompt_keyboard(source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
                     return message.message_id
+            notification_service=None
             if monitoring_service is not None:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
                 await self._startup_await(notification_service.recover())
+                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds)
+                monitoring_service.notification_wake=self.notification_worker.wake
                 if self.settings.monitoring_enabled:
-                    self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency);await self._startup_await(self.monitoring_worker.start());self.monitoring_task=self.monitoring_worker.task;self.monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"monitoring worker"))
-                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds);monitoring_service.notification_wake=self.notification_worker.wake;await self._startup_await(self.notification_worker.start());self.notification_task=self.notification_worker.task;self.notification_task.add_done_callback(lambda task:self._observed_worker_done(task,"notification worker"))
+                    self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)
             template_admin_service=None
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
                 self.initial_image_service=InitialImageService(InitialPayloadFactory(
                     CoinLogoStore(self.settings.rendering.toobit_logo_root)),template_service,
                     self.settings.rendering.output_root,self.settings.rendering.concurrency)
+                photo_publisher=TelegramPhotoPublisher(self.bot)
                 publication_service=InitialPublicationService(transactions,self.initial_image_service,
-                    TelegramPhotoPublisher(self.bot),max_attempts=self.settings.send_max_attempts,
+                    photo_publisher,max_attempts=self.settings.send_max_attempts,
                     retry_base_seconds=self.settings.send_retry_base_seconds)
                 self.publication_worker=InitialPublicationWorker(publication_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                update_publication_service=UpdatePublicationService(transactions,self.initial_image_service,
+                    photo_publisher,max_attempts=self.settings.update_send_max_attempts,
+                    retry_base_seconds=self.settings.update_send_retry_base_seconds)
+                self.update_publication_worker=UpdatePublicationWorker(update_publication_service,
+                    self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
+                if monitoring_service is not None:
+                    monitoring_service.update_publication_wake=self.update_publication_worker.wake
                 await self._startup_await(publication_service.recover())
+                await self._startup_await(update_publication_service.recover())
                 await self._startup_await(self._cleanup_orphan_outputs())
+                class BothTemplateService:
+                    async def unblock_templates(_,):
+                        await publication_service.unblock_templates();await update_publication_service.unblock_templates()
+                def wake_templates():
+                    self.publication_worker.wake();self.update_publication_worker.wake()
+                template_admin_service=TemplateAdministrationService(template_service,
+                    BothTemplateService(),wake_templates)
+            if self.publication_worker is not None:
                 await self._startup_await(self.publication_worker.start())
                 self.publication_task=self.publication_worker.task
                 self.publication_task.add_done_callback(self._publication_done)
-                template_admin_service=TemplateAdministrationService(template_service,
-                    publication_service,self.publication_worker.wake)
+            if self.update_publication_worker is not None:
+                await self._startup_await(self.update_publication_worker.start())
+                self.update_publication_task=self.update_publication_worker.task
+                self.update_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"update publication worker"))
+            if self.monitoring_worker is not None:
+                await self._startup_await(self.monitoring_worker.start())
+                self.monitoring_task=self.monitoring_worker.task
+                self.monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"monitoring worker"))
+            if self.notification_worker is not None:
+                await self._startup_await(self.notification_worker.start())
+                self.notification_task=self.notification_worker.task
+                self.notification_task.add_done_callback(lambda task:self._observed_worker_done(task,"notification worker"))
             def wake_background():
                 if self.publication_worker:self.publication_worker.wake()
+                if self.update_publication_worker:self.update_publication_worker.wake()
                 if self.monitoring_worker:self.monitoring_worker.wake()
             signal_service = SignalService(
                 transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
@@ -326,6 +358,7 @@ class Runtime:
         if self.publication_task is not None:watched.add(self.publication_task)
         if self.monitoring_task is not None:watched.add(self.monitoring_task)
         if self.notification_task is not None:watched.add(self.notification_task)
+        if self.update_publication_task is not None:watched.add(self.update_publication_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -352,6 +385,10 @@ class Runtime:
             self._observe_task_failure(self.notification_task,"notification worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "notification worker stopped unexpectedly"
+        if self.update_publication_task is not None and self.update_publication_task in done:
+            self._observe_task_failure(self.update_publication_task,"update publication worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "update publication worker stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
@@ -408,6 +445,8 @@ class Runtime:
                 await self._best_effort(self.monitoring_worker.stop(), "monitoring worker")
             if self.notification_worker:
                 await self._best_effort(self.notification_worker.stop(), "Signalist notification worker")
+            if self.update_publication_worker:
+                await self._best_effort(self.update_publication_worker.close(), "update publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:
@@ -456,7 +495,7 @@ class Runtime:
         root=self.settings.rendering.output_root.resolve()
         root.mkdir(parents=True,exist_ok=True)
         def clean():
-            for pattern in ("initial-*.png", ".initial-*.png.*.tmp"):
+            for pattern in ("initial-*.png", ".initial-*.png.*.tmp", "update-*.png", ".update-*.png.*.tmp"):
                 for path in root.glob(pattern):
                     if path.is_file() and path.resolve().parent==root:path.unlink(missing_ok=True)
         await asyncio.to_thread(clean)

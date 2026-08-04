@@ -1,0 +1,29 @@
+"""Create Phase 6B update publication outbox.
+
+Revision ID: 20260808_01
+Revises: 20260807_01
+"""
+from alembic import op
+import sqlalchemy as sa
+revision='20260808_01';down_revision='20260807_01';branch_labels=None;depends_on=None
+REQ="pending','waiting_initial','planning','planned','completed','superseded','failed"
+PUB="pending','rendering','ready','sending','retry_wait','sent','failed','skipped_inactive','skipped_unassigned','skipped_daily_limit','skipped_signallist_inactive','skipped_destination_inactive','skipped_no_initial_message','skipped_no_event_source','superseded','delivery_unknown','blocked_template"
+def upgrade():
+ op.create_table('update_publication_requests',
+  sa.Column('id',sa.Integer(),primary_key=True),sa.Column('candidate_id',sa.Integer(),nullable=False),sa.Column('signal_id',sa.Integer(),nullable=False),sa.Column('event_id',sa.Integer(),nullable=False),
+  sa.Column('status',sa.Text(),nullable=False),sa.Column('created_at',sa.DateTime(),nullable=False),sa.Column('updated_at',sa.DateTime(),nullable=False),sa.Column('planned_at',sa.DateTime()),sa.Column('completed_at',sa.DateTime()),sa.Column('superseded_at',sa.DateTime()),
+  sa.PrimaryKeyConstraint('id',name='pk_update_publication_requests'),
+  sa.ForeignKeyConstraint(['candidate_id'],['signal_update_candidates.id'],ondelete='CASCADE',name='fk_update_publication_requests_candidate_id_candidates'),
+  sa.ForeignKeyConstraint(['signal_id'],['signals.id'],ondelete='CASCADE',name='fk_update_publication_requests_signal_id_signals'),
+  sa.ForeignKeyConstraint(['event_id'],['signal_events.id'],ondelete='CASCADE',name='fk_update_publication_requests_event_id_events'),
+  sa.UniqueConstraint('candidate_id',name='uq_update_publication_requests_candidate_id'),sa.UniqueConstraint('event_id',name='uq_update_publication_requests_event_id'),sa.CheckConstraint(f"status IN ('{REQ}')",name='update_publication_request_status'))
+ op.create_index('ix_update_publication_requests_status_created','update_publication_requests',['status','created_at'])
+ op.create_table('destination_update_publications',
+  sa.Column('id',sa.Integer(),primary_key=True),sa.Column('request_id',sa.Integer(),nullable=False),sa.Column('candidate_id',sa.Integer(),nullable=False),sa.Column('signal_id',sa.Integer(),nullable=False),sa.Column('event_id',sa.Integer(),nullable=False),sa.Column('destination_id',sa.Integer(),nullable=False),sa.Column('selected_exchange',sa.Text(),nullable=False),sa.Column('event_kind',sa.Text(),nullable=False),sa.Column('status',sa.Text(),nullable=False),sa.Column('telegram_message_id',sa.BigInteger()),sa.Column('reply_to_message_id',sa.BigInteger()),sa.Column('attempt_count',sa.Integer(),nullable=False,server_default='0'),sa.Column('retry_at',sa.DateTime()),sa.Column('first_attempt_at',sa.DateTime()),sa.Column('sent_at',sa.DateTime()),sa.Column('last_error_category',sa.Text()),sa.Column('template_sha256',sa.Text()),sa.Column('created_at',sa.DateTime(),nullable=False),sa.Column('updated_at',sa.DateTime(),nullable=False),
+  sa.PrimaryKeyConstraint('id',name='pk_destination_update_publications'),
+  sa.ForeignKeyConstraint(['request_id'],['update_publication_requests.id'],ondelete='CASCADE',name='fk_destination_update_publications_request_id_requests'),sa.ForeignKeyConstraint(['candidate_id'],['signal_update_candidates.id'],ondelete='CASCADE',name='fk_destination_update_publications_candidate_id_candidates'),sa.ForeignKeyConstraint(['signal_id'],['signals.id'],ondelete='CASCADE',name='fk_destination_update_publications_signal_id_signals'),sa.ForeignKeyConstraint(['event_id'],['signal_events.id'],ondelete='CASCADE',name='fk_destination_update_publications_event_id_events'),sa.ForeignKeyConstraint(['destination_id'],['destinations.id'],ondelete='CASCADE',name='fk_destination_update_publications_destination_id_destinations'),sa.ForeignKeyConstraint(['event_id','selected_exchange'],['signal_event_source_prices.event_id','signal_event_source_prices.exchange'],ondelete='CASCADE',name='fk_destination_update_publications_event_source_price'),
+  sa.UniqueConstraint('candidate_id','destination_id',name='uq_destination_update_publications_candidate_destination'),sa.UniqueConstraint('event_id','destination_id',name='uq_destination_update_publications_event_destination'),
+  sa.CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')",name='ck_destination_update_publications_exchange'),sa.CheckConstraint(f"status IN ('{PUB}')",name='destination_update_publication_status'),sa.CheckConstraint('attempt_count >= 0',name='ck_destination_update_publications_attempt_nonnegative'),sa.CheckConstraint('telegram_message_id IS NULL OR telegram_message_id > 0',name='ck_destination_update_publications_message_positive'),sa.CheckConstraint('reply_to_message_id IS NULL OR reply_to_message_id > 0',name='ck_destination_update_publications_reply_positive'),sa.CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND reply_to_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)",name='ck_destination_update_publications_sent_consistency'))
+ op.create_index('ix_destination_update_publications_status_retry','destination_update_publications',['status','retry_at']);op.create_index('ix_destination_update_publications_chain','destination_update_publications',['signal_id','destination_id','sent_at'])
+def downgrade():
+ op.drop_index('ix_destination_update_publications_chain',table_name='destination_update_publications');op.drop_index('ix_destination_update_publications_status_retry',table_name='destination_update_publications');op.drop_table('destination_update_publications');op.drop_index('ix_update_publication_requests_status_created',table_name='update_publication_requests');op.drop_table('update_publication_requests')

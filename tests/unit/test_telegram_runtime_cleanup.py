@@ -240,3 +240,43 @@ class RuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.polling_task)
         self.assertEqual(order,['lease','storage','bot','engine'])
         self.assertTrue(runtime.lease_lost.is_set())
+
+class RuntimePhase6BCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_publication_task_is_supervised(self):
+        runtime=Runtime(settings());runtime.state=RuntimeState.RUNNING
+        runtime.renewal_task=asyncio.create_task(asyncio.sleep(30));runtime.polling_task=asyncio.create_task(asyncio.sleep(30))
+        async def fail(): raise RuntimeError('boom')
+        runtime.update_publication_task=asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        with self.assertRaises(TelegramRuntimeError):await runtime._supervise()
+        self.assertTrue(runtime.shutdown_requested.is_set())
+        for task in (runtime.renewal_task,runtime.polling_task):
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):await task
+    def test_notification_wiring_is_not_nested_under_update_worker_condition(self):
+        import inspect
+        source=inspect.getsource(Runtime.start)
+        self.assertIn('monitoring_service.notification_wake=self.notification_worker.wake',source)
+        self.assertIn('monitoring_service.update_publication_wake=self.update_publication_worker.wake',source)
+        self.assertNotIn('if self.update_publication_worker: monitoring_service.update_publication_wake=self.update_publication_worker.wake;await self._startup_await(self.notification_worker.start())',source)
+
+
+class RuntimeOrphanCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_owned_initial_and_update_outputs_only(self):
+        import tempfile
+        from pathlib import Path
+        from dataclasses import replace
+        from chainura.rendering.production import RenderingSettings
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);out=root/'out';out.mkdir();assets=root/'templates';assets.mkdir();logos=root/'logos';logos.mkdir();font=root/'font.otf';font.write_text('font')
+            settings_obj=settings();settings_obj=replace(settings_obj,rendering=RenderingSettings(assets,out,logos,font,font,font,font,1))
+            runtime=Runtime(settings_obj)
+            for name in ('initial-a.png','.initial-a.png.worker.tmp','update-b.png','.update-b.png.worker.tmp','other.png'):
+                (out/name).write_text('x')
+            nested=out/'nested';nested.mkdir();(nested/'update-c.png').write_text('x')
+            (assets/'update-template.png').write_text('x');(logos/'update-logo.png').write_text('x')
+            await runtime._cleanup_orphan_outputs();await runtime._cleanup_orphan_outputs()
+            self.assertFalse((out/'initial-a.png').exists());self.assertFalse((out/'.initial-a.png.worker.tmp').exists())
+            self.assertFalse((out/'update-b.png').exists());self.assertFalse((out/'.update-b.png.worker.tmp').exists())
+            self.assertTrue((out/'other.png').exists());self.assertTrue((nested/'update-c.png').exists())
+            self.assertTrue((assets/'update-template.png').exists());self.assertTrue((logos/'update-logo.png').exists());self.assertTrue(font.exists())

@@ -64,8 +64,11 @@ class InitialImageService:
   self._semaphore=asyncio.Semaphore(concurrency);self._owned_tasks=set()
   self._active_tasks=set();self._state="open";self._close_task=None
  def _reserve_output(self):
+  return self._reserve_output_with_prefix("initial")
+ def _reserve_output_with_prefix(self,prefix):
+  if prefix not in ("initial","update"):raise RenderingLifecycleError("render output prefix is invalid")
   for _ in range(16):
-   candidate=self.output_root/f"initial-{uuid.uuid4().hex}.png"
+   candidate=self.output_root/f"{prefix}-{uuid.uuid4().hex}.png"
    try:
     descriptor=os.open(candidate,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
    except FileExistsError:continue
@@ -80,18 +83,28 @@ class InitialImageService:
   task.add_done_callback(self._owned_tasks.discard);task.add_done_callback(_observe_future)
   return task
  async def render_initial_signal(self,signal,exchange,destination_id,rendered_at)->RenderedSignalImage:
+  return await self._render_with_builder(
+   payload_builder=lambda: self.payload_factory.build(signal,exchange,rendered_at),
+   exchange=exchange,destination_id=destination_id,output_prefix="initial")
+ async def render_update_signal(self,signal,event,event_price,exchange,destination_id)->RenderedSignalImage:
+  factory=self.payload_factory if hasattr(self.payload_factory,"build_update") else UpdatePayloadFactory(self.payload_factory.logo_store)
+  return await self._render_with_builder(
+   payload_builder=lambda: factory.build_update(signal,event,event_price,exchange,event.occurred_at),
+   exchange=exchange,destination_id=destination_id,output_prefix="update")
+ async def _render_with_builder(self,*,payload_builder,exchange,destination_id,output_prefix)->RenderedSignalImage:
   if self._state!="open":raise RenderingLifecycleError("initial image service is closing")
   operation=asyncio.current_task();self._active_tasks.add(operation)
   reservation=None;deferred=False
   try:
    template=await self.template_service.resolve(exchange,destination_id)
-   reservation_task=self._track_owned(asyncio.to_thread(self._reserve_output))
+   reserve = self._reserve_output if output_prefix == "initial" else lambda: self._reserve_output_with_prefix(output_prefix)
+   reservation_task=self._track_owned(asyncio.to_thread(reserve))
    try:reservation=await asyncio.shield(reservation_task)
    except asyncio.CancelledError:
     self._track_owned(self._finish_cancelled_reservation(reservation_task));deferred=True
     raise
    async with self._semaphore:
-    payload=await asyncio.to_thread(self.payload_factory.build,signal,exchange,rendered_at)
+    payload=await asyncio.to_thread(payload_builder)
     worker=asyncio.create_task(_run_render_worker(payload,template.path,reservation.path))
     shielded=asyncio.shield(worker);shielded.add_done_callback(_observe_future)
     try:
@@ -145,3 +158,20 @@ class InitialImageService:
    candidate.unlink(missing_ok=True)
    for temporary in candidate.parent.glob(f".{candidate.name}.*.tmp"):temporary.unlink(missing_ok=True)
   except OSError as exc:raise RenderingError("render output cleanup failed") from exc
+
+class UpdatePayloadFactory(InitialPayloadFactory):
+ def build_update(self,signal,event,event_price,exchange,rendered_at=None):
+  from chainura.domain.monitoring import SignalEventKind
+  from chainura.rendering.models import SignalRenderEventKind
+  if rendered_at is None:rendered_at=event.occurred_at
+  mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
+  if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
+  logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
+  if event.kind is SignalEventKind.BREAKEVEN:pnl=__import__('decimal').Decimal('0')
+  else:pnl=leveraged_return_percent(signal.entry_price,event_price,signal.leverage,signal.direction)
+  kind={SignalEventKind.TP_HIT:SignalRenderEventKind.TP,SignalEventKind.SL_HIT:SignalRenderEventKind.SL,SignalEventKind.BREAKEVEN:SignalRenderEventKind.BREAKEVEN}[event.kind]
+  elapsed=max(0,int((event.occurred_at-signal.created_at).total_seconds()))
+  return SignalRenderPayload(signal.id,kind,exchange,signal.direction,signal.price_source_type,
+   signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,signal.entry_price,
+   signal.leverage,signal.take_profits,signal.stop_loss,event.observed_reference_price,event_price,
+   pnl,signal.created_at,event.occurred_at,elapsed,logo)

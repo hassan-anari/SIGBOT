@@ -10,7 +10,11 @@ from chainura.domain.destination import Exchange
 from chainura.domain.signal import PriceSourceType, TradeDirection
 from chainura.errors import InvalidSignalInputError
 
-class SignalRenderEventKind(str, Enum): INITIAL = "initial"
+class SignalRenderEventKind(str, Enum):
+    INITIAL = "initial"
+    TP = "tp"
+    SL = "sl"
+    BREAKEVEN = "breakeven"
 class TimeDisplayStrategy(str, Enum):
     ELAPSED = "elapsed"
     TEHRAN_WALL_CLOCK = "tehran_wall_clock"
@@ -65,7 +69,7 @@ class SignalRenderPayload:
     def __post_init__(self) -> None:
         if isinstance(self.signal_id, bool) or not isinstance(self.signal_id, int) or self.signal_id < 1:
             raise InvalidSignalInputError("signal_id must be positive")
-        if (self.event_kind is not SignalRenderEventKind.INITIAL or not isinstance(self.exchange, Exchange)
+        if (not isinstance(self.event_kind, SignalRenderEventKind) or not isinstance(self.exchange, Exchange)
                 or not isinstance(self.direction, TradeDirection) or not isinstance(self.price_source_type, PriceSourceType)):
             raise InvalidSignalInputError("render enums are invalid")
         for name in ("canonical_symbol", "native_symbol", "base_asset", "quote_asset"):
@@ -93,12 +97,16 @@ class SignalRenderPayload:
             raise InvalidSignalInputError("render trade prices violate direction")
         if not isinstance(self.initial_pnl_percent, Decimal) or not self.initial_pnl_percent.is_finite():
             raise InvalidSignalInputError("initial PnL must be a finite Decimal")
-        if isinstance(self.elapsed_seconds, bool) or self.elapsed_seconds != 0:
-            raise InvalidSignalInputError("initial elapsed duration must be zero")
+        if isinstance(self.elapsed_seconds, bool) or not isinstance(self.elapsed_seconds, int) or self.elapsed_seconds < 0:
+            raise InvalidSignalInputError("elapsed duration must be a nonnegative integer")
         for name in ("signal_created_at", "rendered_at"):
             value = getattr(self, name)
             if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
                 raise InvalidSignalInputError(f"{name} must be aware")
+        if self.rendered_at < self.signal_created_at:
+            raise InvalidSignalInputError("rendered event time cannot precede signal creation")
+        if self.event_kind is SignalRenderEventKind.INITIAL and self.elapsed_seconds != 0:
+            raise InvalidSignalInputError("initial elapsed duration must be zero")
         if self.coin_logo_path is not None and not isinstance(self.coin_logo_path, Path):
             raise InvalidSignalInputError("coin_logo_path must be Path or None")
 

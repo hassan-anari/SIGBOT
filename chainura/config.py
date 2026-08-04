@@ -102,6 +102,10 @@ class TelegramRuntimeSettings:
     send_max_attempts: int = 3
     send_retry_base_seconds: float = 0.5
     publication_sweep_seconds: float = 5.0
+    update_publication_concurrency: int = 3
+    update_send_max_attempts: int = 3
+    update_send_retry_base_seconds: float = 0.5
+    update_publication_sweep_seconds: float = 5.0
     monitoring_enabled: bool = True
     monitoring_interval_seconds: float = 5.0
     monitoring_concurrency: int = 8
@@ -131,11 +135,17 @@ class TelegramRuntimeSettings:
             attempts=int(mapping.get("TELEGRAM_SEND_MAX_ATTEMPTS","3"))
             retry=float(mapping.get("TELEGRAM_SEND_RETRY_BASE_SECONDS","0.5"))
             sweep=float(mapping.get("PUBLICATION_SWEEP_SECONDS","5"))
+            upd_concurrency=int(mapping.get("UPDATE_PUBLICATION_CONCURRENCY","3"));upd_attempts=int(mapping.get("UPDATE_SEND_MAX_ATTEMPTS","3"))
+            upd_retry=float(mapping.get("UPDATE_SEND_RETRY_BASE_SECONDS","0.5"));upd_sweep=float(mapping.get("UPDATE_PUBLICATION_SWEEP_SECONDS","5"))
         except ValueError as exc:raise InvalidApplicationConfigurationError("publication settings must be numeric") from exc
         if not 1<=concurrency<=20:raise InvalidApplicationConfigurationError("TELEGRAM_PUBLICATION_CONCURRENCY must be between 1 and 20")
         if not 1<=attempts<=10:raise InvalidApplicationConfigurationError("TELEGRAM_SEND_MAX_ATTEMPTS must be between 1 and 10")
         if not 0.1<=retry<=60:raise InvalidApplicationConfigurationError("TELEGRAM_SEND_RETRY_BASE_SECONDS must be between 0.1 and 60")
         if not 0.5<=sweep<=300:raise InvalidApplicationConfigurationError("PUBLICATION_SWEEP_SECONDS must be between 0.5 and 300")
+        if not 1<=upd_concurrency<=20:raise InvalidApplicationConfigurationError("UPDATE_PUBLICATION_CONCURRENCY must be between 1 and 20")
+        if not 1<=upd_attempts<=10:raise InvalidApplicationConfigurationError("UPDATE_SEND_MAX_ATTEMPTS must be between 1 and 10")
+        if not 0.1<=upd_retry<=60:raise InvalidApplicationConfigurationError("UPDATE_SEND_RETRY_BASE_SECONDS must be between 0.1 and 60")
+        if not 0.5<=upd_sweep<=300:raise InvalidApplicationConfigurationError("UPDATE_PUBLICATION_SWEEP_SECONDS must be between 0.5 and 300")
         enabled=mapping.get("MONITORING_ENABLED","true").strip().lower()
         if enabled not in ("true","false"):raise InvalidApplicationConfigurationError("MONITORING_ENABLED must be true or false")
         try:
@@ -149,6 +159,8 @@ class TelegramRuntimeSettings:
         return cls(application=application, bot_token=token, redis_url=redis_url,rendering=rendering,
             publication_concurrency=concurrency,send_max_attempts=attempts,
             send_retry_base_seconds=retry,publication_sweep_seconds=sweep,
+            update_publication_concurrency=upd_concurrency,update_send_max_attempts=upd_attempts,
+            update_send_retry_base_seconds=upd_retry,update_publication_sweep_seconds=upd_sweep,
             monitoring_enabled=enabled=="true",monitoring_interval_seconds=mi,monitoring_concurrency=mc,monitoring_batch_size=mb,
             breakeven_min_open_seconds=age,breakeven_favorable_move_percent=fav,breakeven_execution_tolerance_percent=tol,breakeven_rearm_distance_percent=rearm,breakeven_prompt_cooldown_seconds=cool,
             signalist_notification_concurrency=nc,signalist_notification_max_attempts=na,signalist_notification_retry_base_seconds=nr,signalist_notification_sweep_seconds=ns)
