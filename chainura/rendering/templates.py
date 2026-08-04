@@ -113,6 +113,10 @@ class TemplateService:
         except TemplateError:raise
         except Exception as exc:raise TemplatePersistenceError("template metadata installation failed") from exc
         return asset
+    async def configured(self,exchange,*,destination_id=None):
+        async with self.transactions() as tx:
+            tx.use_template_errors()
+            return await tx.templates.get(exchange,destination_id) is not None
     async def remove_override(self,exchange,destination_id):
         validate_destination_id(destination_id)
         try:

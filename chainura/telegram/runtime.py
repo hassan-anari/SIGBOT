@@ -37,12 +37,18 @@ from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, Updat
 from chainura.telegram.routers import router
 from chainura.telegram.admin_routes import router as admin_router
 from chainura.telegram.signal_routes import router as signal_router
+from chainura.telegram.template_routes import router as template_router
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from market import MarketProbe
 from chainura.telegram.destination_inspector import TelegramDestinationInspector
 from chainura.rendering.logos import CoinLogoStore, ToobitLogoSynchronizer, run_logo_sync
 from chainura.rendering.production import ProductionRendererRegistration
+from chainura.rendering.templates import TemplateAssetStore, TemplateService
+from chainura.application.initial_rendering import InitialPayloadFactory, InitialImageService
+from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker,
+                                               TelegramPhotoPublisher)
+from chainura.application.template_admin import TemplateAdministrationService
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -77,6 +83,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.update.outer_middleware(production_fsm)
     dispatcher.update.outer_middleware(ActorResolutionMiddleware(resolver))
     dispatcher.include_router(admin_router)
+    dispatcher.include_router(template_router)
     dispatcher.include_router(signal_router)
     dispatcher.include_router(router)
     for name, service in services.items(): dispatcher[name] = service
@@ -107,6 +114,9 @@ class Runtime:
         self._bot_closed = False
         self._engine_disposed = False
         self.renderer_registration = None
+        self.initial_image_service = None
+        self.publication_worker = None
+        self.publication_task = None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -119,6 +129,11 @@ class Runtime:
     def _renewal_done(self, task: asyncio.Task[None]) -> None:
         if not self.renewal_stop.is_set():
             self.lease_lost.set()
+            self.request_shutdown()
+
+    def _publication_done(self, task: asyncio.Task[None]) -> None:
+        if self.state is RuntimeState.RUNNING and not self.shutdown_requested.is_set():
+            self._observe_task_failure(task,"publication worker")
             self.request_shutdown()
 
     async def _startup_await(self, awaitable: Awaitable[T]) -> T:
@@ -209,8 +224,27 @@ class Runtime:
             assignment_service = DestinationAssignmentService(transactions)
             market_probe = MarketProbe()
             symbol_catalog = SymbolCatalogProvider(market_probe)
+            template_admin_service=None
+            if self.settings.rendering is not None:
+                template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
+                self.initial_image_service=InitialImageService(InitialPayloadFactory(
+                    CoinLogoStore(self.settings.rendering.toobit_logo_root)),template_service,
+                    self.settings.rendering.output_root,self.settings.rendering.concurrency)
+                publication_service=InitialPublicationService(transactions,self.initial_image_service,
+                    TelegramPhotoPublisher(self.bot),max_attempts=self.settings.send_max_attempts,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.publication_worker=InitialPublicationWorker(publication_service,
+                    self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                await self._startup_await(publication_service.recover())
+                await self._startup_await(self._cleanup_orphan_outputs())
+                await self._startup_await(self.publication_worker.start())
+                self.publication_task=self.publication_worker.task
+                self.publication_task.add_done_callback(self._publication_done)
+                template_admin_service=TemplateAdministrationService(template_service,
+                    publication_service,self.publication_worker.wake)
             signal_service = SignalService(
-                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog))
+                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
+                publication_wake=self.publication_worker.wake if self.publication_worker else None)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
@@ -218,6 +252,7 @@ class Runtime:
                 assignment_service=assignment_service,
                 signal_service=signal_service, symbol_catalog=symbol_catalog,
                 admin_signalist_service=admin_signalist_service,
+                template_admin_service=template_admin_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
@@ -250,8 +285,10 @@ class Runtime:
             return
         shutdown_waiter = asyncio.create_task(self.shutdown_requested.wait())
         shutdown_was_requested = self.shutdown_requested.is_set()
+        watched={self.polling_task,self.renewal_task,shutdown_waiter}
+        if self.publication_task is not None:watched.add(self.publication_task)
         done, _ = await asyncio.wait(
-            {self.polling_task, self.renewal_task, shutdown_waiter},
+            watched,
             return_when=asyncio.FIRST_COMPLETED,
         )
         fatal_reason: str | None = None
@@ -264,6 +301,10 @@ class Runtime:
             self._observe_task_failure(self.polling_task, "telegram polling")
             if not shutdown_was_requested:
                 fatal_reason = fatal_reason or "telegram polling stopped unexpectedly"
+        if self.publication_task is not None and self.publication_task in done:
+            self._observe_task_failure(self.publication_task,"publication worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "publication worker stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
@@ -316,6 +357,11 @@ class Runtime:
             if self.polling_task:
                 await self._best_effort(self.polling_task, "polling task")
 
+            if self.publication_worker:
+                await self._best_effort(self.publication_worker.close(), "publication worker")
+            if self.initial_image_service:
+                await self._best_effort(self.initial_image_service.aclose(), "initial image service")
+
             self.renewal_stop.set()
             if self.renewal_task:
                 if self.renewal_task.done():
@@ -354,6 +400,15 @@ class Runtime:
 
             self.state = RuntimeState.STOPPED
             self._cleanup_complete.set()
+
+    async def _cleanup_orphan_outputs(self):
+        root=self.settings.rendering.output_root.resolve()
+        root.mkdir(parents=True,exist_ok=True)
+        def clean():
+            for pattern in ("initial-*.png", ".initial-*.png.*.tmp"):
+                for path in root.glob(pattern):
+                    if path.is_file() and path.resolve().parent==root:path.unlink(missing_ok=True)
+        await asyncio.to_thread(clean)
 
 
 async def run() -> None:

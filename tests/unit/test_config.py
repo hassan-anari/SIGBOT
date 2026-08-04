@@ -97,6 +97,20 @@ class TelegramRuntimeConfigurationTests(unittest.TestCase):
             "DATABASE_URL": "sqlite+aiosqlite:///./data/app.db",
             "MAIN_ADMIN_TELEGRAM_ID": "10", "TELEGRAM_BOT_TOKEN": "token-value",
             "REDIS_URL": "rediss://user:redis-secret@localhost:6380/1",
+            "RENDER_TEMPLATE_ASSET_ROOT":"templates","RENDER_OUTPUT_ROOT":"output",
+            "TOOBIT_COIN_LOGO_ROOT":"logos","RENDER_FONT_REGULAR_PATH":"regular.ttf",
+            "RENDER_FONT_MEDIUM_PATH":"medium.ttf","RENDER_FONT_SEMIBOLD_PATH":"semibold.ttf",
+            "RENDER_FONT_BOLD_PATH":"bold.ttf","RENDER_CONCURRENCY":"2",
         })
         rendered = repr(settings)
         self.assertNotIn("token-value", rendered); self.assertNotIn("redis-secret", rendered)
+
+    def test_rendering_configuration_is_mandatory(self) -> None:
+        from chainura.config import TelegramRuntimeSettings
+        from chainura.errors import RenderingConfigurationError
+        with self.assertRaises(RenderingConfigurationError):
+            TelegramRuntimeSettings.from_mapping({
+                "DATABASE_URL":"sqlite+aiosqlite:///./data/app.db",
+                "MAIN_ADMIN_TELEGRAM_ID":"10","TELEGRAM_BOT_TOKEN":"token",
+                "REDIS_URL":"redis://localhost:6379/1",
+            })

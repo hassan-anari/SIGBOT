@@ -103,3 +103,12 @@ Before changing the code:
 - TP and SL belong to the future caption, not the rendered card layout.
 - Renderer clock and elapsed values are supplied externally; renderers never generate current time.
 - Do not guess or commit production coordinates, fonts, or final layout details.
+
+## Permanent Phase 5C publication rules
+
+- New Signals and their initial-publication request commit atomically; legacy Signals are never backfilled.
+- SQLite is the durable outbox and daily-capacity source of truth. Tehran dates define daily slots.
+- Persist `sending` before Telegram; ambiguous delivery becomes `delivery_unknown` and is never resent automatically.
+- Initial captions are centralized, Persian, HTML-safe, BiDi-isolated, and include `#پیامک` only for private destinations.
+- Main Admin templates are PNG documents; generated initial images are cleaned on all outcomes.
+- Drain publication and InitialImageService work before unregistering production renderers.

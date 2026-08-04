@@ -33,6 +33,7 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
   async with self.engine.connect() as c:
    self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
    self.assertEqual(await c.scalar(text('select count(*) from signal_initial_prices')),2)
+   self.assertEqual(await c.scalar(text('select count(*) from initial_publication_requests')),1)
  async def test_snapshot_mapping_composite_fk_and_uniqueness(self):
   from sqlalchemy.exc import IntegrityError
   one=await self.service.create(self.command())
@@ -40,6 +41,21 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
    await c.execute(text("delete from signal_exchange_symbols where signal_id=:id and exchange='lbank'"),{'id':one.id})
    with self.assertRaises(IntegrityError):
     await c.execute(text("insert into signal_initial_prices(signal_id,exchange,price) values (:id,'lbank','100')"),{'id':one.id})
+
+ async def test_stale_sending_recovery_retains_capacity_and_completes_request(self):
+  from chainura.application.publication import InitialPublicationService
+  signal=await self.service.create(self.command());now=datetime(2026,8,1,tzinfo=timezone.utc)
+  async with self.engine.begin() as c:
+   result=await c.execute(text("insert into destinations(internal_name,telegram_chat_id,destination_type,access_level,status,daily_limit) values('D',-1,'channel','private','active',1) returning id"));did=result.scalar_one()
+   result=await c.execute(text("insert into destination_publications(signal_id,destination_id,event_kind,selected_exchange,status,attempt_count,created_at,updated_at) values(:s,:d,'initial','ourbit','sending',1,:n,:n) returning id"),{"s":signal.id,"d":did,"n":now});pid=result.scalar_one()
+   await c.execute(text("insert into initial_publication_daily_slots(destination_id,local_date,slot_number,publication_id,created_at) values(:d,'2026-08-01',1,:p,:n)"),{"d":did,"p":pid,"n":now})
+   await c.execute(text("update initial_publication_requests set status='planned',planned_at=:n where signal_id=:s"),{"n":now,"s":signal.id})
+  service=InitialPublicationService(SqlAlchemySignalistTransactionFactory(self.sessions),None,None,lambda:now)
+  await service.recover()
+  async with self.engine.connect() as c:
+   self.assertEqual(await c.scalar(text("select status from destination_publications where id=:p"),{"p":pid}),"delivery_unknown")
+   self.assertEqual(await c.scalar(text("select count(*) from initial_publication_daily_slots where publication_id=:p"),{"p":pid}),1)
+   self.assertEqual(await c.scalar(text("select status from initial_publication_requests where signal_id=:s"),{"s":signal.id}),"completed")
 
 class GatePrices(Prices):
  def __init__(self):
@@ -63,6 +79,7 @@ class ConcurrentSignalPersistenceTests(SignalPersistenceTests):
    self.assertEqual(await c.scalar(text('select count(*) from signals')),1)
    self.assertEqual(await c.scalar(text('select count(*) from signal_take_profits')),2)
    self.assertEqual(await c.scalar(text('select count(*) from signal_exchange_symbols')),3)
+   self.assertEqual(await c.scalar(text('select count(*) from initial_publication_requests')),1)
  async def test_existing_token_skips_failed_provider(self):
   gate=GatePrices(); gate.release.set(); service=SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),gate,lambda:datetime(2026,8,1,tzinfo=timezone.utc))
   one=await service.create(self.command()); gate.fail=True; two=await service.create(self.command())

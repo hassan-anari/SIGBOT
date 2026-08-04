@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, CheckConstraint, Enum, ForeignKeyConstraint, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, Enum, ForeignKeyConstraint, Index, Integer, Text, UniqueConstraint, Date
 from sqlalchemy.orm import Mapped, mapped_column
 
 from chainura.domain.signalist import SignalistStatus
@@ -12,6 +12,7 @@ from chainura.persistence.base import Base
 from chainura.persistence.types import UTCDateTime, ExactDecimal
 from chainura.domain.signal import (PriceSourceType, SignalLifecycleStatus, SignalMode,
                                     TradeDirection)
+from chainura.domain.publication import PublicationRequestStatus, PublicationStatus
 
 SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
@@ -214,3 +215,72 @@ class SignalTemplateRecord(Base):
     content_type:Mapped[str]=mapped_column(Text,nullable=False)
     created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
     updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+PUBLICATION_REQUEST_STATUS_ENUM = _enum(PublicationRequestStatus, "initial_publication_request_status")
+PUBLICATION_STATUS_ENUM = _enum(PublicationStatus, "destination_publication_status")
+
+class InitialPublicationRequestRecord(Base):
+    __tablename__ = "initial_publication_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_initial_publication_requests_signal_id_signals"),
+        UniqueConstraint("signal_id", name="uq_initial_publication_requests_signal_id"),
+        Index("ix_initial_publication_requests_status_created", "status", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationRequestStatus] = mapped_column(PUBLICATION_REQUEST_STATUS_ENUM, nullable=False, default=PublicationRequestStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    planned_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+InitialPublicationRequestRecord.__table__.primary_key.name = "pk_initial_publication_requests"
+
+class DestinationPublicationRecord(Base):
+    __tablename__ = "destination_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_destination_publications_signal_id_signals"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_destination_publications_destination_id_destinations"),
+        UniqueConstraint("signal_id", "destination_id", "event_kind", name="uq_destination_publications_signal_destination_event"),
+        CheckConstraint("event_kind = 'initial'", name="ck_destination_publications_event_initial"),
+        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')", name="ck_destination_publications_exchange"),
+        CheckConstraint("attempt_count >= 0", name="ck_destination_publications_attempt_nonnegative"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_destination_publications_message_positive"),
+        CheckConstraint("reply_to_message_id IS NULL", name="ck_destination_publications_initial_no_reply"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)", name="ck_destination_publications_sent_consistency"),
+        Index("ix_destination_publications_status_updated", "status", "updated_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_kind: Mapped[str] = mapped_column(Text, nullable=False, default="initial")
+    selected_exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(PUBLICATION_STATUS_ENUM, nullable=False, default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    template_sha256: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+DestinationPublicationRecord.__table__.primary_key.name = "pk_destination_publications"
+
+class InitialPublicationDailySlotRecord(Base):
+    __tablename__ = "initial_publication_daily_slots"
+    __table_args__ = (
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_initial_publication_daily_slots_destination_id_destinations"),
+        ForeignKeyConstraint(["publication_id"], ["destination_publications.id"], ondelete="CASCADE", name="fk_initial_publication_daily_slots_publication_id_publications"),
+        UniqueConstraint("destination_id", "local_date", "slot_number", name="uq_initial_publication_daily_slots_destination_date_slot"),
+        UniqueConstraint("publication_id", name="uq_initial_publication_daily_slots_publication_id"),
+        CheckConstraint("slot_number > 0", name="ck_initial_publication_daily_slots_slot_positive"),
+        Index("ix_initial_publication_daily_slots_destination_date", "destination_id", "local_date"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_date: Mapped[object] = mapped_column(Date, nullable=False)
+    slot_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+InitialPublicationDailySlotRecord.__table__.primary_key.name = "pk_initial_publication_daily_slots"

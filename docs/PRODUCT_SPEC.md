@@ -747,3 +747,15 @@ The immutable initial-card canvas specifications are Ourbit 1080×1148 PNG,
 Toobit 942×1010 PNG, and LBank 830×1005 PNG. Long and Short use the same
 exchange-specific dimensions. These specifications do not authorize production
 coordinates, fonts, templates, or image composition in Phase 5A.
+
+# Phase 5C — Durable Initial Publication
+
+Final confirmation atomically stores a new Signal, its immutable source-price snapshots, and exactly one SQLite initial-publication request. Publication is asynchronous and never discloses destination eligibility, counts, limits, templates, or failures to the Signalist. Historical Signals without an explicit request are not retroactively published.
+
+The worker snapshots active assigned destinations, freezes the first priority exchange that is present in the persisted source-price snapshot, and rechecks destination activity and assignment immediately before delivery. SQLite daily slots, keyed by destination and the Asia/Tehran calendar date, atomically reserve initial-message capacity. Successful and delivery-unknown sends retain their slot; definite pre-send/render/Telegram rejection failures release it. Phase 6 updates do not use these slots.
+
+Every destination is rendered independently with its configured override or exchange default. Main Admin template uploads are complete PNG documents (not recompressed photos); override removal falls back to the default. Missing templates block only the affected row. Generated `initial-*.png` files are caller-owned until send completion and are cleaned on every outcome; startup removes only owned initial-output patterns.
+
+Initial captions contain the canonical Symbol, direction, exact Entry, leverage, ordered TPs, and SL using HTML escaping and explicit LTR isolation. Private destinations alone receive the fixed initial `#پیامک` hashtag. Telegram message IDs are persisted. A send is durably marked `sending` before the API call; timeout, connection interruption, or restart in that state becomes `delivery_unknown` and is never automatically resent because Bot API photo sends have no durable idempotency key.
+
+Runtime recovery precedes worker intake. Shutdown stops polling, drains the publication worker, closes `InitialImageService`, then releases infrastructure and finally unregisters production renderers. Phase 6 remains responsible for monitoring, TP/SL/Breakeven detection, approval and update publication, reports, and outage alerts.
