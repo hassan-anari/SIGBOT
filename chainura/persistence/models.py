@@ -412,3 +412,42 @@ class SignalistNotificationRecord(Base):
     __tablename__="signalist_notifications"
     __table_args__=(ForeignKeyConstraint(["candidate_id"],["signal_update_candidates.id"],ondelete="CASCADE",name="fk_signalist_notifications_candidate_id_candidates"),ForeignKeyConstraint(["prompt_id"],["breakeven_prompts.id"],ondelete="CASCADE",name="fk_signalist_notifications_prompt_id_prompts"),ForeignKeyConstraint(["signalist_id"],["signalists.id"],name="fk_signalist_notifications_signalist_id_signalists"),UniqueConstraint("candidate_id",name="uq_signalist_notifications_candidate_id"),UniqueConstraint("prompt_id",name="uq_signalist_notifications_prompt_id"),CheckConstraint("(kind='event' AND candidate_id IS NOT NULL AND prompt_id IS NULL) OR (kind='breakeven_prompt' AND prompt_id IS NOT NULL AND candidate_id IS NULL)",name="ck_signalist_notifications_source"),CheckConstraint("attempt_count >= 0",name="ck_signalist_notifications_attempts"),Index("ix_signalist_notifications_status_retry","status","retry_at"))
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);kind:Mapped[NotificationKind]=mapped_column(NOTIFICATION_KIND_ENUM,nullable=False);candidate_id:Mapped[int|None]=mapped_column(Integer);prompt_id:Mapped[int|None]=mapped_column(Integer);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False);status:Mapped[NotificationStatus]=mapped_column(NOTIFICATION_STATUS_ENUM,nullable=False,default=NotificationStatus.PENDING);attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime());telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);last_error_category:Mapped[str|None]=mapped_column(Text);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+
+from chainura.domain.health import ApiOperation,ServiceHealthStatus,AdminAlertKind,AdminAlertStatus
+API_OPERATION_ENUM=_enum(ApiOperation,"api_health_operation")
+SERVICE_HEALTH_STATUS_ENUM=_enum(ServiceHealthStatus,"service_health_status")
+ADMIN_ALERT_KIND_ENUM=_enum(AdminAlertKind,"admin_alert_kind")
+ADMIN_ALERT_STATUS_ENUM=_enum(AdminAlertStatus,"admin_alert_status")
+
+class ServiceHealthRecord(Base):
+    __tablename__="service_health_states"
+    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_service_health_key"),CheckConstraint("consecutive_successes >= 0 AND consecutive_failures >= 0",name="ck_service_health_counters"),ForeignKeyConstraint(["current_incident_id"],["outage_incidents.id"],name="fk_service_health_states_current_incident_id_incidents"),CheckConstraint("(status='down' AND current_incident_id IS NOT NULL AND unhealthy_since IS NOT NULL) OR (status<>'down' AND current_incident_id IS NULL)",name="ck_service_health_current_incident"),Index("ix_service_health_status_repeat","status","next_repeat_at"))
+    service_key:Mapped[str]=mapped_column(Text,primary_key=True)
+    exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False)
+    operation:Mapped[ApiOperation]=mapped_column(API_OPERATION_ENUM,nullable=False)
+    status:Mapped[ServiceHealthStatus]=mapped_column(SERVICE_HEALTH_STATUS_ENUM,nullable=False,default=ServiceHealthStatus.UNKNOWN)
+    last_attempt_at:Mapped[datetime|None]=mapped_column(UTCDateTime());last_success_at:Mapped[datetime|None]=mapped_column(UTCDateTime());last_failure_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    unhealthy_since:Mapped[datetime|None]=mapped_column(UTCDateTime());next_repeat_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    consecutive_successes:Mapped[int]=mapped_column(Integer,nullable=False,default=0);consecutive_failures:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    last_error_category:Mapped[str|None]=mapped_column(Text);current_incident_id:Mapped[int|None]=mapped_column(Integer)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+class OutageIncidentRecord(Base):
+    __tablename__="outage_incidents"
+    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_outage_incidents_key"),Index("uq_outage_incidents_one_open","service_key",unique=True,sqlite_where=__import__('sqlalchemy').text("recovered_at IS NULL")),Index("ix_outage_incidents_service_started","service_key","started_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);service_key:Mapped[str]=mapped_column(Text,nullable=False)
+    exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False);operation:Mapped[ApiOperation]=mapped_column(API_OPERATION_ENUM,nullable=False)
+    started_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False);recovered_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    initial_error_category:Mapped[str|None]=mapped_column(Text);latest_error_category:Mapped[str|None]=mapped_column(Text)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+OutageIncidentRecord.__table__.primary_key.name="pk_outage_incidents"
+
+class AdminAlertRecord(Base):
+    __tablename__="admin_alert_outbox"
+    __table_args__=(ForeignKeyConstraint(["incident_id"],["outage_incidents.id"],ondelete="CASCADE",name="fk_admin_alert_outbox_incident_id_incidents"),CheckConstraint("attempts >= 0",name="ck_admin_alert_outbox_attempts"),CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0",name="ck_admin_alert_outbox_message_positive"),CheckConstraint("(status='sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status<>'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)",name="ck_admin_alert_outbox_sent_consistency"),UniqueConstraint("incident_id","kind","repeat_sequence",name="uq_admin_alert_outbox_logical"),Index("ix_admin_alert_outbox_status_retry","status","retry_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);incident_id:Mapped[int]=mapped_column(Integer,nullable=False);service_key:Mapped[str]=mapped_column(Text,nullable=False)
+    kind:Mapped[AdminAlertKind]=mapped_column(ADMIN_ALERT_KIND_ENUM,nullable=False);repeat_sequence:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    status:Mapped[AdminAlertStatus]=mapped_column(ADMIN_ALERT_STATUS_ENUM,nullable=False,default=AdminAlertStatus.PENDING);attempts:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime());telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    sanitized_error:Mapped[str|None]=mapped_column(Text);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+AdminAlertRecord.__table__.primary_key.name="pk_admin_alert_outbox"

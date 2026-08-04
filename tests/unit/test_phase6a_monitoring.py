@@ -96,38 +96,49 @@ class Phase6ACorrectionTests(unittest.TestCase):
    self.assertEqual(snapshot[7].source_prices,((Exchange.OURBIT,Decimal('111')),))
    self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
   asyncio.run(run())
- def test_single_exchange_discovery_ignores_unrelated_catalog_outage(self):
+ def test_persisted_single_exchange_survives_selected_catalog_outage(self):
   async def run():
    now=NOW; tick=PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake'); probe=FakeProbe(now)
-   probe.adapters[0].ticks=[tick]; probe.adapters[0].instruments=[Instrument('ourbit','NATIVE_X','OUTSIDEUSDT','OUTSIDE')]
-   probe.adapters[1].instrument_fail=True
+   probe.adapters[0].ticks=[tick]; probe.adapters[0].instrument_fail=True
    catalog=SymbolCatalogProvider(probe); provider=BatchedMarketSnapshotProvider(probe,catalog)
    work=MonitorWork(8,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
    snapshot=await provider.snapshot((work,))
    self.assertIn(8,snapshot)
    self.assertEqual(snapshot[8].reference_price,Decimal('111'))
-   self.assertEqual([a.instrument_calls for a in probe.adapters],[1,0,0])
+   self.assertEqual([a.instrument_calls for a in probe.adapters],[0,0,0])
    self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
   asyncio.run(run())
- def test_mixed_batch_skips_composite_when_shared_discovery_fails_but_keeps_single(self):
+ def test_mixed_persisted_composite_and_single_batch_uses_each_price_adapter_once(self):
   async def run():
    now=NOW; probe=FakeProbe(now)
-   probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake')]
-   probe.adapters[0].instruments=[Instrument('ourbit','NATIVE_X','OUTSIDEUSDT','OUTSIDE')]
-   probe.adapters[1].instrument_fail=True
+   probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake'),PriceTick('ourbit','BTC-USDT','BTCUSDT',Decimal('110'),now,'fake')]
+   probe.adapters[1].ticks=[PriceTick('toobit','BTCUSDT','BTCUSDT',Decimal('110'),now,'fake')]; probe.adapters[1].instrument_fail=True
+   probe.adapters[2].ticks=[PriceTick('lbank','btc_usdt','BTCUSDT',Decimal('110'),now,'fake')]
    catalog=SymbolCatalogProvider(probe); provider=BatchedMarketSnapshotProvider(probe,catalog)
    composite=MonitorWork(9,1,SignalMode.COMPOSITE,'BTCUSDT',None,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.COMPOSITE,((Exchange.OURBIT,'BTC-USDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')),now)
    single=MonitorWork(10,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
    snapshot=await provider.snapshot((composite,single))
-   self.assertNotIn(9,snapshot); self.assertIn(10,snapshot)
-   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+   self.assertIn(9,snapshot); self.assertIn(10,snapshot)
+   self.assertEqual([a.calls for a in probe.adapters],[1,1,1])
+   self.assertEqual([a.instrument_calls for a in probe.adapters],[0,0,0])
   asyncio.run(run())
  def test_selected_exchange_failure_skips_single_cleanly(self):
   async def run():
-   now=NOW; probe=FakeProbe(now); probe.adapters[0].instrument_fail=True
+   now=NOW; probe=FakeProbe(now); probe.adapters[0].fail=True
    provider=BatchedMarketSnapshotProvider(probe,SymbolCatalogProvider(probe))
    work=MonitorWork(11,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
    snapshot=await provider.snapshot((work,))
    self.assertEqual(snapshot,{})
-   self.assertEqual([a.calls for a in probe.adapters],[0,0,0])
+   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+   self.assertEqual([a.instrument_calls for a in probe.adapters],[0,0,0])
+  asyncio.run(run())
+ def test_invalid_or_stale_selected_tick_skips_single_without_event_decision(self):
+  async def run():
+   now=NOW; probe=FakeProbe(now); stale=now-timedelta(seconds=30)
+   probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),stale,'fake')]
+   provider=BatchedMarketSnapshotProvider(probe,SymbolCatalogProvider(probe))
+   work=MonitorWork(12,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
+   self.assertEqual(await provider.snapshot((work,)),{})
+   probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('0'),now,'fake')]
+   self.assertEqual(await provider.snapshot((work,)),{})
   asyncio.run(run())

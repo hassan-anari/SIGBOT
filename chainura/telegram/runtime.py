@@ -43,6 +43,8 @@ from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider
 from chainura.application.monitoring import MonitoringService,MonitoringWorker,BreakevenSettings
+from chainura.application.health import HealthRepository, AdminAlertWorker
+from chainura.application.reporting import ReportingRepository, ReportingService
 from chainura.application.signalist_notification import SignalistNotificationService,SignalistNotificationWorker
 from chainura.telegram.event_routes import event_decision_keyboard, breakeven_prompt_keyboard
 from chainura.domain.monitoring import NotificationKind
@@ -128,6 +130,7 @@ class Runtime:
         self.update_publication_task = None
         self.monitoring_worker=None;self.monitoring_task=None
         self.notification_worker=None;self.notification_task=None
+        self.admin_alert_worker=None;self.admin_alert_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -239,10 +242,14 @@ class Runtime:
             destination_service = DestinationService(transactions)
             assignment_service = DestinationAssignmentService(transactions)
             market_probe = MarketProbe()
-            symbol_catalog = SymbolCatalogProvider(market_probe)
+            health_repository=HealthRepository(sessions)
+            if hasattr(sessions,"class_"):
+                await self._startup_await(health_repository.seed_unknown_services(market_probe.clock()))
+            reporting_service=ReportingService(ReportingRepository(sessions))
+            symbol_catalog = SymbolCatalogProvider(market_probe, health_repository)
             monitoring_service=None
             if hasattr(sessions,"class_"):
-                monitoring_service=MonitoringService(sessions,BatchedMarketSnapshotProvider(market_probe,symbol_catalog),
+                monitoring_service=MonitoringService(sessions,BatchedMarketSnapshotProvider(market_probe,symbol_catalog,health_repository),
                 BreakevenSettings(self.settings.breakeven_min_open_seconds,self.settings.breakeven_favorable_move_percent,self.settings.breakeven_execution_tolerance_percent,self.settings.breakeven_rearm_distance_percent,self.settings.breakeven_prompt_cooldown_seconds))
                 await self._startup_await(monitoring_service.reconcile())
             class DirectTransport:
@@ -253,6 +260,12 @@ class Runtime:
                         markup=breakeven_prompt_keyboard(source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
                     return message.message_id
+            class AdminAlertTransport:
+                async def send_message(inner,telegram_id,text):
+                    return await self.bot.send_message(telegram_id,text)
+            if hasattr(sessions,"class_"):
+                self.admin_alert_worker=AdminAlertWorker(health_repository,AdminAlertTransport(),self.settings.application.main_admin_telegram_id,concurrency=self.settings.admin_alert_concurrency,max_attempts=self.settings.admin_alert_max_attempts,retry_base_seconds=self.settings.admin_alert_retry_base_seconds,sweep_seconds=self.settings.admin_alert_sweep_seconds)
+                health_repository.wake_alerts=self.admin_alert_worker.wake
             notification_service=None
             if monitoring_service is not None:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
@@ -302,6 +315,10 @@ class Runtime:
                 await self._startup_await(self.monitoring_worker.start())
                 self.monitoring_task=self.monitoring_worker.task
                 self.monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"monitoring worker"))
+            if self.admin_alert_worker is not None:
+                await self._startup_await(self.admin_alert_worker.start())
+                self.admin_alert_task=self.admin_alert_worker.task
+                self.admin_alert_task.add_done_callback(lambda task:self._observed_worker_done(task,"admin alert worker"))
             if self.notification_worker is not None:
                 await self._startup_await(self.notification_worker.start())
                 self.notification_task=self.notification_worker.task
@@ -310,15 +327,16 @@ class Runtime:
                 if self.publication_worker:self.publication_worker.wake()
                 if self.update_publication_worker:self.update_publication_worker.wake()
                 if self.monitoring_worker:self.monitoring_worker.wake()
+                if self.admin_alert_worker:self.admin_alert_worker.wake()
             signal_service = SignalService(
-                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog),
+                transactions, MarketReferencePriceProvider(market_probe, symbol_catalog, health_repository),
                 publication_wake=wake_background)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_id, service, transactions)
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
                 signalist_service=service, destination_service=destination_service,
                 assignment_service=assignment_service,
-                signal_service=signal_service, symbol_catalog=symbol_catalog,
+                signal_service=signal_service, symbol_catalog=symbol_catalog, reporting_service=reporting_service, health_repository=health_repository,
                 monitoring_service=monitoring_service,
                 admin_signalist_service=admin_signalist_service,
                 template_admin_service=template_admin_service,
@@ -359,6 +377,7 @@ class Runtime:
         if self.monitoring_task is not None:watched.add(self.monitoring_task)
         if self.notification_task is not None:watched.add(self.notification_task)
         if self.update_publication_task is not None:watched.add(self.update_publication_task)
+        if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -385,6 +404,10 @@ class Runtime:
             self._observe_task_failure(self.notification_task,"notification worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "notification worker stopped unexpectedly"
+        if self.admin_alert_task is not None and self.admin_alert_task in done:
+            self._observe_task_failure(self.admin_alert_task,"admin alert worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "admin alert worker stopped unexpectedly"
         if self.update_publication_task is not None and self.update_publication_task in done:
             self._observe_task_failure(self.update_publication_task,"update publication worker")
             if self.state is RuntimeState.RUNNING:
@@ -445,6 +468,8 @@ class Runtime:
                 await self._best_effort(self.monitoring_worker.stop(), "monitoring worker")
             if self.notification_worker:
                 await self._best_effort(self.notification_worker.stop(), "Signalist notification worker")
+            if self.admin_alert_worker:
+                await self._best_effort(self.admin_alert_worker.stop(), "admin alert worker")
             if self.update_publication_worker:
                 await self._best_effort(self.update_publication_worker.close(), "update publication worker")
             if self.publication_worker:

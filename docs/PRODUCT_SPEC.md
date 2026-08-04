@@ -363,7 +363,7 @@ Breakeven:
 
 This event must be checked only at a stage where it is meaningful within the signal lifecycle. The system must not declare a signal Breakeven immediately when the Entry is created.
 
-The exact stage at which Breakeven becomes active will be finalized as an operational setting.
+Breakeven activation is the Phase 6A contextual manual flow: minimum age, favorable movement, execution zone, rearm distance, and cooldown are operational settings.
 
 ---
 
@@ -679,8 +679,8 @@ The following are not product ambiguities and may be configured during developme
 4. Button order and exact bot message text
 5. Exact text and fields for each image
 6. Cache retention duration for exchange Symbol lists
-7. Report time and time zone
-8. The exact stage at which Breakeven becomes active
+7. Report button ordering and exact text
+8. Breakeven numeric timing settings within the approved Phase 6A contextual flow
 9. Simple retry duration for failed Telegram sends
 10. Post-delivery bug-fix period
 
@@ -817,3 +817,19 @@ If a newer TP is detected before an older TP update is actually published to a d
 Update delivery persists retry state, attempts, sanitized error categories, selected exchange, reply target, Telegram message ID, sent time, and template identity when available. Ambiguous Telegram delivery becomes `delivery_unknown` and is not retried automatically. Template mutations unblock both initial and update `blocked_template` rows. Runtime recovery reclaims stale rendering/planning states, marks stale sending as unknown, reconciles approved candidates missing requests, and drains update work before closing shared rendering resources.
 
 Reports, Win Rate screens, outage/recovery alerts, and final Phase 6 acceptance remain Phase 6C responsibilities and are not implemented in Phase 6B.
+
+---
+
+# Phase 6C — Main Admin Reports, API Health Alerts, and Final Phase 6 Acceptance
+
+Phase 6C completes Phase 6. Reports remain Main Admin-only and on-demand; there are no scheduled reports, Signalist-visible reports, or destination reports. Report periods use Asia/Tehran calendar days and Signal creation time. Selected Tehran dates are converted into `start_utc <= signals.created_at < end_exclusive_utc`. Supported periods are today, last seven days including today, last thirty days including today, and inclusive Gregorian custom ranges entered as `YYYY-MM-DD`.
+
+Report summaries include total Signals, active Signals, resulted Signals, Wins, Losses, Breakevens, Win Rate, theoretical ROI totals/averages/extremes, highest-TP distribution, Composite/Single Exchange counts, confirmed-published count, and unpublished count. Win Rate is `wins / (wins + losses) × 100`; Breakevens and active no-result Signals are excluded, and an empty denominator displays `—`. Decimal is used end-to-end. Theoretical ROI is persisted highest-TP ROI for Wins, persisted SL ROI for Losses, exact zero for Breakeven, and excludes active no-result Signals. Confirmed publication means at least one Phase 5 initial destination publication has status `sent` with a positive Telegram message ID.
+
+Trade history is paginated at ten rows, ordered by `created_at` descending and Signal ID descending. Rows show internal Signal ID, Signalist display name only for all-Signalists scope, canonical Symbol, direction, Tehran creation time, Composite or Single Exchange source, current state, highest TP, theoretical ROI, and confirmed-published yes/no. Destination details, Chat IDs, raw errors, and publication delivery internals are never displayed.
+
+Durable API health independently monitors exactly six services: `ourbit_prices`, `ourbit_catalog`, `toobit_prices`, `toobit_catalog`, `lbank_prices`, and `lbank_catalog`. Service health stores status `unknown`, `healthy`, `degraded`, or `down`, attempt/success/failure timestamps, unhealthy start, next repeat time, consecutive counters, sanitized error category, and current open incident. Outage incidents store service, exchange, operation, start/recovery timestamps, and sanitized initial/latest categories. Main Admin alerts are persisted in a durable outbox with kinds `outage_initial`, `outage_repeat`, and `recovery` and statuses including `pending`, `sending`, `retry_wait`, `sent`, `failed`, `delivery_unknown`, and `superseded`.
+
+Only `down` opens an incident and triggers repeating alerts. `degraded` is durable and visible to Main Admin but does not open an outage incident. The first down transition creates one incident and immediate alert, repeated down observations update the same incident, each due scheduler cycle creates at most one repeat alert and advances the next repeat by 60 seconds, and recovery closes the incident and creates one recovery alert. Sent and delivery-unknown alerts are never resent. There is no catch-up burst after downtime or restart.
+
+Outage handling is safe: one down price source still allows Composite operation with two fresh agreeing sources, two down price sources pause Composite validation/monitoring, and all price sources down produce no Composite confirmation and no TP/SL/Breakeven event. Single Exchange Signals continue only when their selected exchange has usable pricing. Catalog outages are independent from price-service health and do not stop monitoring of already-persisted Signals when valid prices exist. After recovery, monitoring resumes from current data only; historical candles are not queried and missed events are not reconstructed or backdated.

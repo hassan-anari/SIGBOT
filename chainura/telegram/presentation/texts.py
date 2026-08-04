@@ -1,5 +1,6 @@
 from __future__ import annotations
 from html import escape
+from datetime import timezone
 from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii_id,
     format_datetime, format_priority, persian_digits)
 
@@ -182,3 +183,64 @@ BREAKEVEN_DECLINED="این درخواست بریک‌ایون ثبت نشد."
 BREAKEVEN_REGISTERED="✅ بریک‌ایون ثبت شد. آپدیت رویداد برای تصمیم انتشار نمایش داده خواهد شد."
 BREAKEVEN_OUT_OF_RANGE="⚠️ قیمت در حال حاضر خارج از محدوده بریک‌ایون است.\nبریک‌ایون ثبت نشد."
 BREAKEVEN_STALE="این درخواست بریک‌ایون دیگر قابل استفاده نیست."
+
+# Phase 6C reports and API health
+MENU_ADMIN_REPORTS="📊 گزارش‌ها"
+REPORT_SCOPE_TITLE="<b>📊 گزارش‌ها</b>\n\nدامنه گزارش را انتخاب کنید."
+REPORT_ALL_SIGNALISTS="همه سیگنالیست‌ها"
+REPORT_ONE_SIGNALIST="یک سیگنالیست"
+REPORT_PERIOD_TITLE="بازه گزارش را انتخاب کنید."
+REPORT_TODAY="امروز"; REPORT_7D="۷ روز اخیر"; REPORT_30D="۳۰ روز اخیر"; REPORT_CUSTOM="بازه دلخواه"
+REPORT_ASK_START="تاریخ شروع را به میلادی و با قالب YYYY-MM-DD وارد کنید."
+REPORT_ASK_END="تاریخ پایان را به میلادی و با قالب YYYY-MM-DD وارد کنید."
+REPORT_INVALID_RANGE="بازه تاریخ معتبر نیست؛ تاریخ‌ها را با قالب YYYY-MM-DD و به‌ترتیب درست وارد کنید."
+REPORT_HISTORY="تاریخچه معاملات"; REPORT_REFRESH="تازه‌سازی"; REPORT_YES="بله"; REPORT_NO="خیر"; REPORT_DASH="—"
+HEALTH_STATUS_TITLE="<b>🛡 وضعیت APIها</b>"
+HEALTH_LABELS={"ourbit_prices":"قیمت Ourbit","ourbit_catalog":"فهرست قراردادهای Ourbit","toobit_prices":"قیمت Toobit","toobit_catalog":"فهرست قراردادهای Toobit","lbank_prices":"قیمت LBank","lbank_catalog":"فهرست قراردادهای LBank"}
+HEALTH_STATUS_LABELS={"unknown":"نامشخص","healthy":"سالم","degraded":"محدود","down":"قطع"}
+VALID_PRICE_UNAVAILABLE="در حال حاضر دریافت قیمت معتبر امکان‌پذیر نیست.\nکمی بعد دوباره تلاش کنید."
+def _pct(value): return REPORT_DASH if value is None else persian_digits(f"{value.quantize(__import__('decimal').Decimal('0.01'))}%")
+def _dec(value): return REPORT_DASH if value is None else persian_digits(str(value.quantize(__import__('decimal').Decimal('0.01'))))
+def report_summary_text(summary, scope_label=None, start_text=None, end_text=None):
+    rows=["<b>📊 خلاصه گزارش</b>"]
+    if scope_label: rows.append(f"دامنه: {safe(scope_label)}")
+    if start_text and end_text: rows.append(f"بازه: {safe(start_text)} تا {safe(end_text)}")
+    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"سیگنال‌های فعال: {persian_digits(summary.active_signals)}",f"دارای نتیجه: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"بریک‌ایون: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI کل نظری: {_dec(summary.total_roi)}",f"میانگین ROI نظری: {_dec(summary.average_roi)}",f"میانگین ROI مثبت: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی: {_dec(summary.average_negative_roi)}",f"کمترین ROI: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
+    return "\n".join(rows)
+def _report_direction(value): return {"long":"لانگ","short":"شورت"}.get(str(value), str(value))
+def _report_source(value): return {"Composite":"مرجع مشترک","Single Exchange":"تک‌صرافی"}.get(str(value), str(value))
+def _report_state(value):
+    text=str(value)
+    if text.startswith("Active Win"): return text.replace("Active Win at TP", "برد فعال در TP")
+    if text.startswith("Completed Win"): return text.replace("Completed Win at TP", "برد تکمیل‌شده در TP")
+    return {"Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
+def trade_history_text(page, all_scope=True):
+    rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {persian_digits(page.page)} از {persian_digits(page.pages)}"]
+    for item in page.items:
+        who=f"\nسیگنالیست: {safe(item.signalist_display_name)}" if all_scope else ""
+        rows.append(f"\n#{persian_digits(item.signal_id)}{who}\nنماد: {safe(item.canonical_symbol)}\nجهت: {safe(_report_direction(item.direction))}\nزمان: {datetime_value(item.created_at_tehran)}\nمنبع: {safe(_report_source(item.source_label))}\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {persian_digits(item.highest_tp) if item.highest_tp else REPORT_DASH}\nROI: {_dec(item.theoretical_roi)}\nانتشار قطعی: {REPORT_YES if item.confirmed_published else REPORT_NO}")
+    if not page.items: rows.append(EMPTY_LIST)
+    return "\n".join(rows)
+def _duration_text(start, end):
+    if start is None or end is None:
+        return REPORT_DASH
+    seconds = max(0, int((end.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds()))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return persian_digits(f"{hours} ساعت و {minutes} دقیقه")
+    if minutes:
+        return persian_digits(f"{minutes} دقیقه")
+    return persian_digits(f"{sec} ثانیه")
+
+def health_status_text(rows, now=None):
+    out=[HEALTH_STATUS_TITLE]
+    for row in rows:
+        last=datetime_value(row.last_success_at) if row.last_success_at else REPORT_DASH
+        extra=""
+        if getattr(row,'status',None) and row.status.value=='down' and row.unhealthy_since:
+            extra=f"\nشروع اختلال: {datetime_value(row.unhealthy_since)}"
+            if now is not None:
+                extra += f"\nمدت فعلی: {_duration_text(row.unhealthy_since, now)}"
+        out.append(f"\n{HEALTH_LABELS.get(row.service_key,row.service_key)}\nوضعیت: {HEALTH_STATUS_LABELS.get(row.status.value,row.status.value)}\nآخرین موفقیت: {last}{extra}")
+    return "\n".join(out)

@@ -63,6 +63,9 @@ def _valid(namespace: str, action: str, args: tuple[str, ...]) -> bool:
         if action in {"add", "remove"}: return len(args) == 2 and all(_positive(item) for item in args)
         if action == "confirm": return len(args) == 3 and args[0] == "remove" and all(_positive(item) for item in args[1:])
         return False
+    if namespace == "rp":
+        if action in {"scope","period","summary","hist","sig","sigsel"}: return all(arg.isascii() and len(arg) <= 16 for arg in args)
+        return False
     if namespace == "nav":
         if action in {"candidate-confirm", "candidate-retry"}: return len(args) == 1 and _negative_chat_id(args[0])
         if action == "access": return len(args) == 1 and args[0] in {"public", "private"}
