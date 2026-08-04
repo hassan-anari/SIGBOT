@@ -191,19 +191,32 @@ class BatchedMarketSnapshotProvider:
     async def snapshot(self,signals):
         signals=tuple(signals)
         if not signals:return {}
-        # Ensure catalog metadata once; outside-list native contracts rely on per-exchange catalogs,
-        # not on membership in the common/shared symbol set.
-        await self.catalog._ensure_discovered()
+        has_composite=any(signal.mode is SignalMode.COMPOSITE for signal in signals)
+        shared_ready=not has_composite
+        if has_composite:
+            try:
+                await self.catalog._ensure_discovered()
+                shared_ready=True
+            except SymbolCatalogError:
+                shared_ready=False
+        single_ready:set[Exchange]=set()
         for signal in signals:
             if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not None:
-                await self.catalog._ensure_exchange(signal.selected_exchange)
+                try:
+                    await self.catalog._ensure_exchange(signal.selected_exchange)
+                    single_ready.add(signal.selected_exchange)
+                except SymbolCatalogError:
+                    continue
         async with self.catalog._snapshot_lock:
             adapters={Exchange(adapter.name):adapter for adapter in self.probe.adapters}
-            required={exchange for signal in signals for exchange,_ in signal.exchange_symbols}
-            if not required:required=set(Exchange)
-            fetched=await asyncio.gather(*(adapters[e].fetch_prices() for e in sorted(required,key=lambda x:x.value) if e in adapters),return_exceptions=True)
+            required=set(single_ready)
+            if shared_ready:
+                required.update(exchange for signal in signals if signal.mode is SignalMode.COMPOSITE for exchange,_ in signal.exchange_symbols)
+            if not required:return {}
+            ordered=tuple(e for e in sorted(required,key=lambda x:x.value) if e in adapters)
+            fetched=await asyncio.gather(*(adapters[e].fetch_prices() for e in ordered),return_exceptions=True)
             raw_by_exchange={}
-            for exchange,response in zip((e for e in sorted(required,key=lambda x:x.value) if e in adapters),fetched):
+            for exchange,response in zip(ordered,fetched):
                 if isinstance(response,Exception):
                     continue
                 ticks=tuple(response)
@@ -213,11 +226,13 @@ class BatchedMarketSnapshotProvider:
             now=self.probe.clock();result={}
             for signal in signals:
                 if signal.mode is SignalMode.COMPOSITE:
+                    if not shared_ready:continue
                     item=self.probe._analyze_symbol(signal.canonical_symbol,now)
                     if item["status"] not in READY_STATUSES:continue
                     prices=tuple((Exchange(name),price) for name,price in sorted(item["prices"].items()))
                 else:
                     selected=signal.selected_exchange
+                    if selected not in single_ready:continue
                     native=next((native for exchange,native in signal.exchange_symbols if exchange is selected),None)
                     tick=next((x for x in raw_by_exchange.get(selected,()) if x.exchange==selected.value and x.exchange_symbol==native),None) if selected and native else None
                     if tick is None or now-self.probe._require_aware(tick.received_at)>self.probe.max_price_age or not isinstance(tick.last_price,Decimal) or not tick.last_price.is_finite() or tick.last_price<=0:continue

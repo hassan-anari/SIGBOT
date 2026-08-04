@@ -44,18 +44,22 @@ class PresentationTests(unittest.TestCase):
 
 import asyncio
 from datetime import timedelta
-from models import PriceTick
+from models import PriceTick, Instrument
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider, SymbolCatalogProvider
 from chainura.application.monitoring import MonitorWork
 from chainura.domain.signal import SignalMode
 from chainura.telegram.event_routes import breakeven_prompt_keyboard, BreakevenPromptCallback
 
 class FakeAdapter:
- def __init__(self,name,ticks=(),fail=False): self.name=name; self.ticks=list(ticks); self.calls=0; self.symbol_map={}
- async def fetch_instruments(self): return []
+ def __init__(self,name,ticks=(),fail=False,instrument_fail=False,instruments=()):
+  self.name=name; self.ticks=list(ticks); self.calls=0; self.instrument_calls=0; self.symbol_map={}; self.fail=fail; self.instrument_fail=instrument_fail; self.instruments=list(instruments)
+ async def fetch_instruments(self):
+  self.instrument_calls+=1
+  if self.instrument_fail: raise RuntimeError('catalog down')
+  return self.instruments
  async def fetch_prices(self):
   self.calls+=1
-  if getattr(self,'fail',False): raise RuntimeError('down')
+  if self.fail: raise RuntimeError('down')
   return self.ticks
 
 class FakeProbe:
@@ -91,4 +95,39 @@ class Phase6ACorrectionTests(unittest.TestCase):
    self.assertEqual(snapshot[7].reference_price,Decimal('111'))
    self.assertEqual(snapshot[7].source_prices,((Exchange.OURBIT,Decimal('111')),))
    self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+  asyncio.run(run())
+ def test_single_exchange_discovery_ignores_unrelated_catalog_outage(self):
+  async def run():
+   now=NOW; tick=PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake'); probe=FakeProbe(now)
+   probe.adapters[0].ticks=[tick]; probe.adapters[0].instruments=[Instrument('ourbit','NATIVE_X','OUTSIDEUSDT','OUTSIDE')]
+   probe.adapters[1].instrument_fail=True
+   catalog=SymbolCatalogProvider(probe); provider=BatchedMarketSnapshotProvider(probe,catalog)
+   work=MonitorWork(8,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
+   snapshot=await provider.snapshot((work,))
+   self.assertIn(8,snapshot)
+   self.assertEqual(snapshot[8].reference_price,Decimal('111'))
+   self.assertEqual([a.instrument_calls for a in probe.adapters],[1,0,0])
+   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+  asyncio.run(run())
+ def test_mixed_batch_skips_composite_when_shared_discovery_fails_but_keeps_single(self):
+  async def run():
+   now=NOW; probe=FakeProbe(now)
+   probe.adapters[0].ticks=[PriceTick('ourbit','NATIVE_X','OUTSIDEUSDT',Decimal('111'),now,'fake')]
+   probe.adapters[0].instruments=[Instrument('ourbit','NATIVE_X','OUTSIDEUSDT','OUTSIDE')]
+   probe.adapters[1].instrument_fail=True
+   catalog=SymbolCatalogProvider(probe); provider=BatchedMarketSnapshotProvider(probe,catalog)
+   composite=MonitorWork(9,1,SignalMode.COMPOSITE,'BTCUSDT',None,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.COMPOSITE,((Exchange.OURBIT,'BTC-USDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')),now)
+   single=MonitorWork(10,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
+   snapshot=await provider.snapshot((composite,single))
+   self.assertNotIn(9,snapshot); self.assertIn(10,snapshot)
+   self.assertEqual([a.calls for a in probe.adapters],[1,0,0])
+  asyncio.run(run())
+ def test_selected_exchange_failure_skips_single_cleanly(self):
+  async def run():
+   now=NOW; probe=FakeProbe(now); probe.adapters[0].instrument_fail=True
+   provider=BatchedMarketSnapshotProvider(probe,SymbolCatalogProvider(probe))
+   work=MonitorWork(11,1,SignalMode.SINGLE_EXCHANGE,'OUTSIDEUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('95'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'NATIVE_X'),),now)
+   snapshot=await provider.snapshot((work,))
+   self.assertEqual(snapshot,{})
+   self.assertEqual([a.calls for a in probe.adapters],[0,0,0])
   asyncio.run(run())
