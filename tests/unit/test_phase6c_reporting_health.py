@@ -121,6 +121,18 @@ class Phase6CMarketObservationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone((await s.get(ServiceHealthRecord,'ourbit_catalog')).current_incident_id)
             self.assertEqual((await s.get(ServiceHealthRecord,'ourbit_prices')).status,ServiceHealthStatus.HEALTHY)
             self.assertEqual((await s.get(ServiceHealthRecord,'toobit_prices')).status,ServiceHealthStatus.HEALTHY)
+    async def test_selected_price_failure_skips_single_observes_price_and_keeps_unrelated_signal(self):
+        adapters=(FakeAdapter('ourbit',[self.inst('ourbit')],fail_prices=True),FakeAdapter('toobit',[self.inst('toobit')],[self.tick('toobit','111')]),FakeAdapter('lbank',[self.inst('lbank')],[self.tick('lbank','111')]))
+        p=self.probe(adapters); repo=HealthRepository(self.sessions); catalog=SymbolCatalogProvider(p,repo); provider=BatchedMarketSnapshotProvider(p,catalog,repo)
+        single=MonitorWork(1,1,SignalMode.SINGLE_EXCHANGE,'BTCUSDT',Exchange.OURBIT,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('90'),PriceSourceType.OURBIT_ONLY,((Exchange.OURBIT,'BTCUSDT'),),self.now)
+        composite=MonitorWork(2,1,SignalMode.COMPOSITE,'BTCUSDT',None,TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('90'),PriceSourceType.COMPOSITE,((Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'BTCUSDT')),self.now)
+        result=await provider.snapshot((single,composite))
+        self.assertNotIn(1,result); self.assertIn(2,result)
+        self.assertEqual([a.instrument_calls for a in adapters],[0,0,0])
+        self.assertEqual([a.price_calls for a in adapters],[1,1,1])
+        async with self.sessions() as s:
+            price=await s.get(ServiceHealthRecord,'ourbit_prices'); self.assertEqual(price.status,ServiceHealthStatus.DOWN)
+            self.assertIsNone(await s.get(ServiceHealthRecord,'ourbit_catalog'))
 
 class Phase6CAlertLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

@@ -229,14 +229,10 @@ class BatchedMarketSnapshotProvider:
         signals = tuple(signals)
         if not signals:
             return {}
-        single_ready: set[Exchange] = set()
+        required: set[Exchange] = set()
         for signal in signals:
             if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not None:
-                try:
-                    await self.catalog._ensure_exchange(signal.selected_exchange); single_ready.add(signal.selected_exchange)
-                except SymbolCatalogError:
-                    continue
-        required = set(single_ready)
+                required.add(signal.selected_exchange)
         # Persisted Composite Signals already store their exact exchange/native
         # mappings. Monitoring must not depend on live catalog discovery after a
         # restart; catalog outages affect discovery/search only.
@@ -254,7 +250,7 @@ class BatchedMarketSnapshotProvider:
                 item = {"reference_price": reference}
             else:
                 selected = signal.selected_exchange
-                if selected not in single_ready:
+                if selected is None:
                     continue
                 native = next((native for exchange, native in signal.exchange_symbols if exchange is selected), None)
                 tick = next((x for x in raw_by_exchange.get(selected, ()) if x.exchange == selected.value and x.exchange_symbol == native), None) if selected and native else None
