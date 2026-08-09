@@ -6,6 +6,8 @@ from pathlib import Path
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
 from chainura.application.initial_caption import build_initial_caption, build_signal_details_text
+from chainura.application.message_templates import initial_context, details_context, event_context
+from chainura.domain.message_template import DestinationMessageKind
 from chainura.domain.destination import DestinationStatus
 from chainura.domain.publication import PublicationStatus, tehran_local_date
 from chainura.errors import (CaptionGenerationError, DailyCapacityError, TemplateAssetError,
@@ -77,8 +79,8 @@ class TelegramPhotoPublisher:
 
 class SignalDetailsPublicationService:
  """Durable text delivery; the stored initial-photo id is the reply parent."""
- def __init__(self,transactions,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
-  self.transactions=transactions;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
+ def __init__(self,transactions,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
+  self.transactions=transactions;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
  async def recover(self):
   from sqlalchemy import update
   from chainura.persistence.models import SignalDetailsPublicationRecord
@@ -104,7 +106,10 @@ class SignalDetailsPublicationService:
    signal=await tx.signals.get_by_id(signal_id);destination=await tx._session.get(DestinationRecord,destination_id);await tx.commit()
   try:
    if signal is None or destination is None:raise RenderPayloadError("signal details publication data is missing")
-   text=build_signal_details_text(signal,private=destination.access_level.value=="private")
+   private=destination.access_level.value=="private"
+   if self.message_templates:
+    text=(await self.message_templates.resolve(DestinationMessageKind.SIGNAL_DETAILS,destination_id=destination_id,context=details_context(signal,private=private))).text
+   else:text=build_signal_details_text(signal,private=private)
   except asyncio.CancelledError:raise
   except Exception as exc:
    LOGGER.warning("signal details preparation failed delivery_id=%s category=%s",item_id,type(exc).__name__)
@@ -138,9 +143,9 @@ class SignalDetailsPublicationService:
    await tx._session.execute(update(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.id==item_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING).values(**values));await tx.commit()
 
 class InitialPublicationService:
- def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
+ def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
   self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock
-  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
+  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
  async def recover(self):
   from sqlalchemy import update
   from chainura.persistence.models import InitialPublicationNotificationRecord
@@ -207,7 +212,9 @@ class InitialPublicationService:
   output=None
   try:
    async with self.transactions() as tx:signal=await tx.signals.get_by_id(delivery.signal_id);await tx.commit()
-   caption=build_initial_caption(signal,private=delivery.private)
+   if self.message_templates:
+    caption=(await self.message_templates.resolve(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id=delivery.destination_id,context=initial_context(signal,delivery.selected_exchange,private=delivery.private))).text
+   else:caption=build_initial_caption(signal,private=delivery.private)
    output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now)
    async with self.transactions() as tx:
     ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,delivery.destination_id,self.clock())
@@ -291,8 +298,8 @@ class InitialPublicationWorker:
   if self._task is not None:await self._task
 
 class UpdatePublicationService:
- def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
-  self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
+ def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
+  self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
  async def recover(self):
   async with self.transactions() as tx:await tx.update_publications.recover(self.clock());await tx.commit()
  async def sweep(self):
@@ -309,11 +316,21 @@ class UpdatePublicationService:
   try:
    async with self.transactions() as tx:
     signal=await tx.signals.get_by_id(delivery.signal_id)
-    event=await tx._session.get(__import__('chainura.persistence.models',fromlist=['SignalEventRecord']).SignalEventRecord,delivery.event_id)
+    models=__import__('chainura.persistence.models',fromlist=['SignalEventRecord','DestinationRecord'])
+    event=await tx._session.get(models.SignalEventRecord,delivery.event_id)
+    destination=await tx._session.get(models.DestinationRecord,delivery.destination_id)
     await tx.commit()
    if event is None:raise RenderPayloadError("update event snapshot is inconsistent")
-   from chainura.application.update_caption import UpdateCaptionInput, build_update_caption, UpdateCaptionError
-   caption=build_update_caption(UpdateCaptionInput(event.kind,signal.canonical_symbol,event.observed_reference_price,event.leveraged_roi,event.tp_index))
+   if destination is None:raise RenderPayloadError("update destination is missing")
+   if self.message_templates:
+    kind={__import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.TP_HIT:DestinationMessageKind.TP_HIT,
+          __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.SL_HIT:DestinationMessageKind.SL_HIT,
+          __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.BREAKEVEN:DestinationMessageKind.BREAKEVEN}[event.kind]
+    caption=(await self.message_templates.resolve(kind,destination_id=delivery.destination_id,
+      context=event_context(signal,event,delivery.selected_exchange,private=destination.access_level.value=="private"))).text
+   else:
+    from chainura.application.update_caption import UpdateCaptionInput, build_update_caption
+    caption=build_update_caption(UpdateCaptionInput(event.kind,signal.canonical_symbol,event.observed_reference_price,event.leveraged_roi,event.tp_index))
    content_type=update_content_type(event.kind)
    if content_type is UpdateContentType.PHOTO:
     output=await self.image_service.render_update_signal(signal,event,delivery.selected_exchange,delivery.destination_id)

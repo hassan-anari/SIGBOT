@@ -9,6 +9,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=texts.MENU_ADMIN_SIGNALISTS), KeyboardButton(text=texts.MENU_ADMIN_DESTINATIONS)],
                   [KeyboardButton(text=texts.MENU_ADMIN_TEMPLATES), KeyboardButton(text=texts.MENU_ADMIN_REPORTS)],
+                  [KeyboardButton(text=texts.MENU_ADMIN_MESSAGE_TEMPLATES)],
                   [KeyboardButton(text=texts.MENU_MAIN)],
                   [KeyboardButton(text=texts.MENU_ADMIN_STATUS), KeyboardButton(text=texts.MENU_HELP)]],
         resize_keyboard=True,

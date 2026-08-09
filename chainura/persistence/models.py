@@ -15,6 +15,7 @@ from chainura.domain.signal import (PriceSourceType, SignalLifecycleStatus, Sign
 from chainura.domain.publication import PublicationRequestStatus, PublicationStatus
 from chainura.domain.monitoring import (MonitorStage, SignalEventKind, ResultKind,
     CandidateStatus, PromptStatus, NotificationKind, NotificationStatus)
+from chainura.domain.message_template import DestinationMessageKind
 
 SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
@@ -132,6 +133,27 @@ class DestinationSignalistRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 DestinationSignalistRecord.__table__.primary_key.name = "pk_destination_signalists"
+
+DESTINATION_MESSAGE_KIND_ENUM = _enum(DestinationMessageKind, "destination_message_kind")
+
+class DestinationMessageTemplateRecord(Base):
+    __tablename__ = "destination_message_templates"
+    __table_args__ = (
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE",
+                             name="fk_destination_message_templates_destination_id_destinations"),
+        CheckConstraint("trim(template_text) <> ''", name="ck_destination_message_templates_text_nonempty"),
+        Index("uq_destination_message_templates_global_kind", "message_kind", unique=True,
+              sqlite_where=__import__('sqlalchemy').text("destination_id IS NULL")),
+        Index("uq_destination_message_templates_destination_kind", "destination_id", "message_kind", unique=True,
+              sqlite_where=__import__('sqlalchemy').text("destination_id IS NOT NULL")),
+        Index("ix_destination_message_templates_destination", "destination_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_kind: Mapped[DestinationMessageKind] = mapped_column(DESTINATION_MESSAGE_KIND_ENUM, nullable=False)
+    destination_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    template_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 SIGNAL_MODE_ENUM = _enum(SignalMode, "signal_mode")
 TRADE_DIRECTION_ENUM = _enum(TradeDirection, "trade_direction")
