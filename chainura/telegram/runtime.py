@@ -38,6 +38,7 @@ from chainura.telegram.routers import router
 from chainura.telegram.admin_routes import router as admin_router
 from chainura.telegram.signal_routes import router as signal_router
 from chainura.telegram.template_routes import router as template_router
+from chainura.telegram.message_template_routes import router as message_template_router
 from chainura.telegram.event_routes import router as event_router
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
@@ -58,6 +59,7 @@ from chainura.application.publication import (InitialPublicationService, Initial
                                                SignalDetailsPublicationService, SignalDetailsPublicationWorker,
                                                TelegramPhotoPublisher)
 from chainura.application.template_admin import TemplateAdministrationService
+from chainura.application.message_templates import DestinationMessageTemplateService
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -93,6 +95,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.update.outer_middleware(ActorResolutionMiddleware(resolver))
     dispatcher.include_router(admin_router)
     dispatcher.include_router(template_router)
+    dispatcher.include_router(message_template_router)
     dispatcher.include_router(signal_router)
     dispatcher.include_router(event_router)
     dispatcher.include_router(router)
@@ -286,6 +289,7 @@ class Runtime:
                 if self.settings.monitoring_enabled:
                     self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)
             template_admin_service=None
+            message_template_service=DestinationMessageTemplateService(transactions)
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
                 self.initial_image_service=InitialImageService(InitialPayloadFactory(
@@ -294,17 +298,17 @@ class Runtime:
                 photo_publisher=TelegramPhotoPublisher(self.bot)
                 publication_service=InitialPublicationService(transactions,self.initial_image_service,
                     photo_publisher,max_attempts=self.settings.send_max_attempts,
-                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
                 self.publication_worker=InitialPublicationWorker(publication_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 update_publication_service=UpdatePublicationService(transactions,self.initial_image_service,
                     photo_publisher,max_attempts=self.settings.update_send_max_attempts,
-                    retry_base_seconds=self.settings.update_send_retry_base_seconds)
+                    retry_base_seconds=self.settings.update_send_retry_base_seconds,message_templates=message_template_service)
                 self.update_publication_worker=UpdatePublicationWorker(update_publication_service,
                     self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
                 details_service=SignalDetailsPublicationService(transactions,photo_publisher,
                     max_attempts=self.settings.send_max_attempts,
-                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
                 self.details_publication_worker=SignalDetailsPublicationWorker(details_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 if monitoring_service is not None:
@@ -365,6 +369,7 @@ class Runtime:
                 monitoring_service=monitoring_service,
                 admin_signalist_service=admin_signalist_service,
                 template_admin_service=template_admin_service,
+                message_template_service=message_template_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([

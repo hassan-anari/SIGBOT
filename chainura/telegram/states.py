@@ -39,6 +39,11 @@ class AdminTemplateManagement(StatesGroup):
     upload_override = State()
     remove_confirm = State()
 
+class AdminMessageTemplateManagement(StatesGroup):
+    browsing = State()
+    editing = State()
+    confirming = State()
+
 
 class SignalCreate(StatesGroup):
     shared_search = State()
