@@ -57,7 +57,7 @@ class SignalRenderPayload:
     entry_price: Decimal
     leverage: int
     take_profits: tuple[Decimal, ...]
-    stop_loss: Decimal
+    stop_loss: Decimal | None
     reference_price: Decimal
     display_price: Decimal
     initial_pnl_percent: Decimal
@@ -76,16 +76,20 @@ class SignalRenderPayload:
             value = getattr(self, name)
             if not isinstance(value, str) or not value or not value.isascii():
                 raise InvalidSignalInputError(f"{name} must be non-empty ASCII")
-        for name in ("entry_price", "stop_loss", "reference_price", "display_price"):
+        for name in ("entry_price", "reference_price", "display_price"):
             _positive_decimal(getattr(self, name), name)
         if isinstance(self.leverage, bool) or not isinstance(self.leverage, int) or self.leverage < 1:
             raise InvalidSignalInputError("leverage must be a positive integer")
-        if (not isinstance(self.take_profits, tuple) or not self.take_profits
+        if (not isinstance(self.take_profits, tuple)
                 or any(not isinstance(x, Decimal) or not x.is_finite() or x <= 0 for x in self.take_profits)):
             raise InvalidSignalInputError("take profits must be positive finite Decimals")
         if len(set(self.take_profits)) != len(self.take_profits):
             raise InvalidSignalInputError("take profits must be unique")
-        if self.direction is TradeDirection.LONG:
+        if self.event_kind is SignalRenderEventKind.INITIAL and not self.take_profits and self.stop_loss is None:
+            ordered = valid_sl = True
+        elif self.stop_loss is None or not self.take_profits:
+            ordered = valid_sl = False
+        elif self.direction is TradeDirection.LONG:
             ordered = all(value > self.entry_price for value in self.take_profits) and all(
                 first < second for first,second in zip(self.take_profits,self.take_profits[1:]))
             valid_sl = self.stop_loss < self.entry_price

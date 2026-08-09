@@ -10,7 +10,7 @@ from chainura.telegram.redis_runtime import PollerLease
 
 def settings():
     return TelegramRuntimeSettings(ApplicationSettings(
-        'sqlite+aiosqlite:///./data/test.db',1),'123456:token','redis://localhost/0')
+        'sqlite+aiosqlite:///./data/test.db',(1,),1),'123456:token','redis://localhost/0')
 
 class Session:
     def __init__(self,order,error=None):

@@ -55,6 +55,7 @@ from chainura.rendering.production import ProductionRendererRegistration
 from chainura.rendering.templates import TemplateAssetStore, TemplateService
 from chainura.application.initial_rendering import InitialPayloadFactory, InitialImageService
 from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker, UpdatePublicationService, UpdatePublicationWorker,
+                                               SignalDetailsPublicationService, SignalDetailsPublicationWorker,
                                                TelegramPhotoPublisher)
 from chainura.application.template_admin import TemplateAdministrationService
 
@@ -128,6 +129,8 @@ class Runtime:
         self.publication_task = None
         self.update_publication_worker = None
         self.update_publication_task = None
+        self.details_publication_worker = None
+        self.details_publication_task = None
         self.monitoring_worker=None;self.monitoring_task=None
         self.notification_worker=None;self.notification_task=None
         self.admin_alert_worker=None;self.admin_alert_task=None
@@ -299,6 +302,11 @@ class Runtime:
                     retry_base_seconds=self.settings.update_send_retry_base_seconds)
                 self.update_publication_worker=UpdatePublicationWorker(update_publication_service,
                     self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
+                details_service=SignalDetailsPublicationService(transactions,photo_publisher,
+                    max_attempts=self.settings.send_max_attempts,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.details_publication_worker=SignalDetailsPublicationWorker(details_service,
+                    self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 if monitoring_service is not None:
                     monitoring_service.update_publication_wake=self.update_publication_worker.wake
                 await self._startup_await(publication_service.recover())
@@ -319,6 +327,10 @@ class Runtime:
                 await self._startup_await(self.update_publication_worker.start())
                 self.update_publication_task=self.update_publication_worker.task
                 self.update_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"update publication worker"))
+            if self.details_publication_worker is not None:
+                await self._startup_await(self.details_publication_worker.start())
+                self.details_publication_task=self.details_publication_worker.task
+                self.details_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"signal details publication worker"))
             if self.monitoring_worker is not None:
                 await self._startup_await(self.monitoring_worker.start())
                 self.monitoring_task=self.monitoring_worker.task
@@ -334,11 +346,13 @@ class Runtime:
             def wake_background():
                 if self.publication_worker:self.publication_worker.wake()
                 if self.update_publication_worker:self.update_publication_worker.wake()
+                if self.details_publication_worker:self.details_publication_worker.wake()
                 if self.monitoring_worker:self.monitoring_worker.wake()
                 if self.admin_alert_worker:self.admin_alert_worker.wake()
             signal_service = SignalService(
                 transactions, MarketReferencePriceProvider(market_probe, symbol_catalog, health_repository),
-                publication_wake=wake_background)
+                publication_wake=wake_background,monitoring_wake=wake_background,
+                details_publication_wake=wake_background)
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_ids,
                 service,
@@ -483,6 +497,8 @@ class Runtime:
                 await self._best_effort(self.admin_alert_worker.stop(), "admin alert worker")
             if self.update_publication_worker:
                 await self._best_effort(self.update_publication_worker.close(), "update publication worker")
+            if self.details_publication_worker:
+                await self._best_effort(self.details_publication_worker.close(), "signal details publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:

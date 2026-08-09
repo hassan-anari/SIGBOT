@@ -28,7 +28,7 @@ class DestinationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         signalist=await SignalistService(self.factory).create(99,"S")
         d=(await self.service.create("A",-100,DestinationType.CHANNEL,DestinationAccessLevel.PRIVATE,3,(Exchange.OURBIT,))).destination
         assignments=DestinationAssignmentService(self.factory); await assignments.assign(d.id,signalist.id)
-        await self.service.activate(d.id); await self.service.deactivate(d.id); await self.service.activate(d.id)
+        await self.service.deactivate(d.id); await self.service.activate(d.id)
         self.assertEqual((await self.service.detail(d.id)).assigned_count,1)
         self.assertEqual((await self.service.detail(d.id)).priority.exchanges,(Exchange.OURBIT,))
         with self.assertRaises(DuplicateDestinationAssignmentError): await assignments.assign(d.id,signalist.id)
@@ -59,7 +59,7 @@ class DestinationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         eligible=await assignments.list_eligible(destination.id,PageRequest(1)); self.assertEqual({x.id for x in eligible.items},{active.id,inactive.id})
         await assignments.assign(destination.id,active.id); await assignments.assign(destination.id,inactive.id)
         with self.assertRaises(SignalistNotEligibleForAssignmentError): await assignments.assign(destination.id,archived.id)
-        reverse=await AdminSignalistService(999,signalists,self.factory).assigned_destinations(active.id,PageRequest(1))
+        reverse=await AdminSignalistService((999,),signalists,self.factory).assigned_destinations(active.id,PageRequest(1))
         self.assertEqual([x.id for x in reverse.items],[destination.id])
         await assignments.unassign(destination.id,active.id)
         with self.assertRaises(DestinationAssignmentNotFoundError): await assignments.unassign(destination.id,active.id)

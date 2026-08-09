@@ -16,10 +16,10 @@ class EnvironmentLoadingTests(unittest.TestCase):
     def test_explicit_path_loads_and_real_environment_wins(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dotenv = Path(directory) / ".env"
-            dotenv.write_text("DATABASE_URL=sqlite+aiosqlite:///./from-dotenv.db\nMAIN_ADMIN_TELEGRAM_ID=42\nSECRET_MARKER=hidden-value\n")
-            with patch.dict(os.environ, {"MAIN_ADMIN_TELEGRAM_ID": "99"}, clear=True):
+            dotenv.write_text("DATABASE_URL=sqlite+aiosqlite:///./from-dotenv.db\nMAIN_ADMIN_TELEGRAM_IDS=42\nSECRET_MARKER=hidden-value\n")
+            with patch.dict(os.environ, {"MAIN_ADMIN_TELEGRAM_IDS": "99"}, clear=True):
                 self.assertTrue(load_project_environment(dotenv))
-                self.assertEqual(os.environ["MAIN_ADMIN_TELEGRAM_ID"], "99")
+                self.assertEqual(os.environ["MAIN_ADMIN_TELEGRAM_IDS"], "99")
                 self.assertEqual(os.environ["SECRET_MARKER"], "hidden-value")
 
     def test_missing_file_is_controlled(self) -> None:
@@ -42,7 +42,7 @@ class EnvironmentLoadingTests(unittest.TestCase):
     def test_market_parser_works_after_explicit_dotenv_loading(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dotenv = Path(directory) / ".env"
-            dotenv.write_text("DATABASE_URL=sqlite+aiosqlite:///./temporary.db\nMAIN_ADMIN_TELEGRAM_ID=42\n")
+            dotenv.write_text("DATABASE_URL=sqlite+aiosqlite:///./temporary.db\nMAIN_ADMIN_TELEGRAM_IDS=42\n")
             with patch.dict(os.environ, {}, clear=True):
                 load_project_environment(dotenv)
                 main = importlib.import_module("main")
@@ -50,7 +50,7 @@ class EnvironmentLoadingTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    VALID = {"DATABASE_URL": "sqlite+aiosqlite:///./data/app.db", "MAIN_ADMIN_TELEGRAM_ID": "42"}
+    VALID = {"DATABASE_URL": "sqlite+aiosqlite:///./data/app.db", "MAIN_ADMIN_TELEGRAM_IDS": "42"}
 
     def test_valid_explicit_mapping_identity_and_secret_safe_repr(self) -> None:
         settings = ApplicationSettings.from_mapping(self.VALID)
@@ -59,7 +59,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_explicit_mapping_is_independent_from_environment(self) -> None:
         with patch.dict(os.environ, {"DATABASE_URL": "bad"}, clear=True):
-            self.assertEqual(ApplicationSettings.from_mapping(self.VALID).main_admin_telegram_id, 42)
+            self.assertEqual(ApplicationSettings.from_mapping(self.VALID).primary_main_admin_telegram_id, 42)
 
     def test_invalid_urls_are_safe(self) -> None:
         invalid = (
@@ -78,14 +78,14 @@ class ConfigurationTests(unittest.TestCase):
             self.assertFalse(settings.is_main_admin(candidate))  # type: ignore[arg-type]
         for value in ("bad", "0", "-1", str(2**63)):
             with self.assertRaises(InvalidApplicationConfigurationError):
-                ApplicationSettings.from_mapping(dict(self.VALID, MAIN_ADMIN_TELEGRAM_ID=value))
+                ApplicationSettings.from_mapping(dict(self.VALID, MAIN_ADMIN_TELEGRAM_IDS=value))
 
     def test_parent_directory_is_not_created_by_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "nested"
             ApplicationSettings.from_mapping({
                 "DATABASE_URL": f"sqlite+aiosqlite:///{parent / 'db.sqlite'}",
-                "MAIN_ADMIN_TELEGRAM_ID": "1",
+                "MAIN_ADMIN_TELEGRAM_IDS": "1",
             })
             self.assertFalse(parent.exists())
 
@@ -95,7 +95,7 @@ class TelegramRuntimeConfigurationTests(unittest.TestCase):
         from chainura.config import TelegramRuntimeSettings
         settings = TelegramRuntimeSettings.from_mapping({
             "DATABASE_URL": "sqlite+aiosqlite:///./data/app.db",
-            "MAIN_ADMIN_TELEGRAM_ID": "10", "TELEGRAM_BOT_TOKEN": "token-value",
+            "MAIN_ADMIN_TELEGRAM_IDS": "10", "TELEGRAM_BOT_TOKEN": "token-value",
             "REDIS_URL": "rediss://user:redis-secret@localhost:6380/1",
             "RENDER_TEMPLATE_ASSET_ROOT":"templates","RENDER_OUTPUT_ROOT":"output",
             "TOOBIT_COIN_LOGO_ROOT":"logos","RENDER_FONT_REGULAR_PATH":"regular.ttf",
@@ -111,6 +111,6 @@ class TelegramRuntimeConfigurationTests(unittest.TestCase):
         with self.assertRaises(RenderingConfigurationError):
             TelegramRuntimeSettings.from_mapping({
                 "DATABASE_URL":"sqlite+aiosqlite:///./data/app.db",
-                "MAIN_ADMIN_TELEGRAM_ID":"10","TELEGRAM_BOT_TOKEN":"token",
+                "MAIN_ADMIN_TELEGRAM_IDS":"10","TELEGRAM_BOT_TOKEN":"token",
                 "REDIS_URL":"redis://localhost:6379/1",
             })

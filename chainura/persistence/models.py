@@ -157,7 +157,7 @@ class SignalRecord(Base):
     direction: Mapped[TradeDirection] = mapped_column(TRADE_DIRECTION_ENUM, nullable=False)
     entry_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
     leverage: Mapped[int] = mapped_column(Integer, nullable=False)
-    stop_loss: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    stop_loss: Mapped[object | None] = mapped_column(ExactDecimal(), nullable=True)
     reference_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
     price_source_type: Mapped[PriceSourceType] = mapped_column(PRICE_SOURCE_ENUM, nullable=False)
     status: Mapped[SignalLifecycleStatus] = mapped_column(SIGNAL_STATUS_ENUM, nullable=False)
@@ -237,6 +237,20 @@ class InitialPublicationRequestRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 InitialPublicationRequestRecord.__table__.primary_key.name = "pk_initial_publication_requests"
 
+class InitialPublicationNotificationRecord(Base):
+    __tablename__="initial_publication_notifications"
+    __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE"),
+        UniqueConstraint("signal_id",name="uq_initial_publication_notification_signal"),
+        Index("ix_initial_publication_notification_status","status","created_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    signal_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    status:Mapped[str]=mapped_column(Text,nullable=False,default="pending")
+    outcome:Mapped[str]=mapped_column(Text,nullable=False)
+    telegram_message_id:Mapped[int|None]=mapped_column(BigInteger)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+    updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+    sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+
 class DestinationPublicationRecord(Base):
     __tablename__ = "destination_publications"
     __table_args__ = (
@@ -268,6 +282,32 @@ class DestinationPublicationRecord(Base):
     retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 DestinationPublicationRecord.__table__.primary_key.name = "pk_destination_publications"
+
+class SignalDetailsPublicationRecord(Base):
+    """Durable destination-specific Stage-Two text outbox."""
+    __tablename__ = "signal_details_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE"),
+        UniqueConstraint("signal_id", "destination_id", name="uq_signal_details_destination"),
+        CheckConstraint("attempt_count >= 0", name="ck_signal_details_attempts"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_signal_details_message"),
+        CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0", name="ck_signal_details_reply"),
+        Index("ix_signal_details_status_retry", "status", "retry_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(PUBLICATION_STATUS_ENUM, nullable=False, default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 class InitialPublicationDailySlotRecord(Base):
     __tablename__ = "initial_publication_daily_slots"

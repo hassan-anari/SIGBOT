@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from chainura.application.initial_caption import build_initial_caption, TELEGRAM_PHOTO_CAPTION_MAX_LENGTH
+from chainura.application.initial_caption import build_initial_caption, build_signal_details_text, TELEGRAM_PHOTO_CAPTION_MAX_LENGTH
 from chainura.domain.destination import Exchange
 from chainura.domain.publication import select_initial_exchange, tehran_local_date
 from chainura.domain.signal import SignalMode, TradeDirection
@@ -10,25 +10,16 @@ from chainura.errors import CaptionGenerationError
 
 class CaptionTests(unittest.TestCase):
  def signal(self,direction=TradeDirection.LONG,tps=(Decimal("1.2300"),),symbol="BTCUSDT"):
-  return SimpleNamespace(direction=direction,take_profits=tps,canonical_symbol=symbol,
-   entry_price=Decimal("1.00000001"),leverage=25,stop_loss=Decimal("0.99999999"))
- def test_long_private_exact_and_bidi(self):
+  return SimpleNamespace(direction=direction,take_profits=tps,canonical_symbol=symbol,entry_price=Decimal("1.00000001"),leverage=25,stop_loss=Decimal("0.99999999"))
+ def test_initial_photo_caption_has_no_trade_levels_or_private_tag(self):
   caption=build_initial_caption(self.signal(),private=True)
-  self.assertIn("لانگ",caption);self.assertIn("#پیامک",caption)
-  self.assertIn("\u2066<code>1.00000001</code>\u2069",caption)
-  self.assertIn("BTCUSDT",caption);self.assertNotIn("reference",caption.lower())
- def test_short_public_tp_order(self):
-  signal=self.signal(TradeDirection.SHORT,(Decimal("0.9"),Decimal("0.80")))
-  signal.stop_loss=Decimal("1.1")
-  caption=build_initial_caption(signal,private=False)
-  self.assertIn("شورت",caption);self.assertNotIn("#پیامک",caption)
-  self.assertLess(caption.index("0.9"),caption.index("0.80"))
- def test_html_escape(self):
+  self.assertIn("شات اولیه",caption);self.assertNotIn("#پیامک",caption);self.assertNotIn("حد ضرر",caption);self.assertNotIn("اهداف",caption)
+ def test_details_text_preserves_private_semantics_and_order(self):
+  text=build_signal_details_text(self.signal(tps=(Decimal("1.2"),Decimal("1.3"))),private=True)
+  self.assertIn("لانگ",text);self.assertIn("#پیامک",text);self.assertLess(text.index("1.2"),text.index("1.3"))
+ def test_initial_caption_html_escape(self):
   caption=build_initial_caption(self.signal(symbol="A&B"),private=False)
   self.assertIn("A&amp;B",caption);self.assertNotIn("A&B",caption)
- def test_caption_limit(self):
-  with self.assertRaises(CaptionGenerationError):
-   build_initial_caption(self.signal(tps=tuple(Decimal(f"1.{i:01000d}") for i in range(2))),private=False)
 
 class PlanningTests(unittest.TestCase):
  def test_composite_priority_and_degraded_sources(self):
@@ -96,7 +87,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
   import asyncio
   from chainura.config import ApplicationSettings,TelegramRuntimeSettings
   from chainura.telegram.runtime import Runtime,RuntimeState
-  runtime=Runtime(TelegramRuntimeSettings(ApplicationSettings("sqlite+aiosqlite:///x.db",1),"token","redis://localhost/1"))
+  runtime=Runtime(TelegramRuntimeSettings(ApplicationSettings("sqlite+aiosqlite:///x.db",(1,),1),"token","redis://localhost/1"))
   runtime.state=RuntimeState.RUNNING
   task=asyncio.create_task(asyncio.sleep(0));await task
   runtime._publication_done(task)

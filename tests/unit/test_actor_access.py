@@ -21,7 +21,7 @@ class Service:
         return self.value
 
 class ActorResolverTests(unittest.IsolatedAsyncioTestCase):
-    def settings(self): return ApplicationSettings("sqlite+aiosqlite:///./data/test.db", 1)
+    def settings(self): return ApplicationSettings("sqlite+aiosqlite:///./data/test.db", (1,), 1)
     async def test_admin_precedence_skips_service(self):
         service=Service(); actor=await ActorResolver(self.settings(), service).resolve(1)
         self.assertIs(actor.kind, ActorKind.MAIN_ADMIN); self.assertEqual(service.calls, 0)
