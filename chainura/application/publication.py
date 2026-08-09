@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio, logging
 from datetime import datetime, timezone, timedelta
+from enum import Enum
 from pathlib import Path
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
@@ -16,6 +17,18 @@ class DeliveryAmbiguous(TelegramDeliveryError, RenderPayloadError, RenderingErro
 class DeliveryRateLimited(TelegramDeliveryError, RenderPayloadError, RenderingError):
  def __init__(self,retry_after):self.retry_after=retry_after
 
+class UpdateContentType(str, Enum):
+ PHOTO="photo"
+ TEXT="text"
+
+def update_content_type(event_kind):
+ from chainura.domain.monitoring import SignalEventKind
+ mapping={SignalEventKind.TP_HIT:UpdateContentType.PHOTO,
+  SignalEventKind.SL_HIT:UpdateContentType.TEXT,
+  SignalEventKind.BREAKEVEN:UpdateContentType.PHOTO}
+ try:return mapping[event_kind]
+ except KeyError as exc:raise ValueError("unsupported update event kind") from exc
+
 class TelegramPhotoPublisher:
  def __init__(self,bot):self.bot=bot
  async def send_initial(self,chat_id,path,caption):
@@ -29,6 +42,15 @@ class TelegramPhotoPublisher:
   return message_id
  async def send_update(self,chat_id,path,caption,reply_to_message_id):
   try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption,reply_to_message_id=reply_to_message_id)
+  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
+  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
+  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  message_id=getattr(message,'message_id',None)
+  if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous('invalid_response')
+  return message_id
+ async def send_text_update(self,chat_id,text,reply_to_message_id):
+  try:message=await self.bot.send_message(chat_id=chat_id,text=text,reply_to_message_id=reply_to_message_id)
   except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
   except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
   except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
@@ -288,16 +310,21 @@ class UpdatePublicationService:
    async with self.transactions() as tx:
     signal=await tx.signals.get_by_id(delivery.signal_id)
     event=await tx._session.get(__import__('chainura.persistence.models',fromlist=['SignalEventRecord']).SignalEventRecord,delivery.event_id)
-    price=await tx._session.get(__import__('chainura.persistence.models',fromlist=['SignalEventSourcePriceRecord']).SignalEventSourcePriceRecord,(delivery.event_id,delivery.selected_exchange))
     await tx.commit()
-   if event is None or price is None:raise RenderPayloadError("update event snapshot is inconsistent")
+   if event is None:raise RenderPayloadError("update event snapshot is inconsistent")
    from chainura.application.update_caption import UpdateCaptionInput, build_update_caption, UpdateCaptionError
    caption=build_update_caption(UpdateCaptionInput(event.kind,signal.canonical_symbol,event.observed_reference_price,event.leveraged_roi,event.tp_index))
-   output=await self.image_service.render_update_signal(signal,event,price.price,delivery.selected_exchange,delivery.destination_id)
+   content_type=update_content_type(event.kind)
+   if content_type is UpdateContentType.PHOTO:
+    output=await self.image_service.render_update_signal(signal,event,delivery.selected_exchange,delivery.destination_id)
    async with self.transactions() as tx:
     state,parent=await tx.update_publications.prepare_send(delivery.id,self.clock());await tx.update_publications.complete_request(delivery.request_id,self.clock());await tx.commit()
    if state!='sending':return
-   try:message_id=await self.publisher.send_update(delivery.telegram_chat_id,output.file_path,caption,parent)
+   try:
+    if content_type is UpdateContentType.TEXT:
+     message_id=await self.publisher.send_text_update(delivery.telegram_chat_id,caption,parent)
+    else:
+     message_id=await self.publisher.send_update(delivery.telegram_chat_id,output.file_path,caption,parent)
    except DeliveryRateLimited as exc:
     attempts=delivery.attempt_count+1
     if attempts<self.max_attempts:
