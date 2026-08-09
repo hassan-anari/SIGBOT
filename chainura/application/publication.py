@@ -418,6 +418,17 @@ class CancellationPublicationService:
   from chainura.persistence.models import SignalCancellationPublicationRecord
   async with self.transactions() as tx:
    await tx._session.execute(update(SignalCancellationPublicationRecord).where(SignalCancellationPublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category="restart_during_send",updated_at=self.clock()));await tx.commit()
+ async def recover_unexpected_failure(self,item_id):
+  """Match worker isolation: an uncaught in-flight send is ambiguous, not retryable."""
+  from sqlalchemy import update
+  from chainura.persistence.models import SignalCancellationPublicationRecord
+  async with self.transactions() as tx:
+   await tx._session.execute(update(SignalCancellationPublicationRecord).where(
+    SignalCancellationPublicationRecord.id==item_id,
+    SignalCancellationPublicationRecord.status==PublicationStatus.SENDING).values(
+    status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category="unexpected_processing_failure",
+    updated_at=self.clock()))
+   await tx.commit()
  async def pending_ids(self):
   from sqlalchemy import or_
   from chainura.persistence.models import SignalCancellationPublicationRecord,SignalRecord,DestinationPublicationRecord

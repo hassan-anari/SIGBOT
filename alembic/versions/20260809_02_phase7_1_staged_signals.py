@@ -13,12 +13,16 @@ depends_on=None
 
 def upgrade():
     # SQLite batch mode preserves every existing Phase-6 row while replacing the
-    # generated enum CHECK and making only stop_loss nullable.
+    # generated enum CHECK and making only stop_loss nullable. Foreign keys must
+    # be disabled while SQLite drops the old parent table; otherwise ON DELETE
+    # CASCADE silently removes every Phase-6 child row during the rebuild.
+    op.execute("PRAGMA foreign_keys=OFF")
     with op.batch_alter_table("signals", recreate="always") as batch:
         batch.alter_column("stop_loss",existing_type=sa.Text(),nullable=True)
         batch.drop_constraint("signal_lifecycle_status",type_="check")
         batch.create_check_constraint("signal_lifecycle_status",
             "status IN ('pending_details', 'active')")
+    op.execute("PRAGMA foreign_keys=ON")
     op.create_table("signal_details_publications",
         sa.Column("id",sa.Integer(),primary_key=True,autoincrement=True),
         sa.Column("signal_id",sa.Integer(),nullable=False),
@@ -54,7 +58,9 @@ def downgrade():
     op.drop_table("initial_publication_notifications")
     op.drop_index("ix_signal_details_status_retry",table_name="signal_details_publications")
     op.drop_table("signal_details_publications")
+    op.execute("PRAGMA foreign_keys=OFF")
     with op.batch_alter_table("signals",recreate="always") as batch:
         batch.drop_constraint("signal_lifecycle_status",type_="check")
         batch.create_check_constraint("signal_lifecycle_status","status IN ('active')")
         batch.alter_column("stop_loss",existing_type=sa.Text(),nullable=False)
+    op.execute("PRAGMA foreign_keys=ON")
