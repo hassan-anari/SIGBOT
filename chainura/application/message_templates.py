@@ -153,6 +153,11 @@ def event_context(signal, event, exchange, *, private):
     if signal.stop_loss is not None: context["stop_loss"] = _safe(format_decimal(signal.stop_loss))
     return context
 
+def cancellation_context(signal, *, private):
+    return {"symbol":_safe(format_symbol(signal.canonical_symbol)),"direction":_direction(signal),
+        "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
+        "private_tag":_private(private)}
+
 
 SAMPLE_CONTEXT = {name: value for name, value in (
     ("symbol", "⁦BTCUSDT⁩"), ("direction", "لانگ"), ("entry", "⁦64137⁩"),

@@ -167,6 +167,7 @@ class SignalRecord(Base):
         UniqueConstraint("creation_token", name="uq_signals_creation_token"),
         CheckConstraint("leverage >= 1", name="ck_signals_leverage_positive"),
         CheckConstraint("trim(canonical_symbol) <> ''", name="ck_signals_symbol_nonempty"),
+        CheckConstraint("(status = 'cancelled' AND cancelled_at IS NOT NULL) OR (status <> 'cancelled' AND cancelled_at IS NULL)",name="ck_signals_cancelled_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     signalist_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -185,6 +186,7 @@ class SignalRecord(Base):
     status: Mapped[SignalLifecycleStatus] = mapped_column(SIGNAL_STATUS_ENUM, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 SignalRecord.__table__.primary_key.name = "pk_signals"
 
 class SignalTakeProfitRecord(Base):
@@ -330,6 +332,25 @@ class SignalDetailsPublicationRecord(Base):
     last_error_category: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+class SignalCancellationPublicationRecord(Base):
+    __tablename__="signal_cancellation_publications"
+    __table_args__=(
+      ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE"),
+      ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE"),
+      UniqueConstraint("signal_id","destination_id",name="uq_signal_cancellation_destination"),
+      CheckConstraint("attempt_count >= 0",name="ck_signal_cancellation_attempts"),
+      CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0",name="ck_signal_cancellation_message"),
+      CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0",name="ck_signal_cancellation_reply"),
+      Index("ix_signal_cancellation_status_retry","status","retry_at"),)
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    signal_id:Mapped[int]=mapped_column(Integer,nullable=False);destination_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    status:Mapped[PublicationStatus]=mapped_column(PUBLICATION_STATUS_ENUM,nullable=False,default=PublicationStatus.PENDING)
+    telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);reply_to_message_id:Mapped[int|None]=mapped_column(BigInteger)
+    attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    first_attempt_at:Mapped[datetime|None]=mapped_column(UTCDateTime());sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    last_error_category:Mapped[str|None]=mapped_column(Text)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
 
 class InitialPublicationDailySlotRecord(Base):
     __tablename__ = "initial_publication_daily_slots"

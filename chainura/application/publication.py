@@ -3,6 +3,7 @@ import asyncio, logging
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
+from sqlalchemy import select
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
 from chainura.application.initial_caption import build_initial_caption, build_signal_details_text
@@ -100,7 +101,9 @@ class SignalDetailsPublicationService:
   from chainura.persistence.models import SignalDetailsPublicationRecord,DestinationRecord
   now=self.clock()
   async with self.transactions() as tx:
-   claimed=(await tx._session.execute(update(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.id==item_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT))).values(status=PublicationStatus.SENDING,attempt_count=SignalDetailsPublicationRecord.attempt_count+1,first_attempt_at=now,updated_at=now,retry_at=None).returning(SignalDetailsPublicationRecord.signal_id,SignalDetailsPublicationRecord.destination_id,SignalDetailsPublicationRecord.reply_to_message_id,SignalDetailsPublicationRecord.attempt_count))).one_or_none()
+   from chainura.persistence.models import SignalRecord
+   from chainura.domain.signal import SignalLifecycleStatus
+   claimed=(await tx._session.execute(update(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.id==item_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT)),SignalDetailsPublicationRecord.signal_id.in_(select(SignalRecord.id).where(SignalRecord.status==SignalLifecycleStatus.ACTIVE))).values(status=PublicationStatus.SENDING,attempt_count=SignalDetailsPublicationRecord.attempt_count+1,first_attempt_at=now,updated_at=now,retry_at=None).returning(SignalDetailsPublicationRecord.signal_id,SignalDetailsPublicationRecord.destination_id,SignalDetailsPublicationRecord.reply_to_message_id,SignalDetailsPublicationRecord.attempt_count))).one_or_none()
    if claimed is None:return
    signal_id,destination_id,parent,attempts=claimed
    signal=await tx.signals.get_by_id(signal_id);destination=await tx._session.get(DestinationRecord,destination_id);await tx.commit()
@@ -406,3 +409,62 @@ class SignalDetailsPublicationWorker(InitialPublicationWorker):
    if self._stop.is_set():break
    try:await asyncio.wait_for(self._wake.wait(),self.sweep_seconds)
    except asyncio.TimeoutError:pass
+
+class CancellationPublicationService:
+ """TEXT-only durable cancellation delivery; never touches the image pipeline."""
+ def __init__(self,transactions,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=2,message_templates=None):self.transactions=transactions;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
+ async def recover(self):
+  from sqlalchemy import update
+  from chainura.persistence.models import SignalCancellationPublicationRecord
+  async with self.transactions() as tx:
+   await tx._session.execute(update(SignalCancellationPublicationRecord).where(SignalCancellationPublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category="restart_during_send",updated_at=self.clock()));await tx.commit()
+ async def pending_ids(self):
+  from sqlalchemy import or_
+  from chainura.persistence.models import SignalCancellationPublicationRecord,SignalRecord,DestinationPublicationRecord
+  from chainura.domain.signal import SignalLifecycleStatus
+  now=self.clock()
+  async with self.transactions() as tx:
+   s=tx._session
+   missing=(await s.execute(select(DestinationPublicationRecord.signal_id,DestinationPublicationRecord.destination_id).join(SignalRecord,SignalRecord.id==DestinationPublicationRecord.signal_id).where(SignalRecord.status==SignalLifecycleStatus.CANCELLED,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0,~DestinationPublicationRecord.destination_id.in_(select(SignalCancellationPublicationRecord.destination_id).where(SignalCancellationPublicationRecord.signal_id==DestinationPublicationRecord.signal_id))))).all()
+   for signal_id,destination_id in missing:s.add(SignalCancellationPublicationRecord(signal_id=signal_id,destination_id=destination_id,status=PublicationStatus.PENDING,created_at=now,updated_at=now))
+   await s.flush();ids=tuple((await s.scalars(select(SignalCancellationPublicationRecord.id).where(or_(SignalCancellationPublicationRecord.status==PublicationStatus.PENDING,(SignalCancellationPublicationRecord.status==PublicationStatus.RETRY_WAIT)&(SignalCancellationPublicationRecord.retry_at<=now))).order_by(SignalCancellationPublicationRecord.id))).all());await tx.commit();return ids
+ async def process(self,item_id):
+  from sqlalchemy import exists,update
+  from chainura.persistence.models import (SignalCancellationPublicationRecord,SignalRecord,DestinationRecord,DestinationSignalistRecord,DestinationPublicationRecord,SignalDetailsPublicationRecord,DestinationUpdatePublicationRecord)
+  from chainura.domain.signal import SignalLifecycleStatus
+  now=self.clock()
+  async with self.transactions() as tx:
+   s=tx._session;row=await s.get(SignalCancellationPublicationRecord,item_id)
+   if not row or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return
+   # Do not overtake a Telegram call whose result is still genuinely unknown.
+   details_sending=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING)))
+   update_sending=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SENDING)))
+   inflight=details_sending or update_sending
+   if inflight:return
+   signal=await tx.signals.get_by_id(row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
+   assigned=signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id)));
+   initial=await s.scalar(select(DestinationPublicationRecord.telegram_message_id).where(DestinationPublicationRecord.signal_id==row.signal_id,DestinationPublicationRecord.destination_id==row.destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0))
+   if not signal or signal.status is not SignalLifecycleStatus.CANCELLED or not dest or dest.status is not DestinationStatus.ACTIVE or not assigned or not initial:
+    row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;await tx.commit();return
+   parent=await tx.update_publications.last_published_message_id(row.signal_id,row.destination_id)
+   row.status=PublicationStatus.SENDING;row.reply_to_message_id=parent;row.attempt_count+=1;row.first_attempt_at=row.first_attempt_at or now;row.retry_at=None;row.updated_at=now;attempt=row.attempt_count;chat=dest.telegram_chat_id;did=row.destination_id;await tx.commit()
+  try:
+   text=(await self.message_templates.resolve(DestinationMessageKind.SIGNAL_CANCELLED,destination_id=did,context=__import__('chainura.application.message_templates',fromlist=['cancellation_context']).cancellation_context(signal,private=dest.access_level.value=="private"))).text
+   message_id=await self.publisher.send_text_update(chat,text,parent)
+  except DeliveryRateLimited as exc:
+   target=PublicationStatus.RETRY_WAIT if attempt<self.max_attempts else PublicationStatus.FAILED;retry=self.clock()+timedelta(seconds=max(exc.retry_after,self.retry_base_seconds*(2**(attempt-1)))) if target is PublicationStatus.RETRY_WAIT else None
+   return await self._finish(item_id,target,"rate_limited",retry)
+  except DeliveryRejected as exc:return await self._finish(item_id,PublicationStatus.FAILED,str(exc))
+  except DeliveryAmbiguous as exc:return await self._finish(item_id,PublicationStatus.DELIVERY_UNKNOWN,str(exc))
+  except Exception as exc:return await self._finish(item_id,PublicationStatus.FAILED,type(exc).__name__)
+  await self._finish(item_id,PublicationStatus.SENT,message_id=message_id)
+ async def _finish(self,item_id,target,error=None,retry=None,message_id=None):
+  from chainura.persistence.models import SignalCancellationPublicationRecord
+  async with self.transactions() as tx:
+   row=await tx._session.get(SignalCancellationPublicationRecord,item_id)
+   if row and row.status is PublicationStatus.SENDING:
+    row.status=target;row.last_error_category=error;row.retry_at=retry;row.updated_at=self.clock()
+    if target is PublicationStatus.SENT:row.telegram_message_id=message_id;row.sent_at=self.clock()
+   await tx.commit()
+
+class CancellationPublicationWorker(SignalDetailsPublicationWorker):pass

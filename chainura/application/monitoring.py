@@ -84,6 +84,8 @@ class MonitoringService:
     async def evaluate(self,work:MonitorWork,market:MarketDecision)->bool:
         now=market.observed_at
         async with self.sessions() as s, s.begin():
+            signal=await s.get(SignalRecord,work.signal_id)
+            if signal is None or signal.status is not SignalLifecycleStatus.ACTIVE:return False
             state=await s.get(SignalMonitorStateRecord,work.signal_id)
             if state is None or state.stage not in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1):return False
             version=state.version
@@ -153,7 +155,8 @@ class MonitoringService:
         now=self.clock()
         async with self.sessions() as s,s.begin():
             row=await s.get(SignalUpdateCandidateRecord,candidate_id);actor=await s.get(SignalistRecord,signalist_id)
-            if row is None or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
+            signal=await s.get(SignalRecord,row.signal_id) if row else None
+            if row is None or signal is None or signal.status is not SignalLifecycleStatus.ACTIVE or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted
             if row.status is not CandidateStatus.AWAITING_DECISION:raise ValueError("candidate is not actionable")
@@ -168,7 +171,7 @@ class MonitoringService:
         now=self.clock()
         async with self.sessions() as s,s.begin():
             prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id)
-            if not prompt or not signal or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
+            if not prompt or not signal or signal.status is not SignalLifecycleStatus.ACTIVE or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
             if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
             if prompt.status is PromptStatus.DECLINED:return
             if prompt.status is not PromptStatus.AWAITING_RESPONSE:raise ValueError("prompt is not actionable")
@@ -177,7 +180,7 @@ class MonitoringService:
     async def _prompt_work(self,prompt_id:int,signalist_id:int,cycle:int|None=None)->MonitorWork:
         async with self.sessions() as s:
             prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;state=await s.get(SignalMonitorStateRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id)
-            if not prompt or not signal or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE or prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")
+            if not prompt or not signal or signal.status is not SignalLifecycleStatus.ACTIVE or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE or prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")
             if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
             tps=(await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id).order_by(SignalTakeProfitRecord.position))).all()
             maps=(await s.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id==signal.id))).all()
@@ -198,7 +201,7 @@ class MonitoringService:
         now=market.observed_at
         async with self.sessions() as s,s.begin():
             prompt=await s.get(BreakevenPromptRecord,prompt_id);signal=await s.get(SignalRecord,prompt.signal_id) if prompt else None;actor=await s.get(SignalistRecord,signalist_id);state=await s.get(SignalMonitorStateRecord,prompt.signal_id) if prompt else None
-            if not prompt or not signal or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
+            if not prompt or not signal or signal.status is not SignalLifecycleStatus.ACTIVE or not state or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:raise ValueError("prompt is not actionable")
             if cycle and prompt.cycle_number!=cycle:raise ValueError("prompt is not actionable")
             if prompt.status is PromptStatus.ACCEPTED:return True
             if prompt.status is not PromptStatus.AWAITING_RESPONSE or state.stage is not MonitorStage.PRE_TP1:raise ValueError("prompt is not actionable")

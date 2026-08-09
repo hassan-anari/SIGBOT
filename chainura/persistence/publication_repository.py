@@ -12,6 +12,7 @@ from chainura.persistence.models import (DestinationExchangePriorityRecord, Dest
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
     SignalInitialPriceRecord, SignalRecord, utc_now)
+from chainura.domain.signal import SignalLifecycleStatus
 
 
 class SqlAlchemyPublicationRepository:
@@ -51,6 +52,8 @@ class SqlAlchemyPublicationRepository:
             status=PublicationRequestStatus.PLANNING,updated_at=now).returning(InitialPublicationRequestRecord.signal_id))).scalar_one_or_none()
         if claimed is None:return False
         signal=await self.session.get(SignalRecord,claimed)
+        if signal is None or signal.status is SignalLifecycleStatus.CANCELLED:
+            await self.session.execute(update(InitialPublicationRequestRecord).where(InitialPublicationRequestRecord.id==request_id).values(status=PublicationRequestStatus.SUPERSEDED,updated_at=now));return True
         sources=frozenset((await self.session.scalars(select(SignalInitialPriceRecord.exchange).where(
             SignalInitialPriceRecord.signal_id==claimed))).all())
         rows=(await self.session.execute(select(DestinationRecord.id, DestinationExchangePriorityRecord.exchange).join(
@@ -111,11 +114,13 @@ class SqlAlchemyPublicationRepository:
 
     async def prepare_send(self,publication_id,signal_id,destination_id,now):
         destination=await self.session.get(DestinationRecord,destination_id)
-        signalist_id=await self.session.scalar(select(SignalRecord.signalist_id).where(SignalRecord.id==signal_id))
+        signal=await self.session.get(SignalRecord,signal_id);signalist_id=signal.signalist_id if signal else None
         assigned=bool(await self.session.scalar(select(exists().where(
             DestinationSignalistRecord.destination_id==destination_id,
             DestinationSignalistRecord.signalist_id==signalist_id))))
-        if destination is None or destination.status is not DestinationStatus.ACTIVE:
+        if signal is None or signal.status is SignalLifecycleStatus.CANCELLED:
+            target=PublicationStatus.SUPERSEDED
+        elif destination is None or destination.status is not DestinationStatus.ACTIVE:
             target=PublicationStatus.SKIPPED_INACTIVE
         elif not assigned:target=PublicationStatus.SKIPPED_UNASSIGNED
         else:
