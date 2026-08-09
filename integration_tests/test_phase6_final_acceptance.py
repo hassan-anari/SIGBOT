@@ -38,11 +38,13 @@ class FakeTelegram:
         return self.next_id
 
 class FakePhotoPublisher:
-    def __init__(self): self.initial=[]; self.updates=[]; self.next_id=500
+    def __init__(self): self.initial=[]; self.updates=[]; self.text_updates=[]; self.next_id=500
     async def send_initial(self, chat_id, path, caption):
         self.next_id+=1; self.initial.append((chat_id,path,caption,self.next_id)); return self.next_id
     async def send_update(self, chat_id, path, caption, reply_to_message_id):
         self.next_id+=1; self.updates.append((chat_id,path,caption,reply_to_message_id,self.next_id)); return self.next_id
+    async def send_text_update(self, chat_id, text, reply_to_message_id):
+        self.next_id+=1; self.text_updates.append((chat_id,text,reply_to_message_id,self.next_id)); return self.next_id
 
 class FakeImageService:
     class Output:
@@ -50,7 +52,7 @@ class FakeImageService:
     def __init__(self): self.rendered=[]; self.cleaned=[]
     async def render_initial_signal(self, signal, exchange, destination_id, now):
         path=f"/tmp/initial-{signal.id}-{destination_id}.png"; self.rendered.append(("initial",signal.id,exchange,destination_id)); return self.Output(path)
-    async def render_update_signal(self, signal, event, price, exchange, destination_id):
+    async def render_update_signal(self, signal, event, exchange, destination_id):
         path=f"/tmp/update-{event.id}-{destination_id}.png"; self.rendered.append(("update",event.id,exchange,destination_id)); return self.Output(path)
     def cleanup(self,path): self.cleaned.append(path)
 

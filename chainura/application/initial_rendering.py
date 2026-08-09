@@ -86,10 +86,10 @@ class InitialImageService:
   return await self._render_with_builder(
    payload_builder=lambda: self.payload_factory.build(signal,exchange,rendered_at),
    exchange=exchange,destination_id=destination_id,output_prefix="initial")
- async def render_update_signal(self,signal,event,event_price,exchange,destination_id)->RenderedSignalImage:
+ async def render_update_signal(self,signal,event,exchange,destination_id)->RenderedSignalImage:
   factory=self.payload_factory if hasattr(self.payload_factory,"build_update") else UpdatePayloadFactory(self.payload_factory.logo_store)
   return await self._render_with_builder(
-   payload_builder=lambda: factory.build_update(signal,event,event_price,exchange,event.occurred_at),
+   payload_builder=lambda: factory.build_update(signal,event,exchange,event.occurred_at),
    exchange=exchange,destination_id=destination_id,output_prefix="update")
  async def _render_with_builder(self,*,payload_builder,exchange,destination_id,output_prefix)->RenderedSignalImage:
   if self._state!="open":raise RenderingLifecycleError("initial image service is closing")
@@ -160,15 +160,17 @@ class InitialImageService:
   except OSError as exc:raise RenderingError("render output cleanup failed") from exc
 
 class UpdatePayloadFactory(InitialPayloadFactory):
- def build_update(self,signal,event,event_price,exchange,rendered_at=None):
+ def build_update(self,signal,event,exchange,rendered_at=None):
   from chainura.domain.monitoring import SignalEventKind
   from chainura.rendering.models import SignalRenderEventKind
   if rendered_at is None:rendered_at=event.occurred_at
   mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
   if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
   logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
-  if event.kind is SignalEventKind.BREAKEVEN:pnl=__import__('decimal').Decimal('0')
-  else:pnl=leveraged_return_percent(signal.entry_price,event_price,signal.leverage,signal.direction)
+  # Monitoring has already persisted the exact execution basis and matching
+  # Decimal ROI. Event-time exchange prices remain evidence, not execution.
+  event_price=event.roi_basis_price
+  pnl=event.leveraged_roi
   kind={SignalEventKind.TP_HIT:SignalRenderEventKind.TP,SignalEventKind.SL_HIT:SignalRenderEventKind.SL,SignalEventKind.BREAKEVEN:SignalRenderEventKind.BREAKEVEN}[event.kind]
   elapsed=max(0,int((event.occurred_at-signal.created_at).total_seconds()))
   return SignalRenderPayload(signal.id,kind,exchange,signal.direction,signal.price_source_type,

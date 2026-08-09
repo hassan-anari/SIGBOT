@@ -86,7 +86,7 @@ class SignalistNotificationService:
             if row.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,row.candidate_id);event=await s.get(SignalEventRecord,candidate.event_id);signal=await s.get(SignalRecord,event.signal_id)
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
-                text=event_text(event.kind,signal.canonical_symbol,event.observed_reference_price,event.leveraged_roi,event.tp_index);source=candidate
+                text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index);source=candidate
             else:
                 prompt=await s.get(BreakevenPromptRecord,row.prompt_id);signal=await s.get(SignalRecord,prompt.signal_id)
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return

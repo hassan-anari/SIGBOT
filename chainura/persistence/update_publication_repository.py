@@ -7,7 +7,7 @@ from chainura.domain.monitoring import CandidateStatus, SignalEventKind
 from chainura.domain.publication import PublicationRequestStatus, PublicationStatus, TERMINAL_PUBLICATION_STATUSES, UpdatePublicationDelivery, select_event_exchange
 from chainura.domain.signalist import SignalistStatus
 from chainura.errors import PublicationPersistenceError
-from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord)
+from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalDetailsPublicationRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord)
 UPDATE_TERMINAL=TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.BLOCKED_TEMPLATE}
 class SqlAlchemyUpdatePublicationRepository:
  def __init__(self,session):self.session=session
@@ -86,6 +86,13 @@ class SqlAlchemyUpdatePublicationRepository:
   if row is None or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return None
   earlier=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.id!=row.id,DestinationUpdatePublicationRecord.event_id<row.event_id,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT))))
   if earlier:return None
+  # A Phase 7 Details row is a durable chain barrier while its Telegram result
+  # is still unknown. Legacy signals have no row and remain unblocked.
+  details_in_flight=await self.session.scalar(select(exists().where(
+   SignalDetailsPublicationRecord.signal_id==row.signal_id,
+   SignalDetailsPublicationRecord.destination_id==row.destination_id,
+   SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT)))))
+  if details_in_flight:return None
   row.status=PublicationStatus.RENDERING;row.retry_at=None;row.first_attempt_at=row.first_attempt_at or now;row.updated_at=now
   dest=await self.session.get(DestinationRecord,row.destination_id)
   return UpdatePublicationDelivery(row.id,row.request_id,row.candidate_id,row.signal_id,row.event_id,row.destination_id,row.selected_exchange,row.event_kind,row.attempt_count,dest.telegram_chat_id if dest else 0) if dest else None
@@ -112,7 +119,9 @@ class SqlAlchemyUpdatePublicationRepository:
   if target is PublicationStatus.SENT:row.telegram_message_id=message_id;row.sent_at=now
   return True
  async def last_published_message_id(self,signal_id,destination_id):
-  msg=await self.session.scalar(select(DestinationUpdatePublicationRecord.telegram_message_id).where(DestinationUpdatePublicationRecord.signal_id==signal_id,DestinationUpdatePublicationRecord.destination_id==destination_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SENT).order_by(DestinationUpdatePublicationRecord.sent_at.desc()).limit(1))
+  msg=await self.session.scalar(select(DestinationUpdatePublicationRecord.telegram_message_id).where(DestinationUpdatePublicationRecord.signal_id==signal_id,DestinationUpdatePublicationRecord.destination_id==destination_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SENT,DestinationUpdatePublicationRecord.telegram_message_id>0).order_by(DestinationUpdatePublicationRecord.sent_at.desc(),DestinationUpdatePublicationRecord.id.desc()).limit(1))
+  if msg:return msg
+  msg=await self.session.scalar(select(SignalDetailsPublicationRecord.telegram_message_id).where(SignalDetailsPublicationRecord.signal_id==signal_id,SignalDetailsPublicationRecord.destination_id==destination_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENT,SignalDetailsPublicationRecord.telegram_message_id>0).limit(1))
   if msg:return msg
   return await self.session.scalar(select(DestinationPublicationRecord.telegram_message_id).where(DestinationPublicationRecord.signal_id==signal_id,DestinationPublicationRecord.destination_id==destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT).limit(1))
  async def complete_request(self,request_id,now):
