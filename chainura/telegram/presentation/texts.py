@@ -236,7 +236,7 @@ def report_summary_text(summary, scope_label=None, start_text=None, end_text=Non
     rows=["<b>📊 خلاصه گزارش</b>"]
     if scope_label: rows.append(f"دامنه: {safe(scope_label)}")
     if start_text and end_text: rows.append(f"بازه: {safe(start_text)} تا {safe(end_text)}")
-    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"سیگنال‌های فعال: {persian_digits(summary.active_signals)}",f"دارای نتیجه: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"بریک‌ایون: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI کل نظری: {_dec(summary.total_roi)}",f"میانگین ROI نظری: {_dec(summary.average_roi)}",f"میانگین ROI مثبت: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی: {_dec(summary.average_negative_roi)}",f"کمترین ROI: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
+    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"⏳ در انتظار تکمیل: {persian_digits(summary.pending_signals)}",f"🟢 باز: {persian_digits(summary.open_signals)}",f"❌ کنسل‌شده: {persian_digits(summary.cancelled_signals)}",f"✅ نتیجه‌دار: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"بریک‌ایون: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI کل نظری: {_dec(summary.total_roi)}",f"میانگین ROI نظری: {_dec(summary.average_roi)}",f"میانگین ROI مثبت: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی: {_dec(summary.average_negative_roi)}",f"کمترین ROI: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
     return "\n".join(rows)
 def _report_direction(value): return {"long":"لانگ","short":"شورت"}.get(str(value), str(value))
 def _report_source(value): return {"Composite":"مرجع مشترک","Single Exchange":"تک‌صرافی"}.get(str(value), str(value))
@@ -244,7 +244,8 @@ def _report_state(value):
     text=str(value)
     if text.startswith("Active Win"): return text.replace("Active Win at TP", "برد فعال در TP")
     if text.startswith("Completed Win"): return text.replace("Completed Win at TP", "برد تکمیل‌شده در TP")
-    return {"Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
+    if text.startswith("Cancelled after TP"): return text.replace("Cancelled after TP","کنسل‌شده پس از TP")
+    return {"Pending Details":"در انتظار تکمیل","Cancelled":"کنسل‌شده","Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
 def trade_history_text(page, all_scope=True):
     rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {persian_digits(page.page)} از {persian_digits(page.pages)}"]
     for item in page.items:
