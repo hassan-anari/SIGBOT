@@ -80,16 +80,33 @@ class SignalDetailsPublicationService:
    if claimed is None:return
    signal_id,destination_id,parent,attempts=claimed
    signal=await tx.signals.get_by_id(signal_id);destination=await tx._session.get(DestinationRecord,destination_id);await tx.commit()
-  if signal is None or destination is None:return
-  text=build_signal_details_text(signal,private=destination.access_level.value=="private")
+  try:
+   if signal is None or destination is None:raise RenderPayloadError("signal details publication data is missing")
+   text=build_signal_details_text(signal,private=destination.access_level.value=="private")
+  except asyncio.CancelledError:raise
+  except Exception as exc:
+   LOGGER.warning("signal details preparation failed delivery_id=%s category=%s",item_id,type(exc).__name__)
+   await self._finish(item_id,PublicationStatus.FAILED,type(exc).__name__)
+   return
   try:message_id=await self.publisher.send_details(destination.telegram_chat_id,text,parent)
   except DeliveryRateLimited as exc:
-   target=PublicationStatus.RETRY_WAIT if attempts+1<self.max_attempts else PublicationStatus.FAILED
-   retry=self.clock()+timedelta(seconds=max(exc.retry_after,self.retry_base_seconds*(2**attempts))) if target is PublicationStatus.RETRY_WAIT else None
+   target=PublicationStatus.RETRY_WAIT if attempts<self.max_attempts else PublicationStatus.FAILED
+   retry=self.clock()+timedelta(seconds=max(exc.retry_after,self.retry_base_seconds*(2**(attempts-1)))) if target is PublicationStatus.RETRY_WAIT else None
    return await self._finish(item_id,target,"rate_limited",retry_at=retry)
   except DeliveryRejected as exc:return await self._finish(item_id,PublicationStatus.FAILED,str(exc))
   except DeliveryAmbiguous as exc:return await self._finish(item_id,PublicationStatus.DELIVERY_UNKNOWN,str(exc))
   return await self._finish(item_id,PublicationStatus.SENT,message_id=message_id)
+ async def recover_unexpected_failure(self,item_id):
+  """Release ambiguous worker ownership after an uncaught processing failure."""
+  from sqlalchemy import update
+  from chainura.persistence.models import SignalDetailsPublicationRecord
+  async with self.transactions() as tx:
+   await tx._session.execute(update(SignalDetailsPublicationRecord).where(
+    SignalDetailsPublicationRecord.id==item_id,
+    SignalDetailsPublicationRecord.status==PublicationStatus.SENDING).values(
+    status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category="unexpected_processing_failure",
+    updated_at=self.clock()))
+   await tx.commit()
  async def _finish(self,item_id,target,error=None,message_id=None,retry_at=None):
   from sqlalchemy import update
   from chainura.persistence.models import SignalDetailsPublicationRecord
@@ -103,7 +120,17 @@ class InitialPublicationService:
   self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock
   self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
  async def recover(self):
-  async with self.transactions() as tx:await tx.publications.recover(self.clock());await tx.commit()
+  from sqlalchemy import update
+  from chainura.persistence.models import InitialPublicationNotificationRecord
+  async with self.transactions() as tx:
+   await tx.publications.recover(self.clock())
+   # Telegram may have accepted an interrupted send, so a retry can duplicate only
+   # at this crash boundary. Re-queueing is preferable to permanently stranding a
+   # durable PENDING_DETAILS signal without its continuation action.
+   await tx._session.execute(update(InitialPublicationNotificationRecord).where(
+    InitialPublicationNotificationRecord.status=="sending").values(
+    status="pending",updated_at=self.clock()))
+   await tx.commit()
  async def plan_pending(self):
   async with self.transactions() as tx:ids=await tx.publications.pending_request_ids();await tx.commit()
   for request_id in ids:
@@ -320,9 +347,18 @@ class SignalDetailsPublicationWorker(InitialPublicationWorker):
   await self.service.recover()
   while not self._stop.is_set():
    self._wake.clear()
-   ids=await self.service.pending_ids()
-   for offset in range(0,len(ids),self.concurrency):
-    await asyncio.gather(*(self.service.process(item) for item in ids[offset:offset+self.concurrency]),return_exceptions=True)
+   try:
+    ids=await self.service.pending_ids()
+    for offset in range(0,len(ids),self.concurrency):
+     batch=ids[offset:offset+self.concurrency]
+     results=await asyncio.gather(*(self.service.process(item) for item in batch),return_exceptions=True)
+     for delivery_id,result in zip(batch,results):
+      if isinstance(result,BaseException):
+       LOGGER.warning("signal details delivery isolated delivery_id=%s category=%s",delivery_id,type(result).__name__)
+       try:await self.service.recover_unexpected_failure(delivery_id)
+       except Exception as recovery_exc:LOGGER.error("signal details ownership recovery failed delivery_id=%s category=%s",delivery_id,type(recovery_exc).__name__)
+   except asyncio.CancelledError:raise
+   except Exception as exc:LOGGER.error("signal details publication sweep failed category=%s",type(exc).__name__)
    if self._stop.is_set():break
    try:await asyncio.wait_for(self._wake.wait(),self.sweep_seconds)
    except asyncio.TimeoutError:pass
