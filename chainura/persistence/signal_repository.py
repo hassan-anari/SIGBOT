@@ -36,7 +36,7 @@ class SqlAlchemySignalRepository:
             direction=signal.direction, entry_price=signal.entry_price, leverage=signal.leverage,
             stop_loss=signal.stop_loss, reference_price=signal.reference_price,
             price_source_type=signal.price_source_type, status=signal.status,
-            created_at=signal.created_at, updated_at=signal.updated_at)
+            created_at=signal.created_at, updated_at=signal.updated_at,cancelled_at=signal.cancelled_at)
         self._session.add(row)
         try:
             await self._session.flush()
@@ -61,7 +61,7 @@ class SqlAlchemySignalRepository:
             signal.base_asset, signal.quote_asset, signal.selected_exchange, signal.direction,
             signal.entry_price, signal.leverage, signal.take_profits, signal.stop_loss,
             signal.reference_price, signal.price_source_type, signal.status, signal.exchange_symbols,
-            signal.created_at, signal.updated_at, signal.initial_source_prices)
+            signal.created_at, signal.updated_at, signal.initial_source_prices,signal.cancelled_at)
 
     async def activate_pending(self, signal: Signal) -> bool:
         changed=(await self._session.execute(update(SignalRecord).where(
@@ -92,6 +92,6 @@ class SqlAlchemySignalRepository:
             tps = tuple((await self._session.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id == row.id).order_by(SignalTakeProfitRecord.position))).all())
             maps = tuple((await self._session.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id == row.id).order_by(SignalExchangeSymbolRecord.exchange))).all())
             prices = tuple((await self._session.scalars(select(SignalInitialPriceRecord).where(SignalInitialPriceRecord.signal_id == row.id).order_by(SignalInitialPriceRecord.exchange))).all())
-            return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at,tuple((x.exchange,x.price) for x in prices))
+            return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at,tuple((x.exchange,x.price) for x in prices),row.cancelled_at)
         except SignalCreationError: raise
         except Exception as exc: raise SignalCreationError("signal aggregate could not be loaded") from exc

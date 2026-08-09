@@ -40,6 +40,7 @@ from chainura.telegram.signal_routes import router as signal_router
 from chainura.telegram.template_routes import router as template_router
 from chainura.telegram.message_template_routes import router as message_template_router
 from chainura.telegram.event_routes import router as event_router
+from chainura.telegram.active_signal_routes import router as active_signal_router
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider
@@ -60,6 +61,8 @@ from chainura.application.publication import (InitialPublicationService, Initial
                                                TelegramPhotoPublisher)
 from chainura.application.template_admin import TemplateAdministrationService
 from chainura.application.message_templates import DestinationMessageTemplateService
+from chainura.application.active_signals import ActiveSignalService
+from chainura.application.publication import CancellationPublicationService,CancellationPublicationWorker
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -96,6 +99,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.include_router(admin_router)
     dispatcher.include_router(template_router)
     dispatcher.include_router(message_template_router)
+    dispatcher.include_router(active_signal_router)
     dispatcher.include_router(signal_router)
     dispatcher.include_router(event_router)
     dispatcher.include_router(router)
@@ -137,6 +141,7 @@ class Runtime:
         self.monitoring_worker=None;self.monitoring_task=None
         self.notification_worker=None;self.notification_task=None
         self.admin_alert_worker=None;self.admin_alert_task=None
+        self.cancellation_publication_worker=None;self.cancellation_publication_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -290,6 +295,12 @@ class Runtime:
                     self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)
             template_admin_service=None
             message_template_service=DestinationMessageTemplateService(transactions)
+            if hasattr(sessions,"class_"):
+                cancellation_service=CancellationPublicationService(transactions,TelegramPhotoPublisher(self.bot),message_templates=message_template_service)
+                self.cancellation_publication_worker=CancellationPublicationWorker(cancellation_service,self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                await self._startup_await(cancellation_service.recover());await self._startup_await(self.cancellation_publication_worker.start())
+                self.cancellation_publication_task=self.cancellation_publication_worker.task
+            active_signal_service=ActiveSignalService(transactions,cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None)
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
                 self.initial_image_service=InitialImageService(InitialPayloadFactory(
@@ -370,6 +381,7 @@ class Runtime:
                 admin_signalist_service=admin_signalist_service,
                 template_admin_service=template_admin_service,
                 message_template_service=message_template_service,
+                active_signal_service=active_signal_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
@@ -504,6 +516,8 @@ class Runtime:
                 await self._best_effort(self.update_publication_worker.close(), "update publication worker")
             if self.details_publication_worker:
                 await self._best_effort(self.details_publication_worker.close(), "signal details publication worker")
+            if self.cancellation_publication_worker:
+                await self._best_effort(self.cancellation_publication_worker.close(), "signal cancellation publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:

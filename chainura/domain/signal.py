@@ -27,6 +27,7 @@ class TradeDirection(str, Enum):
 class SignalLifecycleStatus(str, Enum):
     PENDING_DETAILS = "pending_details"
     ACTIVE = "active"
+    CANCELLED = "cancelled"
 
 
 class PriceSourceType(str, Enum):
@@ -99,6 +100,7 @@ class Signal:
     created_at: datetime
     updated_at: datetime
     initial_source_prices: tuple[tuple[Exchange, Decimal], ...]
+    cancelled_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.id is not None and (isinstance(self.id, bool) or not isinstance(self.id, int) or self.id < 1):
@@ -128,13 +130,21 @@ class Signal:
             raise InvalidSignalInputError("active signal requires at least one take profit")
         if self.status is SignalLifecycleStatus.ACTIVE and self.stop_loss is None:
             raise InvalidSignalInputError("active signal requires stop loss")
-        if self.status is SignalLifecycleStatus.PENDING_DETAILS and (self.take_profits or self.stop_loss is not None):
+        pending_shape = not self.take_profits and self.stop_loss is None
+        active_shape = bool(self.take_profits) and self.stop_loss is not None
+        if self.status is SignalLifecycleStatus.PENDING_DETAILS and not pending_shape:
             raise InvalidSignalInputError("pending signal cannot contain final trade levels")
+        if self.status is SignalLifecycleStatus.CANCELLED and not (pending_shape or active_shape):
+            raise InvalidSignalInputError("cancelled signal must preserve a valid pending or active shape")
+        if self.status is SignalLifecycleStatus.CANCELLED and self.cancelled_at is None:
+            raise InvalidSignalInputError("cancelled signal requires cancelled_at")
+        if self.status is not SignalLifecycleStatus.CANCELLED and self.cancelled_at is not None:
+            raise InvalidSignalInputError("only cancelled signals have cancelled_at")
         if any(not isinstance(x, Decimal) or not x.is_finite() or x <= 0 for x in self.take_profits):
             raise InvalidSignalInputError("take profits must be positive finite Decimals")
         if len(set(self.take_profits)) != len(self.take_profits):
             raise InvalidSignalInputError("duplicate take profits are invalid")
-        if self.status is SignalLifecycleStatus.PENDING_DETAILS:
+        if pending_shape:
             valid_tp = valid_sl = True
         elif self.direction is TradeDirection.LONG:
             valid_tp = all(x > entry for x in self.take_profits) and all(a < b for a, b in zip(self.take_profits, self.take_profits[1:]))
@@ -169,3 +179,5 @@ class Signal:
                 raise InvalidSignalInputError("single-exchange signal invariants are invalid")
         object.__setattr__(self, "created_at", _utc(self.created_at, "created_at"))
         object.__setattr__(self, "updated_at", _utc(self.updated_at, "updated_at"))
+        if self.cancelled_at is not None:
+            object.__setattr__(self, "cancelled_at", _utc(self.cancelled_at, "cancelled_at"))

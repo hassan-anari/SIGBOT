@@ -6,6 +6,7 @@ from chainura.domain.destination import DestinationStatus
 from chainura.domain.monitoring import CandidateStatus, SignalEventKind
 from chainura.domain.publication import PublicationRequestStatus, PublicationStatus, TERMINAL_PUBLICATION_STATUSES, UpdatePublicationDelivery, select_event_exchange
 from chainura.domain.signalist import SignalistStatus
+from chainura.domain.signal import SignalLifecycleStatus
 from chainura.errors import PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalDetailsPublicationRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord)
 UPDATE_TERMINAL=TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.BLOCKED_TEMPLATE}
@@ -49,7 +50,7 @@ class SqlAlchemyUpdatePublicationRepository:
    req.status=PublicationRequestStatus.WAITING_INITIAL;req.updated_at=now;return True
   req.status=PublicationRequestStatus.PLANNING;req.updated_at=now
   signal=await self.session.get(SignalRecord,req.signal_id);event=await self.session.get(SignalEventRecord,req.event_id);candidate=await self.session.get(SignalUpdateCandidateRecord,req.candidate_id)
-  if not signal or not event or not candidate or candidate.superseded_by_event_id is not None:
+  if not signal or signal.status is not SignalLifecycleStatus.ACTIVE or not event or not candidate or candidate.superseded_by_event_id is not None:
    req.status=PublicationRequestStatus.SUPERSEDED;req.superseded_at=now;req.updated_at=now;return True
   sources=frozenset((await self.session.scalars(select(SignalEventSourcePriceRecord.exchange).where(SignalEventSourcePriceRecord.event_id==req.event_id))).all())
   initials=(await self.session.execute(select(DestinationPublicationRecord.destination_id).where(DestinationPublicationRecord.signal_id==req.signal_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0))).all()
@@ -99,6 +100,8 @@ class SqlAlchemyUpdatePublicationRepository:
  async def prepare_send(self,id,now):
   row=await self.session.get(DestinationUpdatePublicationRecord,id);signal=await self.session.get(SignalRecord,row.signal_id) if row else None;dest=await self.session.get(DestinationRecord,row.destination_id) if row else None;actor=await self.session.get(SignalistRecord,signal.signalist_id) if signal else None
   if not row or row.status is not PublicationStatus.RENDERING:return 'lost',None
+  if signal is None or signal.status is not SignalLifecycleStatus.ACTIVE:
+   row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;return row.status.value,None
   if await self._is_obsolete_tp(row):
    row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;return row.status.value,None
   if actor is None or actor.status is not SignalistStatus.ACTIVE:row.status=PublicationStatus.SKIPPED_SIGNALIST_INACTIVE
