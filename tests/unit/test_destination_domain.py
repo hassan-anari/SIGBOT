@@ -9,8 +9,8 @@ class DestinationDomainTests(unittest.TestCase):
     def test_enums_are_lowercase(self):
         self.assertEqual([x.value for x in DestinationStatus],["active","inactive"])
         self.assertEqual([x.value for x in Exchange],["ourbit","toobit","lbank"])
-    def test_creation_trims_and_starts_inactive(self):
-        item=self.make(); self.assertEqual(item.internal_name,"Alpha"); self.assertIs(item.status,DestinationStatus.INACTIVE)
+    def test_creation_trims_and_starts_active(self):
+        item=self.make(); self.assertEqual(item.internal_name,"Alpha"); self.assertIs(item.status,DestinationStatus.ACTIVE)
     def test_identity_and_daily_limit_validation(self):
         for chat in (0,2**63,-2**63-1,True):
             with self.assertRaises(InvalidDestinationInputError): Destination.create("x",chat,DestinationType.GROUP,DestinationAccessLevel.PUBLIC,1)
@@ -25,8 +25,8 @@ class DestinationDomainTests(unittest.TestCase):
         changed=self.make().with_metadata("Beta",DestinationType.GROUP,DestinationAccessLevel.PUBLIC,7)
         self.assertEqual(changed.telegram_chat_id,-100); self.assertEqual(changed.internal_name,"Beta")
     def test_status_transition_and_no_destructive_api(self):
-        item=self.make(); self.assertIs(item.approve_transition(DestinationStatus.ACTIVE),DestinationStatus.ACTIVE)
-        with self.assertRaises(InvalidDestinationStatusTransitionError): item.approve_transition(DestinationStatus.INACTIVE)
+        item=self.make(); self.assertIs(item.approve_transition(DestinationStatus.INACTIVE),DestinationStatus.INACTIVE)
+        with self.assertRaises(InvalidDestinationStatusTransitionError): item.approve_transition(DestinationStatus.ACTIVE)
         for name in ("archive","delete","restore"): self.assertFalse(hasattr(item,name))
     def test_priority_validation_and_operations(self):
         p=DestinationExchangePriority((Exchange.OURBIT,)); p=p.enable(Exchange.LBANK)

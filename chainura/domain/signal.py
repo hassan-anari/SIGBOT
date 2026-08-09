@@ -9,7 +9,7 @@ import re
 from chainura.domain.destination import Exchange
 from chainura.errors import InvalidSignalInputError
 
-ENTRY_TOLERANCE_PERCENT = Decimal("0.05")
+INITIAL_ENTRY_MAX_DRIFT_PERCENT = Decimal("0.70")
 _PRICE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _LEVERAGE = re.compile(r"^[0-9]+$")
 
@@ -25,6 +25,7 @@ class TradeDirection(str, Enum):
 
 
 class SignalLifecycleStatus(str, Enum):
+    PENDING_DETAILS = "pending_details"
     ACTIVE = "active"
 
 
@@ -65,14 +66,15 @@ def _utc(value: datetime, name: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def entry_difference_percent(entry: Decimal, reference: Decimal) -> Decimal:
-    entry = _positive_decimal(entry, "entry_price")
-    reference = _positive_decimal(reference, "reference_price")
-    return abs(entry - reference) / reference * Decimal("100")
+def initial_entry_drift_percent(p0: Decimal, p1: Decimal) -> Decimal:
+    """Return P0→P1 drift using Decimal and P0 as the denominator."""
+    p0 = _positive_decimal(p0, "p0_reference_price")
+    p1 = _positive_decimal(p1, "p1_reference_price")
+    return abs(p1 - p0) / p0 * Decimal("100")
 
 
-def entry_is_within_tolerance(entry: Decimal, reference: Decimal) -> bool:
-    return entry_difference_percent(entry, reference) <= ENTRY_TOLERANCE_PERCENT
+def initial_entry_drift_is_acceptable(p0: Decimal, p1: Decimal) -> bool:
+    return initial_entry_drift_percent(p0, p1) <= INITIAL_ENTRY_MAX_DRIFT_PERCENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +91,7 @@ class Signal:
     entry_price: Decimal
     leverage: int
     take_profits: tuple[Decimal, ...]
-    stop_loss: Decimal
+    stop_loss: Decimal | None
     reference_price: Decimal
     price_source_type: PriceSourceType
     status: SignalLifecycleStatus
@@ -111,20 +113,30 @@ class Signal:
                 raise InvalidSignalInputError(f"{name} must be non-empty ASCII")
         if not isinstance(self.mode, SignalMode) or not isinstance(self.direction, TradeDirection):
             raise InvalidSignalInputError("signal enum is invalid")
-        if not isinstance(self.price_source_type, PriceSourceType) or self.status is not SignalLifecycleStatus.ACTIVE:
+        if (not isinstance(self.price_source_type, PriceSourceType)
+                or not isinstance(self.status, SignalLifecycleStatus)):
             raise InvalidSignalInputError("signal state is invalid")
         entry = _positive_decimal(self.entry_price, "entry_price")
-        _positive_decimal(self.stop_loss, "stop_loss")
+        if self.stop_loss is not None:
+            _positive_decimal(self.stop_loss, "stop_loss")
         _positive_decimal(self.reference_price, "reference_price")
         if isinstance(self.leverage, bool) or not isinstance(self.leverage, int) or self.leverage < 1:
             raise InvalidSignalInputError("leverage must be a positive integer")
-        if not isinstance(self.take_profits, tuple) or not self.take_profits:
-            raise InvalidSignalInputError("at least one take profit is required")
+        if not isinstance(self.take_profits, tuple):
+            raise InvalidSignalInputError("take profits must be an immutable tuple")
+        if self.status is SignalLifecycleStatus.ACTIVE and not self.take_profits:
+            raise InvalidSignalInputError("active signal requires at least one take profit")
+        if self.status is SignalLifecycleStatus.ACTIVE and self.stop_loss is None:
+            raise InvalidSignalInputError("active signal requires stop loss")
+        if self.status is SignalLifecycleStatus.PENDING_DETAILS and (self.take_profits or self.stop_loss is not None):
+            raise InvalidSignalInputError("pending signal cannot contain final trade levels")
         if any(not isinstance(x, Decimal) or not x.is_finite() or x <= 0 for x in self.take_profits):
             raise InvalidSignalInputError("take profits must be positive finite Decimals")
         if len(set(self.take_profits)) != len(self.take_profits):
             raise InvalidSignalInputError("duplicate take profits are invalid")
-        if self.direction is TradeDirection.LONG:
+        if self.status is SignalLifecycleStatus.PENDING_DETAILS:
+            valid_tp = valid_sl = True
+        elif self.direction is TradeDirection.LONG:
             valid_tp = all(x > entry for x in self.take_profits) and all(a < b for a, b in zip(self.take_profits, self.take_profits[1:]))
             valid_sl = self.stop_loss < entry
         else:

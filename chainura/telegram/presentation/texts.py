@@ -17,7 +17,6 @@ HELP_SIGNALIST="<b>❓ راهنمای سیگنالیست</b>\n\nاز منوی ا
 ASK_SHARED_SYMBOL="<b>🔎 ساخت سیگنال</b>\n\nنماد موردنظر را برای جست‌وجو در فهرست مشترک وارد کنید."
 SIGNAL_RECORDED_SUCCESS="✅ سیگنال با موفقیت ثبت شد."
 REFERENCE_UNAVAILABLE="⚠️ قیمت مرجع سالم و تازه در دسترس نیست؛ کمی بعد دوباره تلاش کنید."
-ENTRY_OUT_OF_TOLERANCE="❌ اختلاف قیمت ورود با قیمت مرجع بیش از ۰٫۰۵٪ است."
 STATUS_ADMIN="<b>🛡 وضعیت دسترسی</b>\n\nنقش: مدیر اصلی\nوضعیت: 🟢 فعال"
 STATUS_SIGNALIST="<b>👤 وضعیت حساب</b>\n\nنام: {name}\nنقش: سیگنالیست\nوضعیت: 🟢 فعال"
 INACTIVE="حساب شما غیرفعال است و امکان انجام عملیات جدید را ندارد."; ARCHIVED="حساب شما بایگانی شده است."
@@ -109,7 +108,6 @@ SIGNAL_EMPTY_SEARCH="قرارداد منطبقی پیدا نشد؛ عبارت د
 SIGNAL_SELECT_RESULT="قرارداد دقیق را انتخاب کنید."
 SIGNAL_SELECT_DIRECTION="جهت معامله را انتخاب کنید."
 SIGNAL_LONG="🟢 لانگ"; SIGNAL_SHORT="🔴 شورت"
-SIGNAL_ASK_ENTRY="قیمت ورود را با ارقام انگلیسی وارد کنید."
 SIGNAL_ENTRY_VALID="✅ قیمت ورود معتبر است."
 SIGNAL_ASK_LEVERAGE="اهرم را به‌صورت عدد صحیح مثبت انگلیسی وارد کنید."
 SIGNAL_ASK_TP="قیمت تارگت را با ارقام انگلیسی وارد کنید."
@@ -124,7 +122,6 @@ SIGNAL_BACK_EXCHANGE="⬅️ بازگشت به انتخاب صرافی"
 SIGNAL_BACK_SHARED="↩️ بازگشت به جست‌وجوی مشترک"
 SIGNAL_STALE="این دکمه مربوط به فرایند قبلی است."
 SIGNAL_PROVIDER_FAILURE="⚠️ دریافت اطلاعات بازار ممکن نیست؛ کمی بعد دوباره تلاش کنید."
-FINAL_ENTRY_OUT_OF_TOLERANCE="❌ قیمت ورود دیگر در محدوده مجاز ۰٫۰۵٪ قیمت مرجع نیست."
 SIGNAL_FINALIZING="⏳ ثبت نهایی سیگنال در حال انجام است؛ لطفاً منتظر بمانید."
 SIGNALIST_NO_LONGER_ACTIVE="حساب شما دیگر فعال نیست و ثبت سیگنال انجام نشد."
 SIGNAL_FINISH_TP_BLOCKED="ابتدا دست‌کم یک تارگت معتبر ثبت کنید."
@@ -244,3 +241,12 @@ def health_status_text(rows, now=None):
                 extra += f"\nمدت فعلی: {_duration_text(row.unhealthy_since, now)}"
         out.append(f"\n{HEALTH_LABELS.get(row.service_key,row.service_key)}\nوضعیت: {HEALTH_STATUS_LABELS.get(row.status.value,row.status.value)}\nآخرین موفقیت: {last}{extra}")
     return "\n".join(out)
+
+# Phase 7.1 staged signal creation
+SIGNAL_DRIFT_EXCEEDED="❌ حرکت بازار از ۰٫۷۰٪ بیشتر شد. برای ثبت سیگنال، فرایند تازه‌ای آغاز کنید."
+SIGNAL_INITIAL_QUEUED="⏳ شات اولیه برای انتشار پایدار ثبت شد. نتیجه انتشار پس از پایان پردازش اعلام می‌شود."
+SIGNAL_INITIAL_PUBLISHED="✅ شات اولیه سیگنال در مقصدها منتشر شد.\nحالا اطلاعات تکمیلی سیگنال را ثبت کنید."
+SIGNAL_INITIAL_PARTIAL="⚠️ پردازش شات اولیه پایان یافت، اما انتشار در همه مقصدها موفق نبود. اطلاعات تکمیلی سیگنال همچنان قابل ثبت است."
+SIGNAL_CONTINUE_DETAILS="ادامه ثبت اطلاعات"
+SIGNAL_DETAILS_STALE="این سیگنال در وضعیت انتظار اطلاعات تکمیلی نیست یا به شما تعلق ندارد."
+SIGNAL_DETAILS_RECORDED="✅ اطلاعات تکمیلی سیگنال ثبت شد و انتشار متن جزئیات در مقصدها آغاز شد."

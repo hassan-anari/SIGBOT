@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from chainura.domain.signal import Signal
@@ -6,7 +6,10 @@ from chainura.errors import DuplicateSignalCreationTokenError, SignalCreationErr
 from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecord,
                                           SignalTakeProfitRecord, SignalInitialPriceRecord,
                                           InitialPublicationRequestRecord,
-                                          SignalMonitorStateRecord)
+                                          SignalMonitorStateRecord, DestinationPublicationRecord,
+                                          SignalDetailsPublicationRecord)
+from chainura.domain.signal import SignalLifecycleStatus
+from chainura.domain.publication import PublicationStatus
 from chainura.domain.monitoring import MonitorStage
 
 class SqlAlchemySignalRepository:
@@ -41,9 +44,10 @@ class SqlAlchemySignalRepository:
             self._session.add_all([SignalExchangeSymbolRecord(signal_id=row.id, exchange=e, native_symbol=s) for e,s in signal.exchange_symbols])
             self._session.add_all([SignalInitialPriceRecord(signal_id=row.id, exchange=e, price=p) for e,p in signal.initial_source_prices])
             self._session.add(InitialPublicationRequestRecord(signal_id=row.id))
-            self._session.add(SignalMonitorStateRecord(signal_id=row.id,
-                stage=MonitorStage.PRE_TP1, created_at=signal.created_at,
-                updated_at=signal.created_at))
+            if signal.status is SignalLifecycleStatus.ACTIVE:
+                self._session.add(SignalMonitorStateRecord(signal_id=row.id,
+                    stage=MonitorStage.PRE_TP1,created_at=signal.created_at,
+                    updated_at=signal.created_at))
             await self._session.flush()
         except IntegrityError as exc:
             raw = str(exc.orig)
@@ -58,6 +62,30 @@ class SqlAlchemySignalRepository:
             signal.entry_price, signal.leverage, signal.take_profits, signal.stop_loss,
             signal.reference_price, signal.price_source_type, signal.status, signal.exchange_symbols,
             signal.created_at, signal.updated_at, signal.initial_source_prices)
+
+    async def activate_pending(self, signal: Signal) -> bool:
+        changed=(await self._session.execute(update(SignalRecord).where(
+            SignalRecord.id==signal.id,
+            SignalRecord.status==SignalLifecycleStatus.PENDING_DETAILS).values(
+            status=SignalLifecycleStatus.ACTIVE,stop_loss=signal.stop_loss,
+            updated_at=signal.updated_at))).rowcount
+        if changed != 1:return False
+        self._session.add_all([SignalTakeProfitRecord(signal_id=signal.id,position=i,price=p)
+                               for i,p in enumerate(signal.take_profits,1)])
+        self._session.add(SignalMonitorStateRecord(signal_id=signal.id,
+            stage=MonitorStage.PRE_TP1,created_at=signal.updated_at,updated_at=signal.updated_at))
+        # Only destinations with an actually-sent initial photo receive details.
+        initial=(await self._session.execute(select(
+            DestinationPublicationRecord.destination_id,
+            DestinationPublicationRecord.telegram_message_id).where(
+            DestinationPublicationRecord.signal_id==signal.id,
+            DestinationPublicationRecord.status==PublicationStatus.SENT))).all()
+        self._session.add_all([SignalDetailsPublicationRecord(signal_id=signal.id,
+            destination_id=destination_id,status=PublicationStatus.PENDING,
+            reply_to_message_id=message_id,created_at=signal.updated_at,
+            updated_at=signal.updated_at) for destination_id,message_id in initial])
+        await self._session.flush()
+        return True
 
     async def _load(self, row):
         try:

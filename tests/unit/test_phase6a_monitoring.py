@@ -36,7 +36,7 @@ class MonitoringRuleTests(unittest.TestCase):
 
 class PresentationTests(unittest.TestCase):
  def test_event_copy_is_persian_escaped_and_bidi_isolated(self):
-  text=event_text(SignalEventKind.TP_HIT,'X&Y','12.3','10',2)
+  text=event_text(SignalEventKind.TP_HIT,'X&Y',Decimal('12.3'),Decimal('10'),2)
   self.assertIn('تارگت',text);self.assertIn('X&amp;Y',text);self.assertIn('\u2068',text);self.assertNotIn('#پیامک',text)
  def test_prompt_copy(self):
   text=prompt_text('BTCUSDT',Decimal('100'),Decimal('100.05'))

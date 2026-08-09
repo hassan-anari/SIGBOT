@@ -7,12 +7,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from chainura.application.access import Actor, ActorKind
-from chainura.application.signal_service import CreateSignalCommand, EntryValidationRequest
+from chainura.application.signal_service import (SnapshotRequest, CreatePendingSignalCommand, FinalizeSignalDetailsCommand)
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import (PriceSourceType, SignalMode, TradeDirection,
     parse_leverage, parse_price)
-from chainura.errors import (ApplicationError, EntryOutsideToleranceError,
-    InconsistentReferencePriceError, InvalidSignalInputError,
+from chainura.errors import (ApplicationError, InitialEntryDriftExceededError,
+    InconsistentReferencePriceError, InvalidSignalInputError, PendingSignalStateError,
     ReferencePriceUnavailableError, SignalistCannotCreateSignalError)
 from chainura.telegram.middlewares import CallbackAcknowledger
 from chainura.telegram.presentation import texts
@@ -205,48 +205,27 @@ async def native_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
                              reply_markup=signal_native_navigation(flow)); return
     await message.answer(texts.signal_search_title(result.page,result.pages),reply_markup=signal_results(result.items,result.page,result.pages,flow,native=True))
 
-@router.message(SignalCreate.entry, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
-async def entry_input(message:Message,actor:Actor,state:FSMContext,signal_service):
-    if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
-    try: entry=parse_price(message.text)
-    except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
-    token=_token()
-    async with phase5_lock(message):
-        data=await state.get_data(); flow=data["flow_token"]
-        if not await _owned(state,SignalCreate.entry,flow): return
-        await state.update_data(entry_validation_token=token,entry_price=str(entry))
-    request=EntryValidationRequest(SignalMode(data["mode"]),data["canonical_symbol"],
-        Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,
-        data.get("native_symbol"),entry)
-    try: result=await signal_service.validate_entry(request)
-    except EntryOutsideToleranceError:
-        async with phase5_lock(message): owned=bool(await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}))
-        if owned: await message.answer(texts.ENTRY_OUT_OF_TOLERANCE)
-        return
-    except ReferencePriceUnavailableError:
-        async with phase5_lock(message): owned=bool(await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}))
-        if owned: await message.answer(texts.REFERENCE_UNAVAILABLE)
-        return
-    except (InconsistentReferencePriceError, ApplicationError):
-        async with phase5_lock(message): owned=bool(await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}))
-        if owned: await message.answer(texts.TEMPORARY_ERROR)
-        return
-    async with phase5_lock(message):
-        if not await _owned(state,SignalCreate.entry,flow,("entry_validation_token",token),{"entry_price":str(entry)}): return
-        await state.update_data(reference_price=str(result.reference_price),price_source_type=result.price_source_type.value)
-        await state.set_state(SignalCreate.leverage)
-    await message.answer(texts.SIGNAL_ENTRY_VALID+"\n\n"+texts.SIGNAL_ASK_LEVERAGE,reply_markup=signal_form_navigation(flow,"entry"))
-
 @router.message(SignalCreate.leverage, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
-async def leverage_input(message:Message,actor:Actor,state:FSMContext):
+async def leverage_input(message:Message,actor:Actor,state:FSMContext,signal_service):
     if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: leverage=parse_leverage(message.text)
     except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
     async with phase5_lock(message):
-        data=await state.get_data(); flow=data.get("flow_token")
-        if not await _owned(state,SignalCreate.leverage,flow): return
-        await state.update_data(leverage=leverage,take_profits=[]); await state.set_state(SignalCreate.take_profits)
-    await message.answer(texts.SIGNAL_ASK_TP,reply_markup=signal_tp_actions(flow,False))
+        data=await state.get_data();flow=data.get("flow_token")
+        if not await _owned(state,SignalCreate.leverage,flow):return
+        token=_token();await state.update_data(stage_one_token=token,leverage=leverage)
+        command=_pending_command(await state.get_data())
+    try: signal=await signal_service.create_pending(command)
+    except InitialEntryDriftExceededError:
+        async with phase5_lock(message):
+            if await _owned(state,SignalCreate.leverage,flow,("stage_one_token",token)):await state.clear()
+        await message.answer(texts.SIGNAL_DRIFT_EXCEEDED,reply_markup=signalist_menu());return
+    except ApplicationError:
+        await message.answer(texts.TEMPORARY_ERROR);return
+    async with phase5_lock(message):
+        if not await _owned(state,SignalCreate.leverage,flow,("stage_one_token",token)):return
+        await state.clear()
+    await message.answer(texts.SIGNAL_INITIAL_QUEUED,reply_markup=signalist_menu())
 
 @router.message(SignalCreate.take_profits, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def tp_input(message:Message,actor:Actor,state:FSMContext):
@@ -286,6 +265,17 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if (callback.message is None or callback.from_user is None
             or not hasattr(callback.message, "answer")): return
     kind=callback_data.kind
+    if kind=="continue":
+        try: pending=await signal_service.get_pending_for_owner(int(callback_data.ref),actor.signalist.id)
+        except (ValueError,AttributeError,PendingSignalStateError):
+            await callback.message.answer(texts.SIGNAL_DETAILS_STALE);return
+        flow=_token()
+        await state.set_state(SignalCreate.take_profits)
+        await state.set_data({"flow_token":flow,"pending_signal_id":pending.id,
+            "signalist_id":pending.signalist_id,"direction":pending.direction.value,
+            "entry_price":str(pending.entry_price),"take_profits":[]})
+        await callback.message.answer(texts.SIGNAL_ASK_TP,
+            reply_markup=signal_tp_actions(flow,False));return
     reconciliation=await reconcile_finalizing(callback,callback.message,state,
         signal_service,show_live=(kind!="confirm" or actor.kind is not ActorKind.ACTIVE_SIGNALIST),actor=actor)
     if reconciliation is not None:
@@ -373,15 +363,20 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         selected=_item(verified)
         if kind=="ss": selected.update(mode="composite",selected_exchange=None,native_symbol=None)
         else: selected.update(mode="single_exchange",selected_exchange=selected_exchange)
+        try:
+            p0=await signal_service.capture_snapshot(SnapshotRequest(SignalMode(selected["mode"]),selected["canonical_symbol"],Exchange(selected_exchange) if selected_exchange else None,selected.get("native_symbol")))
+        except ApplicationError:
+            await callback.message.answer(texts.REFERENCE_UNAVAILABLE);return
         async with phase5_lock(callback):
             if not await _owned(state,expected,flow,("search_token",token),context): return
+            selected.update(p0_reference_price=str(p0.reference_price),p0_source_prices=[(e.value,str(p)) for e,p in p0.source_prices],p0_native_symbols=[(e.value,n) for e,n in p0.native_symbols],p0_price_source_type=p0.price_source_type.value)
             await state.update_data(**selected); await state.set_state(SignalCreate.direction)
         await callback.message.answer(texts.SIGNAL_SELECT_DIRECTION,reply_markup=signal_directions(flow)); return
     if kind=="dir" and callback_data.ref in {"long","short"}:
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.direction,flow): return
-            await state.update_data(direction=callback_data.ref); await state.set_state(SignalCreate.entry)
-        await callback.message.answer(texts.SIGNAL_ASK_ENTRY,reply_markup=signal_form_navigation(flow,"direction")); return
+            await state.update_data(direction=callback_data.ref); await state.set_state(SignalCreate.leverage)
+        await callback.message.answer(texts.SIGNAL_ASK_LEVERAGE,reply_markup=signal_form_navigation(flow,"direction")); return
     if kind=="tp":
         async with phase5_lock(callback):
             current=await state.get_data()
@@ -396,69 +391,23 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         else: await callback.message.answer(texts.SIGNAL_ASK_TP)
         return
     if kind=="confirm":
-        token=_token()
         async with phase5_lock(callback):
-            if not await _owned(state,SignalCreate.review,flow): return
+            if not await _owned(state,SignalCreate.review,flow):return
             current=await state.get_data()
-            creation_token=current.get("creation_token")
-            canonical_symbol=current.get("canonical_symbol")
-            await state.update_data(final_validation_token=token)
-            command=_command(await state.get_data())
-        try: result=await signal_service.validate_entry(command)
-        except EntryOutsideToleranceError:
-            async with phase5_lock(callback): owned=bool(await _owned(state,SignalCreate.review,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}))
-            if owned: await callback.message.answer(texts.FINAL_ENTRY_OUT_OF_TOLERANCE)
-            return
-        except ReferencePriceUnavailableError:
-            async with phase5_lock(callback): owned=bool(await _owned(state,SignalCreate.review,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}))
-            if owned: await callback.message.answer(texts.REFERENCE_UNAVAILABLE)
-            return
-        except (InconsistentReferencePriceError, ApplicationError):
-            async with phase5_lock(callback): owned=bool(await _owned(state,SignalCreate.review,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}))
-            if owned: await callback.message.answer(texts.TEMPORARY_ERROR)
-            return
-        ownership={"creation_token":creation_token,"canonical_symbol":canonical_symbol}
-        identity=identity_from_callback(callback)
-        claim=None
         try:
-            async with phase5_lock(callback):
-                if not await _owned(state,SignalCreate.review,flow,("final_validation_token",token),ownership): return
-                await state.set_state(SignalCreate.finalizing)
-                claim=FinalizationClaim(identity,flow,creation_token,token,canonical_symbol)
-                phase5_coordination.register_claim(claim)
-            try:
-                await signal_service.create_validated(command,result)
-            except SignalistCannotCreateSignalError:
-                async with phase5_lock(callback):
-                    still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token}))
-                    if still_owned: await state.clear()
-                if still_owned: await callback.message.answer(texts.SIGNALIST_NO_LONGER_ACTIVE,reply_markup=remove_menu())
-                return
-            except ApplicationError:
-                async with phase5_lock(callback):
-                    still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token}))
-                    if still_owned: await state.set_state(SignalCreate.review)
-                if still_owned: await callback.message.answer(texts.TEMPORARY_ERROR)
-                return
-            async with phase5_lock(callback):
-                still_owned=bool(await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}))
-            if still_owned:
-                await callback.message.answer(texts.SIGNAL_RECORDED_SUCCESS,reply_markup=signalist_menu())
-                async with phase5_lock(callback):
-                    if await _owned(state,SignalCreate.finalizing,flow,("final_validation_token",token),{"creation_token":creation_token,"canonical_symbol":canonical_symbol}):
-                        await state.clear()
-        finally:
-            if claim is not None:
-                phase5_coordination.remove_claim(claim)
-        return
+            await signal_service.finalize_details(FinalizeSignalDetailsCommand(int(current["pending_signal_id"]),actor.signalist.id,tuple(Decimal(x) for x in current["take_profits"]),Decimal(current["stop_loss"])))
+        except PendingSignalStateError:
+            await callback.message.answer(texts.SIGNAL_DETAILS_STALE);return
+        except ApplicationError:
+            await callback.message.answer(texts.TEMPORARY_ERROR);return
+        await state.clear();await callback.message.answer(texts.SIGNAL_DETAILS_RECORDED,reply_markup=signalist_menu());return
     if kind=="back":
         allowed={
             "shared":SignalCreate.exchange_selection.state,
             "exchange":SignalCreate.native_search.state,
             "native-shared":SignalCreate.native_search.state,
             "symbol":SignalCreate.direction.state,
-            "direction":SignalCreate.entry.state,
-            "entry":SignalCreate.leverage.state,
+            "direction":SignalCreate.leverage.state,
             "leverage":SignalCreate.take_profits.state,
             "tp":SignalCreate.stop_loss.state,
             "sl":SignalCreate.review.state,
@@ -478,12 +427,12 @@ async def _back_state(state,data,target,flow):
         if data.get("mode")=="single_exchange": await state.set_state(SignalCreate.native_search); return texts.SIGNAL_ASK_NATIVE,signal_native_navigation(flow)
         else: await state.set_state(SignalCreate.shared_search); return texts.ASK_SHARED_SYMBOL,signal_shared_navigation(flow)
     elif target=="direction": await state.set_state(SignalCreate.direction); return texts.SIGNAL_SELECT_DIRECTION,signal_directions(flow)
-    elif target=="entry": await state.set_state(SignalCreate.entry); return texts.SIGNAL_ASK_ENTRY,signal_form_navigation(flow,"direction")
-    elif target=="leverage": await state.set_state(SignalCreate.leverage); return texts.SIGNAL_ASK_LEVERAGE,signal_form_navigation(flow,"entry")
+    elif target=="leverage": await state.set_state(SignalCreate.leverage); return texts.SIGNAL_ASK_LEVERAGE,signal_form_navigation(flow,"direction")
     elif target=="tp": await state.set_state(SignalCreate.take_profits); return texts.SIGNAL_ASK_TP,signal_tp_actions(flow,bool(data.get("take_profits")))
     elif target=="sl": await state.set_state(SignalCreate.stop_loss); return texts.SIGNAL_ASK_SL,signal_form_navigation(flow,"tp")
 
 def _item(value): return {"canonical_symbol":value.canonical_symbol,"native_symbol":value.native_symbol,"base_asset":value.base_asset,"quote_asset":value.quote_asset,"current_price":str(value.current_price) if value.current_price is not None else None}
 
-def _command(data):
-    return CreateSignalCommand(signalist_id=data["signalist_id"] if "signalist_id" in data else data.get("actor_signalist_id",1),creation_token=data["creation_token"],mode=SignalMode(data["mode"]),canonical_symbol=data["canonical_symbol"],base_asset=data["base_asset"],quote_asset=data["quote_asset"],selected_exchange=Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,native_symbol=data.get("native_symbol"),direction=TradeDirection(data["direction"]),entry_price=Decimal(data["entry_price"]),leverage=int(data["leverage"]),take_profits=tuple(Decimal(x) for x in data["take_profits"]),stop_loss=Decimal(data["stop_loss"]))
+def _pending_command(data):
+    p0=__import__("chainura.application.signal_service",fromlist=["ReferencePriceResult"]).ReferencePriceResult(Decimal(data["p0_reference_price"]),PriceSourceType(data["p0_price_source_type"]),tuple((Exchange(e),Decimal(p)) for e,p in data["p0_source_prices"]),True,data["canonical_symbol"],tuple((Exchange(e),n) for e,n in data["p0_native_symbols"]))
+    return CreatePendingSignalCommand(data["signalist_id"],data["creation_token"],SignalMode(data["mode"]),data["canonical_symbol"],data["base_asset"],data["quote_asset"],Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,data.get("native_symbol"),TradeDirection(data["direction"]),int(data["leverage"]),p0)

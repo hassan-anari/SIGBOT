@@ -115,3 +115,10 @@ def _native_navigation_rows(flow: str) -> list[list[InlineKeyboardButton]]:
 
 def signal_native_navigation(flow: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=_native_navigation_rows(flow))
+
+def signal_continue_details(signal_id: int) -> InlineKeyboardMarkup:
+    from chainura.telegram.presentation.signal_callbacks import signal_callback
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=texts.SIGNAL_CONTINUE_DETAILS,
+            callback_data=signal_callback("continue","resume",str(signal_id)))
+    ]])

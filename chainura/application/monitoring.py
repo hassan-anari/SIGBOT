@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from chainura.domain.monitoring import *
-from chainura.domain.signal import SignalMode
+from chainura.domain.signal import SignalMode, SignalLifecycleStatus
 from chainura.domain.signalist import SignalistStatus
 LOGGER=logging.getLogger("chainura.monitoring")
 
@@ -60,7 +60,9 @@ class MonitoringService:
         """Enroll valid legacy signals once without deriving historical events."""
         now=self.clock()
         async with self.sessions() as s, s.begin():
-            rows=(await s.scalars(select(SignalRecord).where(~SignalRecord.id.in_(select(SignalMonitorStateRecord.signal_id))))).all()
+            rows=(await s.scalars(select(SignalRecord).where(
+                SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+                ~SignalRecord.id.in_(select(SignalMonitorStateRecord.signal_id))))).all()
             for row in rows:
                 maps=(await s.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id==row.id))).all()
                 prices=(await s.scalars(select(SignalInitialPriceRecord).where(SignalInitialPriceRecord.signal_id==row.id))).all()
@@ -69,7 +71,9 @@ class MonitoringService:
 
     async def load_work(self,limit:int)->tuple[MonitorWork,...]:
         async with self.sessions() as s:
-            rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord).join(SignalMonitorStateRecord).where(SignalMonitorStateRecord.stage.in_((MonitorStage.PRE_TP1,MonitorStage.POST_TP1))).order_by(SignalMonitorStateRecord.last_checked_at,SignalRecord.id).limit(limit))).all()
+            rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord).join(SignalMonitorStateRecord).where(
+                SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+                SignalMonitorStateRecord.stage.in_((MonitorStage.PRE_TP1,MonitorStage.POST_TP1))).order_by(SignalMonitorStateRecord.last_checked_at,SignalRecord.id).limit(limit))).all()
             result=[]
             for signal,_ in rows:
                 tps=(await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id).order_by(SignalTakeProfitRecord.position))).all()

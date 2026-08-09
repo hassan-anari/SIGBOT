@@ -10,7 +10,8 @@ from chainura.domain.publication import (PublicationDelivery, PublicationRequest
 from chainura.errors import DailyCapacityError, PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord, DestinationPublicationRecord,
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
-    InitialPublicationRequestRecord, SignalInitialPriceRecord, SignalRecord, utc_now)
+    InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
+    SignalInitialPriceRecord, SignalRecord, utc_now)
 
 
 class SqlAlchemyPublicationRepository:
@@ -148,10 +149,16 @@ class SqlAlchemyPublicationRepository:
         unfinished=await self.session.scalar(select(func.count()).select_from(DestinationPublicationRecord).where(
             DestinationPublicationRecord.signal_id==signal_id,
             DestinationPublicationRecord.status.not_in(tuple(TERMINAL_PUBLICATION_STATUSES))))
-        if not unfinished:await self.session.execute(update(InitialPublicationRequestRecord).where(
-            InitialPublicationRequestRecord.signal_id==signal_id,
-            InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING])).values(
-            status=PublicationRequestStatus.COMPLETED,completed_at=now,updated_at=now))
+        if not unfinished:
+            changed=(await self.session.execute(update(InitialPublicationRequestRecord).where(
+                InitialPublicationRequestRecord.signal_id==signal_id,
+                InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING])).values(
+                status=PublicationRequestStatus.COMPLETED,completed_at=now,updated_at=now))).rowcount
+            if changed:
+                statuses=tuple((await self.session.scalars(select(DestinationPublicationRecord.status).where(
+                    DestinationPublicationRecord.signal_id==signal_id))).all())
+                outcome="success" if statuses and all(x is PublicationStatus.SENT for x in statuses) else "partial"
+                self.session.add(InitialPublicationNotificationRecord(signal_id=signal_id,status="pending",outcome=outcome,created_at=now,updated_at=now))
 
     async def last_published_message_id(self,signal_id,destination_id):
         return await self.session.scalar(select(DestinationPublicationRecord.telegram_message_id).where(

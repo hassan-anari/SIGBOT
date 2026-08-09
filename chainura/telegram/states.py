@@ -45,7 +45,6 @@ class SignalCreate(StatesGroup):
     exchange_selection = State()
     native_search = State()
     direction = State()
-    entry = State()
     leverage = State()
     take_profits = State()
     stop_loss = State()

@@ -66,6 +66,14 @@ class EntryOutsideToleranceError(EntryValidationError):
     """Entry exceeds the approved tolerance against the reference price."""
 
 
+class InitialEntryDriftExceededError(EntryValidationError):
+    """The fresh P1 snapshot moved more than the Stage-One drift limit."""
+
+
+class PendingSignalStateError(ApplicationError):
+    """A durable signal cannot be resumed or finalized in its current state."""
+
+
 class InconsistentReferencePriceError(EntryValidationError):
     """A provider returned a malformed or context-inconsistent result."""
 
