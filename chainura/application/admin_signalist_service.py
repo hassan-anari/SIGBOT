@@ -3,11 +3,26 @@ from chainura.errors import InvalidSignalistInputError
 from chainura.application.pagination import Page, PageRequest
 
 class AdminSignalistService:
-    def __init__(self, main_admin_id: int, signalists, transactions):
-        self.main_admin_id=main_admin_id; self.signalists=signalists; self.transactions=transactions
-    async def create(self,telegram_user_id:int,display_name:str,telegram_username:str|None=None):
+    def __init__(
+        self,
+        main_admin_ids: tuple[int, ...],
+        signalists,
+        transactions,
+    ):
+        self.main_admin_ids = frozenset(main_admin_ids)
+        self.signalists = signalists
+        self.transactions = transactions
+
+    async def create(
+        self,
+        telegram_user_id: int,
+        display_name: str,
+        telegram_username: str | None = None,):
         validate_telegram_user_id(telegram_user_id)
-        if telegram_user_id == self.main_admin_id: raise InvalidSignalistInputError("main admin cannot be a signalist")
+        if telegram_user_id in self.main_admin_ids:
+            raise InvalidSignalistInputError(
+                "main admin cannot be a signalist"
+            )
         if telegram_username is not None:
             telegram_username=telegram_username.strip()
             if telegram_username.startswith("@"): telegram_username=telegram_username[1:]

@@ -93,7 +93,7 @@ class DestinationRecord(Base):
     destination_type: Mapped[DestinationType] = mapped_column(DESTINATION_TYPE_ENUM, nullable=False)
     access_level: Mapped[DestinationAccessLevel] = mapped_column(DESTINATION_ACCESS_ENUM, nullable=False)
     status: Mapped[DestinationStatus] = mapped_column(DESTINATION_STATUS_ENUM, nullable=False,
-                                                      default=DestinationStatus.INACTIVE)
+                                                      default=DestinationStatus.ACTIVE)
     daily_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)

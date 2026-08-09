@@ -70,7 +70,7 @@ class Destination:
                destination_type: DestinationType, access_level: DestinationAccessLevel,
                daily_limit: int) -> "Destination":
         return cls._validated(None, internal_name, telegram_chat_id, destination_type,
-                              access_level, DestinationStatus.INACTIVE, daily_limit, None, None)
+                              access_level, DestinationStatus.ACTIVE, daily_limit, None, None)
 
     @classmethod
     def rehydrate(cls, *, id: int, internal_name: str, telegram_chat_id: int,

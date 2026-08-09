@@ -16,11 +16,11 @@ class UpdateCaptionInput:
 def build_update_caption(data:UpdateCaptionInput)->str:
  symbol=iso(data.canonical_symbol)
  if data.kind is SignalEventKind.TP_HIT:
-  text=f"🎯 <b>تارگت {iso(data.tp_index)} {symbol} لمس شد</b>\n\nقیمت رویداد: {fmt_decimal(data.observed_reference_price)}\nبازده اهرمی: {fmt_decimal(data.leveraged_roi)}٪"
+  text=f"🎯 <b>تارگت {iso(data.tp_index)} {symbol} لمس شد</b>"
  elif data.kind is SignalEventKind.SL_HIT:
-  text=f"🛑 <b>حد ضرر {symbol} فعال شد</b>\n\nقیمت رویداد: {fmt_decimal(data.observed_reference_price)}\nنتیجه: {fmt_decimal(data.leveraged_roi)}٪"
+  text=f"🛑 <b>حد ضرر {symbol} فعال شد</b>"
  elif data.kind is SignalEventKind.BREAKEVEN:
-  text=f"⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>\n\nقیمت خروج: {fmt_decimal(data.observed_reference_price)}\nنتیجه: {fmt_decimal(Decimal('0'))}٪"
+  text=f"⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>"
  else:raise UpdateCaptionError('unsupported update kind')
  if len(text)>MAX_TELEGRAM_PHOTO_CAPTION:raise UpdateCaptionError('update caption exceeds Telegram photo limit')
  return text

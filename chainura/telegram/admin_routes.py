@@ -450,7 +450,10 @@ async def handle_navigation(query, parsed, state, destination_service, signalist
     return False
 
 
-@router.callback_query(F.data.startswith("p4:"))
+@router.callback_query(
+    F.data.startswith("p4:")
+    & ~F.data.startswith("p4:rp:")
+)
 async def callbacks(query: CallbackQuery, actor: Actor, callback_ack: CallbackAcknowledger,
                     state: FSMContext, signalist_service, destination_service,
                     assignment_service, admin_signalist_service, destination_inspector=None):

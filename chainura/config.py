@@ -53,26 +53,75 @@ def parse_positive_bigint(value: str, name: str) -> int:
 @dataclass(frozen=True, slots=True)
 class ApplicationSettings:
     database_url: str = field(repr=False)
-    main_admin_telegram_id: int = field(repr=False)
+    main_admin_telegram_ids: tuple[int, ...] = field(repr=False)
+    primary_main_admin_telegram_id: int = field(repr=False)
 
     @classmethod
-    def from_mapping(cls, mapping: Mapping[str, str]) -> "ApplicationSettings":
-        database_url = validate_database_url(_required(mapping, "DATABASE_URL"))
-        admin = parse_positive_bigint(
-            _required(mapping, "MAIN_ADMIN_TELEGRAM_ID"),
-            "MAIN_ADMIN_TELEGRAM_ID",
+    def from_mapping(
+        cls,
+        mapping: Mapping[str, str],
+    ) -> "ApplicationSettings":
+        database_url = validate_database_url(
+            _required(mapping, "DATABASE_URL")
         )
-        return cls(database_url, admin)
 
-    def is_main_admin(self, candidate_telegram_user_id: int) -> bool:
-        if isinstance(candidate_telegram_user_id, bool) or not isinstance(
-            candidate_telegram_user_id, int
+        raw_ids = _required(
+            mapping,
+            "MAIN_ADMIN_TELEGRAM_IDS",
+        )
+
+        admin_ids: list[int] = []
+
+        for raw_id in raw_ids.split(","):
+            admin_id = parse_positive_bigint(
+                raw_id.strip(),
+                "MAIN_ADMIN_TELEGRAM_IDS",
+            )
+
+            if admin_id not in admin_ids:
+                admin_ids.append(admin_id)
+
+        if not admin_ids:
+            raise InvalidApplicationConfigurationError(
+                "MAIN_ADMIN_TELEGRAM_IDS must contain at least one id"
+            )
+
+        primary_raw = mapping.get(
+            "PRIMARY_MAIN_ADMIN_TELEGRAM_ID"
+        )
+
+        primary_id = (
+            parse_positive_bigint(
+                primary_raw.strip(),
+                "PRIMARY_MAIN_ADMIN_TELEGRAM_ID",
+            )
+            if primary_raw and primary_raw.strip()
+            else admin_ids[0]
+        )
+
+        if primary_id not in admin_ids:
+            raise InvalidApplicationConfigurationError(
+                "PRIMARY_MAIN_ADMIN_TELEGRAM_ID must be included "
+                "in MAIN_ADMIN_TELEGRAM_IDS"
+            )
+
+        return cls(
+            database_url=database_url,
+            main_admin_telegram_ids=tuple(admin_ids),
+            primary_main_admin_telegram_id=primary_id,
+        )
+
+    def is_main_admin(
+        self,
+        candidate_telegram_user_id: int,
+    ) -> bool:
+        if (
+            isinstance(candidate_telegram_user_id, bool)
+            or not isinstance(candidate_telegram_user_id, int)
         ):
             return False
-        return (
-            0 < candidate_telegram_user_id <= MAX_SIGNED_BIGINT
-            and candidate_telegram_user_id == self.main_admin_telegram_id
-        )
+
+        return candidate_telegram_user_id in self.main_admin_telegram_ids
 
 
 def load_application_settings() -> ApplicationSettings:

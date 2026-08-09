@@ -264,7 +264,15 @@ class Runtime:
                 async def send_message(inner,telegram_id,text):
                     return await self.bot.send_message(telegram_id,text)
             if hasattr(sessions,"class_"):
-                self.admin_alert_worker=AdminAlertWorker(health_repository,AdminAlertTransport(),self.settings.application.main_admin_telegram_id,concurrency=self.settings.admin_alert_concurrency,max_attempts=self.settings.admin_alert_max_attempts,retry_base_seconds=self.settings.admin_alert_retry_base_seconds,sweep_seconds=self.settings.admin_alert_sweep_seconds)
+                self.admin_alert_worker = AdminAlertWorker(
+                    health_repository,
+                    AdminAlertTransport(),
+                    self.settings.application.primary_main_admin_telegram_id,
+                    concurrency=self.settings.admin_alert_concurrency,
+                    max_attempts=self.settings.admin_alert_max_attempts,
+                    retry_base_seconds=self.settings.admin_alert_retry_base_seconds,
+                    sweep_seconds=self.settings.admin_alert_sweep_seconds,
+                )
                 health_repository.wake_alerts=self.admin_alert_worker.wake
             notification_service=None
             if monitoring_service is not None:
@@ -332,7 +340,10 @@ class Runtime:
                 transactions, MarketReferencePriceProvider(market_probe, symbol_catalog, health_repository),
                 publication_wake=wake_background)
             admin_signalist_service = AdminSignalistService(
-                self.settings.application.main_admin_telegram_id, service, transactions)
+                self.settings.application.main_admin_telegram_ids,
+                service,
+                transactions,
+            )
             self.dispatcher = build_dispatcher(self.storage, idempotency, resolver,
                 signalist_service=service, destination_service=destination_service,
                 assignment_service=assignment_service,

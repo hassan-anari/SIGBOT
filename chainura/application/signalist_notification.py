@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime,timezone,timedelta
 from html import escape
 from sqlalchemy import select
+from decimal import Decimal, ROUND_HALF_UP
 from chainura.domain.monitoring import *
 from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.models import (SignalistNotificationRecord,SignalistRecord,
@@ -12,12 +13,54 @@ from chainura.persistence.models import (SignalistNotificationRecord,SignalistRe
 FSI="\u2068";PDI="\u2069"
 def iso(value)->str:return f"{FSI}{escape(str(value))}{PDI}"
 
-def event_text(kind,symbol,price,roi,tp_index=None):
-    symbol=iso(symbol);price=iso(price);roi=iso(roi)
-    if kind is SignalEventKind.TP_HIT:head=f"🎯 <b>تارگت {iso(tp_index)} {symbol} لمس شد</b>\n\nقیمت رویداد: {price}\nبازده اهرمی: {roi}٪"
-    elif kind is SignalEventKind.SL_HIT:head=f"🛑 <b>حد ضرر {symbol} فعال شد</b>\n\nقیمت رویداد: {price}\nنتیجه: {roi}٪"
-    else:head=f"⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>\n\nقیمت خروج: {price}\nنتیجه: {iso('0')}٪"
-    return head+"\n\nآیا این آپدیت برای مقصدها منتشر شود؟"
+
+def _plain_decimal(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def fmt_decimal(value: Decimal) -> str:
+    return iso(_plain_decimal(value))
+
+
+def fmt_percent(value: Decimal) -> str:
+    display_value = value.quantize(
+        Decimal("0.001"),
+        rounding=ROUND_HALF_UP,
+    )
+    if display_value == 0:
+        display_value = Decimal("0")
+    return fmt_decimal(display_value)
+
+def event_text(kind, symbol, price, roi, tp_index=None):
+    symbol_text = iso(symbol)
+    price_text = fmt_decimal(price)
+    roi_text = fmt_percent(roi)
+    if kind is SignalEventKind.TP_HIT:
+        if tp_index is None or tp_index < 1:
+            raise ValueError("tp_index is required for TP notification")
+        head = (
+            f"🎯 <b>تارگت {iso(tp_index)} {symbol_text} لمس شد</b>"
+            f"\n\nقیمت رویداد: {price_text}"
+            f"\nبازده اهرمی: {roi_text}٪"
+        )
+    elif kind is SignalEventKind.SL_HIT:
+        head = (
+            f"🛑 <b>حد ضرر {symbol_text} فعال شد</b>"
+            f"\n\nقیمت رویداد: {price_text}"
+            f"\nنتیجه: {roi_text}٪"
+        )
+    elif kind is SignalEventKind.BREAKEVEN:
+        head = (
+            f"⚖️ <b>سیگنال {symbol_text} در بریک‌ایون بسته شد</b>"
+            f"\n\nقیمت خروج: {price_text}"
+            f"\nنتیجه: {fmt_percent(Decimal('0'))}٪"
+        )
+    else:
+        raise ValueError("unsupported event kind")
+    return head + "\n\nآیا این آپدیت برای مقصدها منتشر شود؟"
 
 def prompt_text(symbol,entry,current):
     return f"⚖️ قیمت {iso(symbol)} به محدوده بریک‌ایون بازگشته است.\n\nقیمت ورود: {iso(entry)}\nقیمت فعلی: {iso(current)}\n\nآیا بریک‌ایون ثبت شود؟"
