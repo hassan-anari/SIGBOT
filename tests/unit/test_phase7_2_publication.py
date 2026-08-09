@@ -39,6 +39,8 @@ from chainura.persistence.models import (
     UpdatePublicationRequestRecord,
 )
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
+from chainura.application.message_templates import DestinationMessageTemplateService
+from chainura.domain.message_template import DestinationMessageKind
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
 
@@ -62,6 +64,12 @@ class RecordingPublisher:
         self.next_id += 1
         return self.next_id
 
+    async def send_details(self,chat_id,text,reply_to_message_id):
+        self.texts.append((chat_id,text,reply_to_message_id));self.next_id+=1;return self.next_id
+
+    async def send_initial(self,chat_id,path,caption):
+        self.next_id+=1;self.photos.append((chat_id,path,caption,None,self.next_id));return self.next_id
+
 
 class RecordingImages:
     class Output:
@@ -76,6 +84,10 @@ class RecordingImages:
         self.calls.append((event.kind, event.roi_basis_price, event.leveraged_roi, exchange))
         if self.fail:
             raise AssertionError("SL must not render")
+        return self.Output()
+
+    async def render_initial_signal(self,signal,exchange,destination_id,now):
+        self.calls.append(("initial",signal.entry_price,dict(signal.initial_source_prices)[exchange],exchange))
         return self.Output()
 
     def cleanup(self, path):
@@ -138,6 +150,50 @@ class Phase72PublicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(images.calls); self.assertFalse(publisher.photos)
         self.assertEqual(len(publisher.texts), 1); self.assertIn("حد ضرر", publisher.texts[0][1])
         self.assertEqual((await self.row(delivery_id)).status, PublicationStatus.SENT)
+
+    async def test_destination_tp_override_reaches_photo_with_exact_event_values(self):
+        delivery_id, _, destination_id = await self.seed(SignalEventKind.TP_HIT, details_status=PublicationStatus.SENT,
+                                                         observed=Decimal("111"), basis=Decimal("110"), roi=Decimal("100"))
+        templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_destination(DestinationMessageKind.TP_HIT,destination_id,
+            "CUSTOM TP {tp_price} {execution_price} {roi}")
+        images=RecordingImages();publisher=RecordingPublisher()
+        await UpdatePublicationService(self.transactions,images,publisher,lambda:NOW,message_templates=templates).process(delivery_id)
+        self.assertFalse(publisher.texts);self.assertEqual(len(publisher.photos),1)
+        self.assertIn("CUSTOM TP",publisher.photos[0][2]);self.assertIn("110",publisher.photos[0][2])
+        self.assertEqual(images.calls[0][1:3],(Decimal("110"),Decimal("100")))
+
+    async def test_destination_sl_override_reaches_text_without_rendering(self):
+        delivery_id, _, destination_id = await self.seed(SignalEventKind.SL_HIT, basis=Decimal("90"),roi=Decimal("-100"),tp_index=None)
+        templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_destination(DestinationMessageKind.SL_HIT,destination_id,
+            "CUSTOM SL {stop_loss} {execution_price} {roi}")
+        images=RecordingImages(fail=True);publisher=RecordingPublisher()
+        await UpdatePublicationService(self.transactions,images,publisher,lambda:NOW,message_templates=templates).process(delivery_id)
+        self.assertFalse(images.calls);self.assertFalse(publisher.photos);self.assertEqual(len(publisher.texts),1)
+        self.assertIn("CUSTOM SL",publisher.texts[0][1]);self.assertIn("90",publisher.texts[0][1])
+
+    async def test_destination_details_override_keeps_initial_reply_parent(self):
+        _,signal_id,destination_id=await self.seed(SignalEventKind.TP_HIT,details_status=PublicationStatus.PENDING)
+        templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_destination(DestinationMessageKind.SIGNAL_DETAILS,destination_id,"CUSTOM DETAILS {symbol}")
+        publisher=RecordingPublisher()
+        from chainura.application.publication import SignalDetailsPublicationService
+        await SignalDetailsPublicationService(self.transactions,publisher,lambda:NOW,message_templates=templates).process(1)
+        self.assertIn("CUSTOM DETAILS",publisher.texts[0][1]);self.assertEqual(publisher.texts[0][2],100)
+
+    async def test_destination_initial_override_keeps_photo_and_p0_p1_snapshot(self):
+        _,signal_id,destination_id=await self.seed(SignalEventKind.TP_HIT)
+        async with self.sessions() as session,session.begin():
+            initial=await session.get(DestinationPublicationRecord,1);initial.status=PublicationStatus.PENDING;initial.telegram_message_id=None;initial.sent_at=None
+            price=await session.get(SignalInitialPriceRecord,(signal_id,Exchange.OURBIT));price.price=Decimal("100.5")
+        templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_destination(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id,"CUSTOM INITIAL {entry} {last_price}")
+        images=RecordingImages();publisher=RecordingPublisher()
+        from chainura.application.publication import InitialPublicationService
+        await InitialPublicationService(self.transactions,images,publisher,lambda:NOW,message_templates=templates).process(1)
+        self.assertEqual(len(publisher.photos),1);self.assertIn("CUSTOM INITIAL",publisher.photos[0][2])
+        self.assertEqual(images.calls[0][1:3],(Decimal("100"),Decimal("100.5")))
 
     async def test_details_pending_defers_then_sent_becomes_parent(self):
         delivery_id, signal_id, destination_id = await self.seed(SignalEventKind.TP_HIT, details_status=PublicationStatus.PENDING)

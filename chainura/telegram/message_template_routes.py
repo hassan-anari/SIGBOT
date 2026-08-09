@@ -62,6 +62,10 @@ async def callbacks(query:CallbackQuery,actor:Actor,callback_ack:CallbackAcknowl
         await query.message.answer(texts.MESSAGE_TEMPLATE_REMOVED);await panel(query.message,state,message_template_service,token);return
     if action=="dest":
         page=await destination_service.list_page(None,PageRequest(int(args[0])));rows=[[btn(texts.destination_button_label(d),cb(token,"pick",d.id))] for d in page.items]
+        navigation=[]
+        if page.page>1:navigation.append(btn(texts.BUTTON_PREVIOUS,cb(token,"dest",page.page-1)))
+        if page.page<page.pages:navigation.append(btn(texts.BUTTON_NEXT,cb(token,"dest",page.page+1)))
+        if navigation:rows.append(navigation)
         rows.append([btn(texts.BUTTON_BACK_STEP,cb(token,"kind",data["kind"]))]);await query.message.answer(texts.MESSAGE_TEMPLATE_SELECT_DESTINATION,reply_markup=kb(rows));return
     if action=="pick":
         destination=await destination_service.get(int(args[0]));await state.update_data(destination_id=destination.id,destination_name=destination.internal_name);await panel(query.message,state,message_template_service,token);return
