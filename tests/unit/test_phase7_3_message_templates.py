@@ -10,7 +10,16 @@ class MessageTemplateRenderingTests(unittest.TestCase):
         sample={name:"value" for names in __import__('chainura.application.message_templates',fromlist=['PLACEHOLDERS']).PLACEHOLDERS.values() for name in names}
         sample["private_tag"]=""
         for kind,template in BUILTIN_TEMPLATES.items():
-            with self.subTest(kind=kind): self.assertTrue(render_template(kind,template,sample))
+            with self.subTest(kind=kind):
+                if kind is Kind.INITIAL_PHOTO_CAPTION:
+                    self.assertEqual(template, "")
+                else:
+                    self.assertTrue(render_template(kind,template,sample))
+
+    def test_custom_templates_including_initial_must_not_be_blank(self):
+        for kind in Kind:
+            with self.subTest(kind=kind), self.assertRaises(MessageTemplateValidationError):
+                validate_template(kind, "   ")
 
     def test_rejects_unsafe_placeholder_forms(self):
         for value in ("{unknown}","{symbol.__class__}","{symbol[0]}","{symbol!r}","{roi:.2f}","{symbol"):

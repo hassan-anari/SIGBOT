@@ -13,7 +13,7 @@ from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, format_de
 
 
 BUILTIN_TEMPLATES = {
-    DestinationMessageKind.INITIAL_PHOTO_CAPTION: "📊 <b>شات اولیه {symbol}</b>",
+    DestinationMessageKind.INITIAL_PHOTO_CAPTION: "",
     DestinationMessageKind.SIGNAL_DETAILS: (
         "📊 <b>سیگنال {symbol}</b>\n📈 جهت: <b>{direction}</b>\n🎯 ورود: {entry}\n"
         "⚡️ اهرم: {leverage}\n\nاهداف:\n{targets}\n\n🛑 حد ضرر: {stop_loss}\n\n{private_tag}"
@@ -193,6 +193,9 @@ class DestinationMessageTemplateService:
 
     async def resolve(self, kind, *, destination_id, context):
         template, source = await self._template(kind, destination_id)
+        if (kind is DestinationMessageKind.INITIAL_PHOTO_CAPTION
+                and source is MessageTemplateSource.BUILTIN and template == ""):
+            return ResolvedMessageTemplate("", source, template)
         return ResolvedMessageTemplate(render_template(kind, template, context), source, template)
 
     async def effective_template(self, kind, destination_id=None):

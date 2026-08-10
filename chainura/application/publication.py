@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy import select
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
-from chainura.application.initial_caption import build_initial_caption, build_signal_details_text
+from chainura.application.initial_caption import build_signal_details_text
 from chainura.application.message_templates import initial_context, details_context, event_context
 from chainura.domain.message_template import DestinationMessageKind
 from chainura.domain.destination import DestinationStatus
@@ -35,7 +35,7 @@ def update_content_type(event_kind):
 class TelegramPhotoPublisher:
  def __init__(self,bot):self.bot=bot
  async def send_initial(self,chat_id,path,caption):
-  try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption)
+  try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption or None)
   except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
   except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
   except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
@@ -217,7 +217,8 @@ class InitialPublicationService:
    async with self.transactions() as tx:signal=await tx.signals.get_by_id(delivery.signal_id);await tx.commit()
    if self.message_templates:
     caption=(await self.message_templates.resolve(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id=delivery.destination_id,context=initial_context(signal,delivery.selected_exchange,private=delivery.private))).text
-   else:caption=build_initial_caption(signal,private=delivery.private)
+   else:caption=None
+   caption=caption or None
    output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now)
    async with self.transactions() as tx:
     ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,delivery.destination_id,self.clock())

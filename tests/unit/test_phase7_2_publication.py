@@ -188,12 +188,38 @@ class Phase72PublicationTests(unittest.IsolatedAsyncioTestCase):
             initial=await session.get(DestinationPublicationRecord,1);initial.status=PublicationStatus.PENDING;initial.telegram_message_id=None;initial.sent_at=None
             price=await session.get(SignalInitialPriceRecord,(signal_id,Exchange.OURBIT));price.price=Decimal("100.5")
         templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_global(DestinationMessageKind.INITIAL_PHOTO_CAPTION,"GLOBAL INITIAL {symbol}")
         await templates.set_destination(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id,"CUSTOM INITIAL {entry} {last_price}")
         images=RecordingImages();publisher=RecordingPublisher()
         from chainura.application.publication import InitialPublicationService
         await InitialPublicationService(self.transactions,images,publisher,lambda:NOW,message_templates=templates).process(1)
         self.assertEqual(len(publisher.photos),1);self.assertIn("CUSTOM INITIAL",publisher.photos[0][2])
         self.assertEqual(images.calls[0][1:3],(Decimal("100"),Decimal("100.5")))
+
+    async def test_builtin_initial_photo_has_no_caption(self):
+        await self.seed(SignalEventKind.TP_HIT)
+        async with self.sessions() as session,session.begin():
+            initial=await session.get(DestinationPublicationRecord,1);initial.status=PublicationStatus.PENDING;initial.telegram_message_id=None;initial.sent_at=None
+        publisher=RecordingPublisher();templates=DestinationMessageTemplateService(self.transactions)
+        from chainura.application.publication import InitialPublicationService
+        await InitialPublicationService(self.transactions,RecordingImages(),publisher,lambda:NOW,message_templates=templates).process(1)
+        self.assertIsNone(publisher.photos[0][2])
+
+    async def test_global_initial_override_is_sent_and_removal_returns_to_no_caption(self):
+        _,_,destination_id=await self.seed(SignalEventKind.TP_HIT)
+        async with self.sessions() as session,session.begin():
+            initial=await session.get(DestinationPublicationRecord,1);initial.status=PublicationStatus.PENDING;initial.telegram_message_id=None;initial.sent_at=None
+        templates=DestinationMessageTemplateService(self.transactions)
+        await templates.set_global(DestinationMessageKind.INITIAL_PHOTO_CAPTION,"GLOBAL INITIAL {symbol}")
+        from chainura.application.publication import InitialPublicationService
+        publisher=RecordingPublisher();service=InitialPublicationService(self.transactions,RecordingImages(),publisher,lambda:NOW,message_templates=templates)
+        await service.process(1)
+        self.assertIn("GLOBAL INITIAL",publisher.photos[0][2])
+        await templates.remove_global(DestinationMessageKind.INITIAL_PHOTO_CAPTION)
+        async with self.sessions() as session,session.begin():
+            initial=await session.get(DestinationPublicationRecord,1);initial.status=PublicationStatus.PENDING;initial.telegram_message_id=None;initial.sent_at=None
+        await service.process(1)
+        self.assertIsNone(publisher.photos[1][2])
 
     async def test_details_pending_defers_then_sent_becomes_parent(self):
         delivery_id, signal_id, destination_id = await self.seed(SignalEventKind.TP_HIT, details_status=PublicationStatus.PENDING)
