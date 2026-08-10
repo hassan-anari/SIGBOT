@@ -241,7 +241,8 @@ async def tp_input(message:Message,actor:Actor,state:FSMContext):
         else:
             invalid=False; values=existing+(value,); await state.update_data(take_profits=[str(x) for x in values])
     if invalid: await message.answer(texts.SIGNAL_INVALID_DIRECTIONAL_PRICE); return
-    await message.answer(texts.signal_tp_list(values),reply_markup=signal_tp_actions(data["flow_token"],True))
+    await message.answer(texts.signal_tp_list(values),reply_markup=signal_tp_actions(
+        data["flow_token"],True,details_only=bool(data.get("details_only"))))
 
 @router.message(SignalCreate.stop_loss, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def sl_input(message:Message,actor:Actor,state:FSMContext):
@@ -272,10 +273,11 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         flow=_token()
         await state.set_state(SignalCreate.take_profits)
         await state.set_data({"flow_token":flow,"pending_signal_id":pending.id,
-            "signalist_id":pending.signalist_id,"direction":pending.direction.value,
-            "entry_price":str(pending.entry_price),"take_profits":[]})
+            "signalist_id":pending.signalist_id,"canonical_symbol":pending.canonical_symbol,
+            "direction":pending.direction.value,"entry_price":str(pending.entry_price),
+            "leverage":pending.leverage,"take_profits":[],"details_only":True})
         await callback.message.answer(texts.SIGNAL_ASK_TP,
-            reply_markup=signal_tp_actions(flow,False));return
+            reply_markup=signal_tp_actions(flow,False,details_only=True));return
     reconciliation=await reconcile_finalizing(callback,callback.message,state,
         signal_service,show_live=(kind!="confirm" or actor.kind is not ActorKind.ACTIVE_SIGNALIST),actor=actor)
     if reconciliation is not None:
@@ -415,7 +417,8 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         async with phase5_lock(callback):
             current_data=await state.get_data()
             if (allowed.get(callback_data.ref) != await state.get_state()
-                    or current_data.get("flow_token") != flow): return
+                    or current_data.get("flow_token") != flow
+                    or (current_data.get("details_only") and callback_data.ref == "leverage")): return
             response,markup=await _back_state(state,current_data,callback_data.ref,flow)
         await callback.message.answer(response,reply_markup=markup)
 
@@ -428,7 +431,7 @@ async def _back_state(state,data,target,flow):
         else: await state.set_state(SignalCreate.shared_search); return texts.ASK_SHARED_SYMBOL,signal_shared_navigation(flow)
     elif target=="direction": await state.set_state(SignalCreate.direction); return texts.SIGNAL_SELECT_DIRECTION,signal_directions(flow)
     elif target=="leverage": await state.set_state(SignalCreate.leverage); return texts.SIGNAL_ASK_LEVERAGE,signal_form_navigation(flow,"direction")
-    elif target=="tp": await state.set_state(SignalCreate.take_profits); return texts.SIGNAL_ASK_TP,signal_tp_actions(flow,bool(data.get("take_profits")))
+    elif target=="tp": await state.set_state(SignalCreate.take_profits); return texts.SIGNAL_ASK_TP,signal_tp_actions(flow,bool(data.get("take_profits")),details_only=bool(data.get("details_only")))
     elif target=="sl": await state.set_state(SignalCreate.stop_loss); return texts.SIGNAL_ASK_SL,signal_form_navigation(flow,"tp")
 
 def _item(value): return {"canonical_symbol":value.canonical_symbol,"native_symbol":value.native_symbol,"base_asset":value.base_asset,"quote_asset":value.quote_asset,"current_price":str(value.current_price) if value.current_price is not None else None}

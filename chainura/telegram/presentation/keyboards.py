@@ -70,11 +70,15 @@ def signal_directions(flow: str) -> InlineKeyboardMarkup:
       [InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"symbol")),InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))]])
 
 
-def signal_tp_actions(flow: str, has_tps: bool) -> InlineKeyboardMarkup:
+def signal_tp_actions(flow: str, has_tps: bool, *, details_only: bool = False) -> InlineKeyboardMarkup:
     from chainura.telegram.presentation.signal_callbacks import signal_callback
     rows=[[InlineKeyboardButton(text=texts.SIGNAL_TP_ADD,callback_data=signal_callback("tp",flow,"add"))]]
     if has_tps: rows.append([InlineKeyboardButton(text=texts.SIGNAL_TP_FINISH,callback_data=signal_callback("tp",flow,"finish"))])
-    rows.append([InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"leverage")),InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))])
+    navigation=[]
+    if not details_only:
+        navigation.append(InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"leverage")))
+    navigation.append(InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow)))
+    rows.append(navigation)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
