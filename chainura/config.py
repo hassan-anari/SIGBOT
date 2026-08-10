@@ -157,6 +157,7 @@ class TelegramRuntimeSettings:
     update_publication_sweep_seconds: float = 5.0
     monitoring_enabled: bool = True
     monitoring_interval_seconds: float = 5.0
+    market_price_poll_seconds: float = 5.0
     monitoring_concurrency: int = 8
     monitoring_batch_size: int = 100
     breakeven_min_open_seconds: int = 300
@@ -202,11 +203,11 @@ class TelegramRuntimeSettings:
         enabled=mapping.get("MONITORING_ENABLED","true").strip().lower()
         if enabled not in ("true","false"):raise InvalidApplicationConfigurationError("MONITORING_ENABLED must be true or false")
         try:
-            mi=float(mapping.get("MONITORING_INTERVAL_SECONDS","5"));mc=int(mapping.get("MONITORING_CONCURRENCY","8"));mb=int(mapping.get("MONITORING_BATCH_SIZE","100"))
+            mi=float(mapping.get("MONITORING_INTERVAL_SECONDS","5"));mp=float(mapping.get("MARKET_PRICE_POLL_SECONDS","5"));mc=int(mapping.get("MONITORING_CONCURRENCY","8"));mb=int(mapping.get("MONITORING_BATCH_SIZE","100"))
             age=int(mapping.get("BREAKEVEN_MIN_OPEN_SECONDS","300"));fav=Decimal(mapping.get("BREAKEVEN_FAVORABLE_MOVE_PERCENT","1.00"));tol=Decimal(mapping.get("BREAKEVEN_EXECUTION_TOLERANCE_PERCENT","0.10"));rearm=Decimal(mapping.get("BREAKEVEN_REARM_DISTANCE_PERCENT","0.20"));cool=int(mapping.get("BREAKEVEN_PROMPT_COOLDOWN_SECONDS","900"))
             nc=int(mapping.get("SIGNALIST_NOTIFICATION_CONCURRENCY","3"));na=int(mapping.get("SIGNALIST_NOTIFICATION_MAX_ATTEMPTS","3"));nr=float(mapping.get("SIGNALIST_NOTIFICATION_RETRY_BASE_SECONDS","0.5"));ns=float(mapping.get("SIGNALIST_NOTIFICATION_SWEEP_SECONDS","5"));aac=int(mapping.get("ADMIN_ALERT_CONCURRENCY","1"));aaa=int(mapping.get("ADMIN_ALERT_MAX_ATTEMPTS","3"));aar=float(mapping.get("ADMIN_ALERT_RETRY_BASE_SECONDS","0.5"));aas=float(mapping.get("ADMIN_ALERT_SWEEP_SECONDS","5"))
         except (ValueError,InvalidOperation) as exc:raise InvalidApplicationConfigurationError("Phase 6A settings must be numeric") from exc
-        if not .5<=mi<=300 or not 1<=mc<=32 or not 1<=mb<=1000:raise InvalidApplicationConfigurationError("monitoring settings are out of range")
+        if not .5<=mi<=300 or not .5<=mp<=300 or not 1<=mc<=32 or not 1<=mb<=1000:raise InvalidApplicationConfigurationError("monitoring settings are out of range")
         if age<0 or cool<0 or any(not x.is_finite() or x<=0 for x in (fav,tol,rearm)) or not tol<rearm or not fav>tol:raise InvalidApplicationConfigurationError("Breakeven settings are inconsistent")
         if not 1<=nc<=20 or not 1<=na<=10 or not .1<=nr<=60 or not .5<=ns<=300:raise InvalidApplicationConfigurationError("Signalist notification settings are out of range")
         if not 1<=aac<=5 or not 1<=aaa<=10 or not .1<=aar<=60 or not .5<=aas<=300:raise InvalidApplicationConfigurationError("Admin alert settings are out of range")
@@ -215,7 +216,7 @@ class TelegramRuntimeSettings:
             send_retry_base_seconds=retry,publication_sweep_seconds=sweep,
             update_publication_concurrency=upd_concurrency,update_send_max_attempts=upd_attempts,
             update_send_retry_base_seconds=upd_retry,update_publication_sweep_seconds=upd_sweep,
-            monitoring_enabled=enabled=="true",monitoring_interval_seconds=mi,monitoring_concurrency=mc,monitoring_batch_size=mb,
+            monitoring_enabled=enabled=="true",monitoring_interval_seconds=mi,market_price_poll_seconds=mp,monitoring_concurrency=mc,monitoring_batch_size=mb,
             breakeven_min_open_seconds=age,breakeven_favorable_move_percent=fav,breakeven_execution_tolerance_percent=tol,breakeven_rearm_distance_percent=rearm,breakeven_prompt_cooldown_seconds=cool,
             signalist_notification_concurrency=nc,signalist_notification_max_attempts=na,signalist_notification_retry_base_seconds=nr,signalist_notification_sweep_seconds=ns,
             admin_alert_concurrency=aac,admin_alert_max_attempts=aaa,admin_alert_retry_base_seconds=aar,admin_alert_sweep_seconds=aas)
