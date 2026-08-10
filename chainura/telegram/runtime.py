@@ -43,7 +43,7 @@ from chainura.telegram.event_routes import router as event_router
 from chainura.telegram.active_signal_routes import router as active_signal_router
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
-from chainura.application.market_gateway import BatchedMarketSnapshotProvider
+from chainura.application.market_gateway import BatchedMarketSnapshotProvider, MarketPriceWorker
 from chainura.application.monitoring import MonitoringService,MonitoringWorker,BreakevenSettings
 from chainura.application.health import HealthRepository, AdminAlertWorker
 from chainura.application.reporting import ReportingRepository, ReportingService
@@ -139,6 +139,7 @@ class Runtime:
         self.details_publication_worker = None
         self.details_publication_task = None
         self.monitoring_worker=None;self.monitoring_task=None
+        self.market_worker=None;self.market_task=None
         self.notification_worker=None;self.notification_task=None
         self.admin_alert_worker=None;self.admin_alert_task=None
         self.cancellation_publication_worker=None;self.cancellation_publication_task=None
@@ -263,6 +264,12 @@ class Runtime:
                 monitoring_service=MonitoringService(sessions,BatchedMarketSnapshotProvider(market_probe,symbol_catalog,health_repository),
                 BreakevenSettings(self.settings.breakeven_min_open_seconds,self.settings.breakeven_favorable_move_percent,self.settings.breakeven_execution_tolerance_percent,self.settings.breakeven_rearm_distance_percent,self.settings.breakeven_prompt_cooldown_seconds))
                 await self._startup_await(monitoring_service.reconcile())
+            self.market_worker = MarketPriceWorker(
+                market_probe, symbol_catalog,
+                monitoring_service.load_work if monitoring_service is not None else None,
+                self.settings.market_price_poll_seconds,
+            )
+            symbol_catalog.market_service = self.market_worker
             class DirectTransport:
                 async def send(inner,telegram_id,text,kind,source_id):
                     if kind is NotificationKind.EVENT:
@@ -346,6 +353,9 @@ class Runtime:
                 await self._startup_await(self.details_publication_worker.start())
                 self.details_publication_task=self.details_publication_worker.task
                 self.details_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"signal details publication worker"))
+            await self._startup_await(self.market_worker.start())
+            self.market_task = self.market_worker.task
+            self.market_task.add_done_callback(lambda task:self._observed_worker_done(task,"market price worker"))
             if self.monitoring_worker is not None:
                 await self._startup_await(self.monitoring_worker.start())
                 self.monitoring_task=self.monitoring_worker.task
@@ -417,6 +427,7 @@ class Runtime:
         watched={self.polling_task,self.renewal_task,shutdown_waiter}
         if self.publication_task is not None:watched.add(self.publication_task)
         if self.monitoring_task is not None:watched.add(self.monitoring_task)
+        if self.market_task is not None:watched.add(self.market_task)
         if self.notification_task is not None:watched.add(self.notification_task)
         if self.update_publication_task is not None:watched.add(self.update_publication_task)
         if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
@@ -442,6 +453,10 @@ class Runtime:
             self._observe_task_failure(self.monitoring_task,"monitoring worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "monitoring worker stopped unexpectedly"
+        if self.market_task is not None and self.market_task in done:
+            self._observe_task_failure(self.market_task,"market price worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "market price worker stopped unexpectedly"
         if self.notification_task is not None and self.notification_task in done:
             self._observe_task_failure(self.notification_task,"notification worker")
             if self.state is RuntimeState.RUNNING:
@@ -508,6 +523,8 @@ class Runtime:
 
             if self.monitoring_worker:
                 await self._best_effort(self.monitoring_worker.stop(), "monitoring worker")
+            if self.market_worker:
+                await self._best_effort(self.market_worker.stop(), "market price worker")
             if self.notification_worker:
                 await self._best_effort(self.notification_worker.stop(), "Signalist notification worker")
             if self.admin_alert_worker:
