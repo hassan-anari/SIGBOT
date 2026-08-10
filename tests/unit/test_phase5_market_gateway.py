@@ -2,9 +2,10 @@ import unittest
 from datetime import datetime,timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from chainura.application.market_gateway import MarketReferencePriceProvider,SymbolCatalogProvider
+from chainura.application.market_gateway import (BatchedMarketSnapshotProvider,
+ MarketPriceWorker,MarketReferencePriceProvider,SymbolCatalogProvider)
 from chainura.domain.destination import Exchange
-from chainura.domain.signal import SignalMode
+from chainura.domain.signal import PriceSourceType,SignalMode
 from models import Instrument,PriceTick
 class Adapter:
  def __init__(self,name,ticks,instruments=()): self.name=name; self.ticks=ticks; self.instruments=instruments; self.symbol_map={}
@@ -77,3 +78,61 @@ class CatalogReadinessTests(unittest.IsolatedAsyncioTestCase):
   result=await catalog.search_exchange(Exchange.LBANK,'btc')
   self.assertEqual(tuple(x.native_symbol for x in result.items),('btc_usdt',))
   self.assertNotIn('unprocessed',probe.adapters[2].symbol_map)
+
+class ProductionLikeAdapter:
+ def __init__(self,name,native,prices):
+  self.name=name;self.native=native;self.prices=list(prices);self.symbol_map={};self.price_calls=0;self.catalog_calls=0
+ async def fetch_instruments(self):
+  self.catalog_calls+=1;raise TimeoutError('catalog unavailable')
+ async def fetch_prices(self):
+  self.price_calls+=1
+  raw=self.prices[min(self.price_calls-1,len(self.prices)-1)]
+  if isinstance(raw,BaseException):raise raw
+  canonical=self.symbol_map.get(self.native)
+  if canonical is None:raise ValueError('no usable last prices')
+  return [PriceTick(self.name,self.native,canonical,Decimal(raw),datetime.now(timezone.utc),'raw')]
+
+def work(signal_id,symbol='BTCUSDT'):
+ return SimpleNamespace(signal_id=signal_id,mode=SignalMode.COMPOSITE,selected_exchange=None,
+  canonical_symbol=symbol,price_source_type=PriceSourceType.COMPOSITE,
+  exchange_symbols=tuple((exchange,{'ourbit':'BTCUSDT','toobit':'BTCUSDT','lbank':'btc_usdt'}[exchange.value]) for exchange in Exchange))
+
+class RestartMarketTests(unittest.IsolatedAsyncioTestCase):
+ def probe(self,sequences=None):
+  p=Probe();p.instruments={};p.common_symbols=set();p.max_price_age=__import__('datetime').timedelta(seconds=15);p.max_spread_percent=Decimal('5')
+  p._require_aware=lambda value:value;p._spread_percent=lambda a,b:(max(a,b)-min(a,b))/min(a,b)*100
+  sequences=sequences or {}
+  p.adapters=[ProductionLikeAdapter('ourbit','BTCUSDT',sequences.get('ourbit',['99'])),ProductionLikeAdapter('toobit','BTCUSDT',sequences.get('toobit',['100'])),ProductionLikeAdapter('lbank','btc_usdt',sequences.get('lbank',['101']))]
+  return p
+ async def test_snapshot_hydrates_production_like_adapters_before_parsing(self):
+  p=self.probe();catalog=SymbolCatalogProvider(p)
+  decisions=await BatchedMarketSnapshotProvider(p,catalog).snapshot((work(1),work(2)))
+  self.assertEqual(set(decisions),{1,2});self.assertEqual(decisions[1].reference_price,Decimal('100'))
+  self.assertTrue(all(adapter.price_calls==1 for adapter in p.adapters))
+  self.assertTrue(all(adapter.catalog_calls==0 for adapter in p.adapters))
+ async def test_persisted_composite_mappings_parse_without_catalog_or_search(self):
+  p=self.probe();catalog=SymbolCatalogProvider(p);catalog._shared_ready=True
+  worker=MarketPriceWorker(p,catalog,lambda limit: self._works((work(1),work(2))))
+  catalog.market_service=worker
+  await worker.run_cycle()
+  decisions=await BatchedMarketSnapshotProvider(p,catalog).snapshot((work(1),work(2)))
+  self.assertEqual(set(decisions),{1,2});self.assertEqual(decisions[1].reference_price,Decimal('100'))
+  self.assertEqual(len(decisions[1].source_prices),3)
+  self.assertTrue(all(adapter.price_calls==1 for adapter in p.adapters))
+  self.assertTrue(all(adapter.catalog_calls==0 for adapter in p.adapters))
+ async def test_price_failure_is_retried_and_recovers_without_discovery(self):
+  p=self.probe({'toobit':[TimeoutError('down'),'100']});catalog=SymbolCatalogProvider(p);catalog._shared_ready=True
+  worker=MarketPriceWorker(p,catalog,lambda limit:self._works((work(1),)))
+  catalog.market_service=worker
+  await worker.run_cycle();first=(await BatchedMarketSnapshotProvider(p,catalog).snapshot((work(1),)))[1]
+  self.assertEqual(len(first.source_prices),2)
+  await worker.run_cycle();decision=(await BatchedMarketSnapshotProvider(p,catalog).snapshot((work(1),)))[1]
+  self.assertEqual(decision.reference_price,Decimal('100'));self.assertEqual(p.adapters[1].price_calls,2)
+ async def test_always_on_worker_polls_all_exchanges_repeatedly_with_zero_signals(self):
+  p=self.probe({'toobit':['100',TimeoutError('temporary'),'100']});catalog=SymbolCatalogProvider(p);catalog._shared_ready=True
+  for adapter in p.adapters:adapter.symbol_map[adapter.native]='BTCUSDT'
+  worker=MarketPriceWorker(p,catalog,lambda limit:self._works(()),poll_seconds=.01);catalog.market_service=worker
+  await worker.start();await __import__('asyncio').sleep(.055);await worker.stop()
+  self.assertTrue(worker.task.done());self.assertTrue(all(adapter.price_calls>=3 for adapter in p.adapters))
+  self.assertIn(('BTCUSDT','toobit'),p.latest)
+ async def _works(self,value):return value

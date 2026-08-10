@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
@@ -15,6 +16,7 @@ from chainura.errors import SymbolCatalogError
 from market import MarketProbe, READY_STATUSES
 
 PAGE_SIZE = 8
+LOGGER = logging.getLogger("chainura.market")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +71,7 @@ class SymbolCatalogProvider:
         self._snapshot_lock = asyncio.Lock()
         self._shared_ready = False
         self._exchange_ready: set[Exchange] = set()
+        self.market_service = None
 
     def _clock(self):
         import datetime as _dt
@@ -164,7 +167,10 @@ class SymbolCatalogProvider:
                 item = next(x for x in self._probe.instruments["ourbit"] if x.canonical_symbol == symbol)
                 rows.append(SymbolContract(symbol, mappings["ourbit"][symbol], item.base_asset, item.quote_asset, None))
         result = _page(rows, page, needle)
-        await self._fetch_prices(tuple(Exchange))
+        if self.market_service is not None:
+            await self.market_service.refresh_prices(tuple(Exchange))
+        else:
+            await self._fetch_prices(tuple(Exchange))
         now = self._clock()
         priced = []
         for item in result.items:
@@ -185,7 +191,7 @@ class SymbolCatalogProvider:
         needle = _query(query)
         rows = [SymbolContract(x.canonical_symbol, x.exchange_symbol, x.base_asset, x.quote_asset, exchange) for x in self._probe.instruments.get(exchange.value, ()) if needle in x.canonical_symbol.casefold() or needle in x.exchange_symbol.casefold()]
         result = _page(rows, page, needle)
-        raw = await self._fetch_prices((exchange,))
+        raw = (await self.market_service.refresh_prices((exchange,))) if self.market_service is not None else await self._fetch_prices((exchange,))
         prices = {x.exchange_symbol: x.last_price for x in raw.get(exchange, ()) if isinstance(x.last_price, Decimal) and x.last_price.is_finite() and x.last_price > 0}
         return SymbolSearchPage(tuple(SymbolContract(x.canonical_symbol, x.native_symbol, x.base_asset, x.quote_asset, x.exchange, prices.get(x.native_symbol)) for x in result.items), result.page, result.pages)
 
@@ -202,7 +208,10 @@ class MarketReferencePriceProvider:
     async def get_reference_price(self, *, mode: SignalMode, canonical_symbol: str, selected_exchange: Exchange | None, native_symbol: str | None) -> ReferencePriceResult:
         if mode is SignalMode.COMPOSITE:
             await self._catalog._ensure_discovered()
-            await self._catalog._fetch_prices(tuple(Exchange))
+            if self._catalog.market_service is not None:
+                await self._catalog.market_service.refresh_prices(tuple(Exchange))
+            else:
+                await self._catalog._fetch_prices(tuple(Exchange))
             item = self._probe._analyze_symbol(canonical_symbol, self._catalog._clock())
             mappings = tuple((exchange, self._probe._mapping_for(exchange.value)[canonical_symbol]) for exchange in Exchange if canonical_symbol in self._probe._mapping_for(exchange.value))
             prices = tuple((Exchange(name), price) for name, price in sorted(item["prices"].items()))
@@ -213,7 +222,7 @@ class MarketReferencePriceProvider:
         contract = await self._catalog.get_exchange_contract(selected_exchange, native_symbol)
         if contract is None:
             raise SymbolCatalogError("selected contract is no longer available")
-        raw = await self._catalog._fetch_prices((selected_exchange,))
+        raw = (await self._catalog.market_service.refresh_prices((selected_exchange,))) if self._catalog.market_service is not None else await self._catalog._fetch_prices((selected_exchange,))
         tick = next((x for x in raw.get(selected_exchange, ()) if x.exchange_symbol == native_symbol), None)
         source = {Exchange.OURBIT: PriceSourceType.OURBIT_ONLY, Exchange.TOOBIT: PriceSourceType.TOOBIT_ONLY, Exchange.LBANK: PriceSourceType.LBANK_ONLY}[selected_exchange]
         healthy = tick is not None and isinstance(tick.last_price, Decimal) and tick.last_price.is_finite() and tick.last_price > 0
@@ -239,7 +248,16 @@ class BatchedMarketSnapshotProvider:
         required.update(exchange for signal in signals if signal.mode is SignalMode.COMPOSITE for exchange, _ in signal.exchange_symbols)
         if not required:
             return {}
-        raw_by_exchange = await self.catalog._fetch_prices(tuple(sorted(required, key=lambda x: x.value)))
+        hydrate_durable_symbol_mappings(self.probe, signals)
+        if self.catalog.market_service is None:
+            # Compatibility for direct/service use outside Runtime. Runtime
+            # monitoring consumes the always-on worker's shared cache instead.
+            raw_by_exchange = await self.catalog._fetch_prices(tuple(sorted(required, key=lambda x: x.value)))
+        else:
+            raw_by_exchange = {exchange: tuple(
+                tick for (_, tick_exchange), tick in self.probe.latest.items()
+                if tick_exchange == exchange.value
+            ) for exchange in required}
         now = self.probe.clock(); result = {}
         for signal in signals:
             if signal.mode is SignalMode.COMPOSITE:
@@ -281,3 +299,74 @@ class BatchedMarketSnapshotProvider:
                 return sum(values) / Decimal("2")
             return None
         return sorted(values)[len(values) // 2]
+
+
+def hydrate_durable_symbol_mappings(probe: MarketProbe, signals) -> None:
+    """Merge persisted open-Signal mappings without damaging catalog mappings."""
+    adapters = {Exchange(adapter.name): adapter for adapter in probe.adapters}
+    seen: dict[tuple[Exchange, str], str] = {}
+    for signal in signals:
+        for exchange, native_symbol in signal.exchange_symbols:
+            key = (exchange, native_symbol)
+            canonical_symbol = signal.canonical_symbol
+            previous = seen.get(key)
+            existing = adapters.get(exchange).symbol_map.get(native_symbol) if exchange in adapters else None
+            if (previous is not None and previous != canonical_symbol) or (
+                existing is not None and existing != canonical_symbol
+            ):
+                LOGGER.warning(
+                    "durable symbol mapping conflict exchange=%s native_symbol=%s; mapping skipped",
+                    exchange.value, native_symbol,
+                )
+                continue
+            seen[key] = canonical_symbol
+            if exchange in adapters:
+                adapters[exchange].symbol_map[native_symbol] = canonical_symbol
+
+
+class MarketPriceWorker:
+    """Runtime-owned, always-on catalog recovery and price polling service."""
+
+    def __init__(self, probe: MarketProbe, catalog: SymbolCatalogProvider,
+                 load_work=None, poll_seconds: float = 5.0):
+        self.probe = probe
+        self.catalog = catalog
+        self.load_work = load_work
+        self.poll_seconds = poll_seconds
+        self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
+        self.task = None
+
+    async def start(self):
+        if self.task is None or self.task.done():
+            self._stop.clear()
+            self.task = asyncio.create_task(self._run())
+
+    async def stop(self):
+        self._stop.set(); self._wake.set()
+        if self.task is not None:
+            await self.task
+
+    async def refresh_prices(self, exchanges: tuple[Exchange, ...] = tuple(Exchange)):
+        return await self.catalog._fetch_prices(exchanges)
+
+    async def run_cycle(self):
+        signals = await self.load_work(1000) if self.load_work is not None else ()
+        try:
+            await self.catalog._ensure_discovered()
+        except Exception as exc:
+            LOGGER.warning("market catalog refresh unavailable category=%s", type(exc).__name__)
+        # Discovery rebuilds maps, so durable mappings must be merged afterwards.
+        hydrate_durable_symbol_mappings(self.probe, signals)
+        # Price failures are converted to per-exchange observations by _fetch_prices;
+        # gather(return_exceptions=True) there isolates every adapter.
+        return await self.refresh_prices(tuple(Exchange))
+
+    async def _run(self):
+        while not self._stop.is_set():
+            await self.run_cycle()
+            try:
+                await asyncio.wait_for(self._wake.wait(), self.poll_seconds)
+                self._wake.clear()
+            except TimeoutError:
+                pass
