@@ -442,7 +442,7 @@ class CancellationPublicationService:
    await s.flush();ids=tuple((await s.scalars(select(SignalCancellationPublicationRecord.id).where(or_(SignalCancellationPublicationRecord.status==PublicationStatus.PENDING,(SignalCancellationPublicationRecord.status==PublicationStatus.RETRY_WAIT)&(SignalCancellationPublicationRecord.retry_at<=now))).order_by(SignalCancellationPublicationRecord.id))).all());await tx.commit();return ids
  async def process(self,item_id):
   from sqlalchemy import exists,update
-  from chainura.persistence.models import (SignalCancellationPublicationRecord,SignalRecord,DestinationRecord,DestinationSignalistRecord,DestinationPublicationRecord,SignalDetailsPublicationRecord,DestinationUpdatePublicationRecord)
+  from chainura.persistence.models import (SignalCancellationPublicationRecord,SignalRecord,DestinationRecord,DestinationSignalistRecord,DestinationPublicationRecord,SignalDetailsPublicationRecord,DestinationUpdatePublicationRecord,SignalCommentPublicationRecord)
   from chainura.domain.signal import SignalLifecycleStatus
   now=self.clock()
   async with self.transactions() as tx:
@@ -451,7 +451,8 @@ class CancellationPublicationService:
    # Do not overtake a Telegram call whose result is still genuinely unknown.
    details_sending=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING)))
    update_sending=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SENDING)))
-   inflight=details_sending or update_sending
+   comment_sending=await s.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+   inflight=details_sending or update_sending or comment_sending
    if inflight:return
    signal=await tx.signals.get_by_id(row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
    assigned=signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id)));

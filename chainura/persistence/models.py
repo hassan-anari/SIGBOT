@@ -352,6 +352,41 @@ class SignalCancellationPublicationRecord(Base):
     last_error_category:Mapped[str|None]=mapped_column(Text)
     created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
 
+class SignalCommentRequestRecord(Base):
+    """Signalist-authored plain-text comment and its optional captured market facts."""
+    __tablename__="signal_comment_requests"
+    __table_args__=(
+      ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE"),
+      ForeignKeyConstraint(["signalist_id"],["signalists.id"]),
+      CheckConstraint("trim(comment_text) <> '' AND length(comment_text) <= 4096",name="ck_signal_comment_text"),
+      CheckConstraint("(include_snapshot = 0 AND snapshot_observed_at IS NULL AND reference_price IS NULL AND source_prices_json IS NULL) OR (include_snapshot = 1 AND snapshot_observed_at IS NOT NULL AND reference_price IS NOT NULL AND source_prices_json IS NOT NULL)",name="ck_signal_comment_snapshot_shape"),
+      Index("ix_signal_comment_requests_signal_created","signal_id","created_at"),)
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    signal_id:Mapped[int]=mapped_column(Integer,nullable=False);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    comment_text:Mapped[str]=mapped_column(Text,nullable=False);include_snapshot:Mapped[bool]=mapped_column(nullable=False,default=False)
+    snapshot_observed_at:Mapped[datetime|None]=mapped_column(UTCDateTime());reference_price:Mapped[object|None]=mapped_column(ExactDecimal())
+    source_prices_json:Mapped[str|None]=mapped_column(Text)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
+class SignalCommentPublicationRecord(Base):
+    __tablename__="signal_comment_publications"
+    __table_args__=(
+      ForeignKeyConstraint(["comment_request_id"],["signal_comment_requests.id"],ondelete="CASCADE"),
+      ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE"),ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE"),
+      UniqueConstraint("comment_request_id","destination_id",name="uq_signal_comment_destination"),
+      CheckConstraint("attempt_count >= 0",name="ck_signal_comment_publication_attempts"),
+      CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0",name="ck_signal_comment_publication_message"),
+      CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0",name="ck_signal_comment_publication_reply"),
+      Index("ix_signal_comment_publications_status_retry","status","retry_at"),Index("ix_signal_comment_publications_chain","signal_id","destination_id","sent_at"),)
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);comment_request_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    signal_id:Mapped[int]=mapped_column(Integer,nullable=False);destination_id:Mapped[int]=mapped_column(Integer,nullable=False)
+    selected_exchange:Mapped[Exchange|None]=mapped_column(DESTINATION_EXCHANGE_ENUM)
+    status:Mapped[PublicationStatus]=mapped_column(PUBLICATION_STATUS_ENUM,nullable=False,default=PublicationStatus.PENDING)
+    telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);reply_to_message_id:Mapped[int|None]=mapped_column(BigInteger)
+    attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    first_attempt_at:Mapped[datetime|None]=mapped_column(UTCDateTime());sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime());last_error_category:Mapped[str|None]=mapped_column(Text)
+    created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now)
+
 class InitialPublicationDailySlotRecord(Base):
     __tablename__ = "initial_publication_daily_slots"
     __table_args__ = (
