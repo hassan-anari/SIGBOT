@@ -47,6 +47,12 @@ class Images:
   if self.fail:raise ValueError("broken template")
   return self.Output()
  def cleanup(self,path):pass
+class ControlledImages(Images):
+ def __init__(self):
+  super().__init__();self.started=__import__('asyncio').Event();self.release=__import__('asyncio').Event();self.cleaned=[]
+ async def render_snapshot_signal(self,signal,snapshot,exchange,destination_id):
+  self.references.append(snapshot.observed_reference_price);self.started.set();await self.release.wait();return self.Output()
+ def cleanup(self,path):self.cleaned.append(path)
 
 class SignalCommentTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
@@ -124,5 +130,23 @@ class SignalCommentTests(unittest.IsolatedAsyncioTestCase):
   result=await ActiveSignalService(self.tx,lambda:NOW).cancel_signal(self.signal,self.actor);self.assertTrue(result.cancelled)
   cancellation=CancellationPublicationService(self.tx,publisher,lambda:NOW,message_templates=DestinationMessageTemplateService(self.tx));cid=(await cancellation.pending_ids())[0];await cancellation.process(cid)
   self.assertEqual(publisher.calls[-1][3],201)
+
+ async def test_terminal_during_snapshot_render_supersedes_without_telegram(self):
+  self.probe.latest[("BTCUSDT","ourbit")]=PriceTick("ourbit","BTCUSDT","BTCUSDT",Decimal("101"),NOW,"test");await self.create(snapshot=True)
+  row=(await self.rows(SignalCommentPublicationRecord))[0];images=ControlledImages();publisher=Publisher();service=SignalCommentPublicationService(self.tx,publisher,images,lambda:NOW)
+  task=__import__('asyncio').create_task(service.process(row.id));await images.started.wait()
+  async with self.sessions() as s,s.begin():
+   current=await s.get(SignalCommentPublicationRecord,row.id);self.assertIs(current.status,PublicationStatus.RENDERING)
+   state=await s.get(SignalMonitorStateRecord,self.signal);state.stage=MonitorStage.COMPLETED_SL;state.completed_at=NOW
+  images.release.set();await task
+  final=(await self.rows(SignalCommentPublicationRecord))[0];self.assertIs(final.status,PublicationStatus.SUPERSEDED);self.assertFalse(publisher.calls);self.assertEqual(images.cleaned,[Path("/tmp/comment-test.png")])
+  async with self.sessions() as s:
+   self.assertEqual(await s.scalar(select(func.count()).select_from(SignalEventRecord)),0);state=await s.get(SignalMonitorStateRecord,self.signal);self.assertIs(state.stage,MonitorStage.COMPLETED_SL)
+
+ async def test_active_after_snapshot_render_revalidates_and_sends(self):
+  self.probe.latest[("BTCUSDT","ourbit")]=PriceTick("ourbit","BTCUSDT","BTCUSDT",Decimal("102"),NOW,"test");await self.create(snapshot=True)
+  row=(await self.rows(SignalCommentPublicationRecord))[0];images=ControlledImages();publisher=Publisher();service=SignalCommentPublicationService(self.tx,publisher,images,lambda:NOW)
+  task=__import__('asyncio').create_task(service.process(row.id));await images.started.wait();images.release.set();await task
+  final=(await self.rows(SignalCommentPublicationRecord))[0];self.assertIs(final.status,PublicationStatus.SENT);self.assertEqual(len(publisher.calls),1);self.assertEqual(images.cleaned,[Path("/tmp/comment-test.png")])
 
 if __name__=="__main__":unittest.main()

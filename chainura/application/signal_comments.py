@@ -112,9 +112,8 @@ class SignalCommentPublicationService:
     prices={Exchange(k):__import__('decimal').Decimal(v) for k,v in json.loads(req.source_prices_json).items()}
     captured=SimpleNamespace(observed_reference_price=req.reference_price,roi_basis_price=req.reference_price,leveraged_roi=leveraged_return_percent(signal.entry_price,req.reference_price,signal.leverage,signal.direction),occurred_at=req.snapshot_observed_at)
     output=await self.image_service.render_snapshot_signal(signal,captured,exchange,row.destination_id)
-    async with self.transactions() as tx:
-     claimed=(await tx._session.execute(update(SignalCommentPublicationRecord).where(SignalCommentPublicationRecord.id==item_id,SignalCommentPublicationRecord.status==PublicationStatus.RENDERING).values(status=PublicationStatus.SENDING,updated_at=self.clock()))).rowcount;await tx.commit()
-    if claimed!=1:return
+    parent=await self._prepare_snapshot_send(item_id)
+    if parent is None:return
     message_id=await self.publisher.send_update(chat,output.file_path,safe_text,parent)
    else:message_id=await self.publisher.send_text_update(chat,safe_text,parent)
   except DeliveryRateLimited as exc:
@@ -128,6 +127,30 @@ class SignalCommentPublicationService:
     try:self.image_service.cleanup(output.file_path)
     except Exception:pass
   await self._finish(item_id,PublicationStatus.SENT,message_id=message_id)
+ async def _prepare_snapshot_send(self,item_id):
+  """Revalidate durable chain safety after rendering, before Telegram ownership."""
+  now=self.clock()
+  async with self.transactions() as tx:
+   s=tx._session;row=await s.get(SignalCommentPublicationRecord,item_id)
+   if row is None or row.status is not PublicationStatus.RENDERING:return None
+   req=await s.get(SignalCommentRequestRecord,row.comment_request_id);signal=await s.get(SignalRecord,row.signal_id)
+   state=await s.get(SignalMonitorStateRecord,row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
+   actor=await s.get(SignalistRecord,req.signalist_id) if req else None
+   assigned=bool(req and signal and signal.signalist_id==req.signalist_id and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==req.signalist_id))))
+   initial=await s.scalar(select(exists().where(DestinationPublicationRecord.signal_id==row.signal_id,DestinationPublicationRecord.destination_id==row.destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0)))
+   valid=bool(req and signal and signal.status is SignalLifecycleStatus.ACTIVE and state and state.stage in OPEN_STAGES and actor and actor.status is SignalistStatus.ACTIVE and dest and dest.status is DestinationStatus.ACTIVE and assigned and initial)
+   if not valid:
+    row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;await tx.commit();return None
+   earlier=await s.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.id<row.id,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+   details=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
+   older_update=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.created_at<=row.created_at,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
+   cancellation=await s.scalar(select(exists().where(SignalCancellationPublicationRecord.signal_id==row.signal_id,SignalCancellationPublicationRecord.destination_id==row.destination_id,SignalCancellationPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
+   if earlier or details or older_update or cancellation:
+    row.status=PublicationStatus.PENDING;row.updated_at=now;await tx.commit();return None
+   parent=await tx.update_publications.last_published_message_id(row.signal_id,row.destination_id)
+   if not parent:
+    row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;await tx.commit();return None
+   row.status=PublicationStatus.SENDING;row.reply_to_message_id=parent;row.updated_at=now;await tx.commit();return parent
  async def _finish(self,item_id,target,error=None,retry=None,message_id=None,expected=(PublicationStatus.SENDING,)):
   async with self.transactions() as tx:
    row=await tx._session.get(SignalCommentPublicationRecord,item_id)

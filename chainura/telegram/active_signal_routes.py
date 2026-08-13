@@ -40,6 +40,12 @@ def detail_keyboard(x,page):
 def comment_choice_keyboard(signal_id,page):
  return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_WITH_SNAPSHOT,callback_data=cb("s",signal_id,page))],[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_TEXT_ONLY,callback_data=cb("t",signal_id,page))],[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_ABORT,callback_data=cb("x",signal_id,page))]])
 
+async def clear_cancelled_signal_fsm(state,signal_id):
+ data=await state.get_data();current=await state.get_state()
+ pending_same=data.get("pending_signal_id")==signal_id
+ comment_same=(current in (SignalComment.waiting_text.state,SignalComment.waiting_snapshot_choice.state) and data.get("comment_signal_id")==signal_id)
+ if pending_same or comment_same:await state.clear()
+
 @router.message(SignalComment.waiting_text)
 async def comment_text(message:Message,state:FSMContext,actor:Actor):
  data=await state.get_data();raw=message.text or ""
@@ -100,6 +106,5 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
  if action=="y":
   result=await active_signal_service.cancel_signal(signal_id,actor.signalist.id)
   if not result.cancelled:return await callback.message.answer(texts.ACTIVE_SIGNAL_NOT_CANCELLABLE)
-  data=await state.get_data()
-  if data.get("pending_signal_id")==signal_id:await state.clear()
+  await clear_cancelled_signal_fsm(state,signal_id)
   return await callback.message.answer(texts.ACTIVE_SIGNAL_CANCELLED_QUEUED if result.publication_count else texts.ACTIVE_SIGNAL_CANCELLED,reply_markup=signalist_menu())
