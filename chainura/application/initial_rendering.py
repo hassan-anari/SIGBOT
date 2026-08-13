@@ -91,6 +91,9 @@ class InitialImageService:
   return await self._render_with_builder(
    payload_builder=lambda: factory.build_update(signal,event,exchange,event.occurred_at),
    exchange=exchange,destination_id=destination_id,output_prefix="update")
+ async def render_snapshot_signal(self,signal,snapshot,exchange,destination_id)->RenderedSignalImage:
+  factory=SnapshotPayloadFactory(self.payload_factory.logo_store)
+  return await self._render_with_builder(payload_builder=lambda:factory.build_snapshot(signal,snapshot,exchange),exchange=exchange,destination_id=destination_id,output_prefix="update")
  async def _render_with_builder(self,*,payload_builder,exchange,destination_id,output_prefix)->RenderedSignalImage:
   if self._state!="open":raise RenderingLifecycleError("initial image service is closing")
   operation=asyncio.current_task();self._active_tasks.add(operation)
@@ -177,3 +180,11 @@ class UpdatePayloadFactory(InitialPayloadFactory):
    signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,signal.entry_price,
    signal.leverage,signal.take_profits,signal.stop_loss,event.observed_reference_price,event_price,
    pnl,signal.created_at,event.occurred_at,elapsed,logo)
+
+class SnapshotPayloadFactory(InitialPayloadFactory):
+ def build_snapshot(self,signal,snapshot,exchange):
+  mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
+  if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
+  logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
+  elapsed=max(0,int((snapshot.occurred_at-signal.created_at).total_seconds()))
+  return SignalRenderPayload(signal.id,SignalRenderEventKind.TP,exchange,signal.direction,signal.price_source_type,signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,signal.entry_price,signal.leverage,signal.take_profits,signal.stop_loss,snapshot.observed_reference_price,snapshot.roi_basis_price,snapshot.leveraged_roi,signal.created_at,snapshot.occurred_at,elapsed,logo)

@@ -56,6 +56,10 @@ class SignalCreate(StatesGroup):
     review = State()
     finalizing = State()
 
+class SignalComment(StatesGroup):
+    waiting_text = State()
+    waiting_snapshot_choice = State()
+
 class AdminReportFlow(StatesGroup):
     start_date = State()
     end_date = State()

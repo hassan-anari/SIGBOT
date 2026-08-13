@@ -8,7 +8,7 @@ from chainura.telegram.middlewares import CallbackAcknowledger
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.formatting import format_decimal,format_leverage,format_symbol
 from chainura.telegram.presentation.keyboards import signalist_menu
-from chainura.telegram.states import SignalCreate
+from chainura.telegram.states import SignalCreate,SignalComment
 
 router=Router(name="phase7-active-signals");PREFIX="as7:"
 def cb(action,*parts):return PREFIX+":".join((action,*(str(x) for x in parts)))
@@ -33,7 +33,21 @@ def detail_keyboard(x,page):
  if x.status is SignalLifecycleStatus.ACTIVE:
   rows.extend([[InlineKeyboardButton(text=(texts.ACTIVE_SIGNAL_TP_REACHED if i<=x.highest_tp_index else texts.ACTIVE_SIGNAL_TP_WAITING).format(index=i),callback_data=cb("n",x.id))] for i in range(1,len(x.take_profits)+1)]);rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_SL_WAITING,callback_data=cb("n",x.id))])
  else:rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CONTINUE,callback_data=cb("r",x.id))])
- rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL,callback_data=cb("c",x.id,page))]);rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("l",page))]);return InlineKeyboardMarkup(inline_keyboard=rows)
+ actions=[]
+ if x.status is SignalLifecycleStatus.ACTIVE:actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_COMMENT,callback_data=cb("o",x.id,page)))
+ actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL,callback_data=cb("c",x.id,page)));rows.append(actions);rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("l",page))]);return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def comment_choice_keyboard(signal_id,page):
+ return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_WITH_SNAPSHOT,callback_data=cb("s",signal_id,page))],[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_TEXT_ONLY,callback_data=cb("t",signal_id,page))],[InlineKeyboardButton(text=texts.SIGNAL_COMMENT_ABORT,callback_data=cb("x",signal_id,page))]])
+
+@router.message(SignalComment.waiting_text)
+async def comment_text(message:Message,state:FSMContext,actor:Actor):
+ data=await state.get_data();raw=message.text or ""
+ if actor.kind is not ActorKind.ACTIVE_SIGNALIST:await state.clear();return await message.answer(texts.SIGNAL_COMMENT_STALE)
+ if not raw.strip():return await message.answer(texts.SIGNAL_COMMENT_EMPTY)
+ if len(raw)>4096:return await message.answer(texts.SIGNAL_COMMENT_TOO_LONG)
+ await state.update_data(comment_text=raw);await state.set_state(SignalComment.waiting_snapshot_choice)
+ return await message.answer(texts.SIGNAL_COMMENT_SNAPSHOT_QUESTION,reply_markup=comment_choice_keyboard(data["comment_signal_id"],data.get("comment_page",1)))
 async def _show(message,actor,service,page=1):
  if actor.kind is not ActorKind.ACTIVE_SIGNALIST:return await message.answer(texts.ACTIVE_SIGNAL_STALE)
  result=await service.list_open(actor.signalist.id,PageRequest(page))
@@ -44,7 +58,7 @@ async def _show(message,actor,service,page=1):
 async def active_list(message:Message,actor:Actor,active_signal_service):await _show(message,actor,active_signal_service)
 
 @router.callback_query(F.data.startswith(PREFIX))
-async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service):
+async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,signal_comment_service=None):
  action,args=_parse(callback.data);await callback_ack.answer_once()
  if not isinstance(callback.message,Message):return
  if actor.kind is not ActorKind.ACTIVE_SIGNALIST:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
@@ -53,9 +67,27 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
  if action=="l":return await _show(callback.message,actor,active_signal_service,args[0] if args else 1)
  if not args:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
  signal_id=args[0];item=await active_signal_service.get_open(signal_id,actor.signalist.id)
- if item is None:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+ if item is None:
+  if action in ("s","t","x"):await state.clear()
+  return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
  page=args[1] if len(args)>1 else 1
  if action=="d":return await callback.message.answer(detail_text(item),reply_markup=detail_keyboard(item,page))
+ if action=="o":
+  if item.status is not SignalLifecycleStatus.ACTIVE or signal_comment_service is None or not await signal_comment_service.eligible(signal_id,actor.signalist.id):return await callback.message.answer(texts.SIGNAL_COMMENT_STALE)
+  await state.set_state(SignalComment.waiting_text);await state.set_data({"comment_signal_id":signal_id,"comment_page":page})
+  return await callback.message.answer(texts.SIGNAL_COMMENT_PROMPT)
+ if action=="x":
+  current=await state.get_state()
+  if current in (SignalComment.waiting_text.state,SignalComment.waiting_snapshot_choice.state):await state.clear()
+  return await callback.message.answer(texts.SIGNAL_COMMENT_CANCELLED)
+ if action in ("s","t"):
+  data=await state.get_data()
+  if await state.get_state()!=SignalComment.waiting_snapshot_choice.state or data.get("comment_signal_id")!=signal_id:return await callback.message.answer(texts.SIGNAL_COMMENT_STALE)
+  result=await signal_comment_service.create(signal_id,actor.signalist.id,data.get("comment_text",""),action=="s")
+  if result.reason=="caption_too_long":return await callback.message.answer(texts.SIGNAL_COMMENT_CAPTION_TOO_LONG,reply_markup=comment_choice_keyboard(signal_id,page))
+  await state.clear()
+  if result.created:return await callback.message.answer(texts.SIGNAL_COMMENT_QUEUED)
+  return await callback.message.answer({"market_unavailable":texts.SIGNAL_COMMENT_MARKET_UNAVAILABLE,"no_destinations":texts.SIGNAL_COMMENT_NO_DESTINATIONS}.get(result.reason,texts.SIGNAL_COMMENT_STALE))
  if action=="r":
   if item.status is not SignalLifecycleStatus.PENDING_DETAILS:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
   # Delegate to the accepted durable Stage-Two callback path.

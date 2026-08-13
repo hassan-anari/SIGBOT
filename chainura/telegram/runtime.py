@@ -63,6 +63,7 @@ from chainura.application.template_admin import TemplateAdministrationService
 from chainura.application.message_templates import DestinationMessageTemplateService
 from chainura.application.active_signals import ActiveSignalService
 from chainura.application.publication import CancellationPublicationService,CancellationPublicationWorker
+from chainura.application.signal_comments import SignalCommentService,SignalCommentPublicationService,SignalCommentPublicationWorker
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -143,6 +144,7 @@ class Runtime:
         self.notification_worker=None;self.notification_task=None
         self.admin_alert_worker=None;self.admin_alert_task=None
         self.cancellation_publication_worker=None;self.cancellation_publication_task=None
+        self.comment_publication_worker=None;self.comment_publication_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -260,8 +262,9 @@ class Runtime:
             reporting_service=ReportingService(ReportingRepository(sessions))
             symbol_catalog = SymbolCatalogProvider(market_probe, health_repository)
             monitoring_service=None
+            snapshot_provider=BatchedMarketSnapshotProvider(market_probe,symbol_catalog,health_repository)
             if hasattr(sessions,"class_"):
-                monitoring_service=MonitoringService(sessions,BatchedMarketSnapshotProvider(market_probe,symbol_catalog,health_repository),
+                monitoring_service=MonitoringService(sessions,snapshot_provider,
                 BreakevenSettings(self.settings.breakeven_min_open_seconds,self.settings.breakeven_favorable_move_percent,self.settings.breakeven_execution_tolerance_percent,self.settings.breakeven_rearm_distance_percent,self.settings.breakeven_prompt_cooldown_seconds))
                 await self._startup_await(monitoring_service.reconcile())
             self.market_worker = MarketPriceWorker(
@@ -353,6 +356,13 @@ class Runtime:
                 await self._startup_await(self.details_publication_worker.start())
                 self.details_publication_task=self.details_publication_worker.task
                 self.details_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"signal details publication worker"))
+            comment_service=None
+            if hasattr(sessions,"class_"):
+                comment_delivery=SignalCommentPublicationService(transactions,TelegramPhotoPublisher(self.bot),self.initial_image_service,max_attempts=self.settings.update_send_max_attempts,retry_base_seconds=self.settings.update_send_retry_base_seconds)
+                self.comment_publication_worker=SignalCommentPublicationWorker(comment_delivery,self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
+                await self._startup_await(self.comment_publication_worker.start());self.comment_publication_task=self.comment_publication_worker.task
+                self.comment_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"signal comment publication worker"))
+                comment_service=SignalCommentService(transactions,snapshot_provider,wake=self.comment_publication_worker.wake)
             await self._startup_await(self.market_worker.start())
             self.market_task = self.market_worker.task
             self.market_task.add_done_callback(lambda task:self._observed_worker_done(task,"market price worker"))
@@ -392,6 +402,7 @@ class Runtime:
                 template_admin_service=template_admin_service,
                 message_template_service=message_template_service,
                 active_signal_service=active_signal_service,
+                signal_comment_service=comment_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
@@ -431,6 +442,7 @@ class Runtime:
         if self.notification_task is not None:watched.add(self.notification_task)
         if self.update_publication_task is not None:watched.add(self.update_publication_task)
         if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
+        if self.comment_publication_task is not None:watched.add(self.comment_publication_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -469,6 +481,9 @@ class Runtime:
             self._observe_task_failure(self.update_publication_task,"update publication worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "update publication worker stopped unexpectedly"
+        if self.comment_publication_task is not None and self.comment_publication_task in done:
+            self._observe_task_failure(self.comment_publication_task,"signal comment publication worker")
+            if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or "signal comment publication worker stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
@@ -535,6 +550,8 @@ class Runtime:
                 await self._best_effort(self.details_publication_worker.close(), "signal details publication worker")
             if self.cancellation_publication_worker:
                 await self._best_effort(self.cancellation_publication_worker.close(), "signal cancellation publication worker")
+            if self.comment_publication_worker:
+                await self._best_effort(self.comment_publication_worker.close(), "signal comment publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:
