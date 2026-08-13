@@ -28,6 +28,8 @@ from chainura.persistence.models import (
     DestinationSignalistRecord,
     DestinationUpdatePublicationRecord,
     SignalDetailsPublicationRecord,
+    SignalCommentRequestRecord,
+    SignalCommentPublicationRecord,
     SignalExchangeSymbolRecord,
     SignalInitialPriceRecord,
     SignalEventRecord,
@@ -232,6 +234,19 @@ class Phase72PublicationTests(unittest.IsolatedAsyncioTestCase):
             details.status=PublicationStatus.SENT; details.telegram_message_id=101; details.sent_at=NOW
         await service.process(delivery_id)
         self.assertEqual(publisher.photos[0][3], 101)
+
+    async def test_sent_comment_is_parent_for_later_tp(self):
+        delivery_id,signal_id,destination_id=await self.seed(SignalEventKind.TP_HIT,details_status=PublicationStatus.SENT)
+        async with self.sessions() as session,session.begin():
+            signal=await session.get(SignalRecord,signal_id)
+            request=SignalCommentRequestRecord(signal_id=signal_id,signalist_id=signal.signalist_id,
+                comment_text="comment",include_snapshot=False,created_at=NOW,updated_at=NOW)
+            session.add(request);await session.flush()
+            session.add(SignalCommentPublicationRecord(comment_request_id=request.id,signal_id=signal_id,
+                destination_id=destination_id,status=PublicationStatus.SENT,telegram_message_id=150,
+                reply_to_message_id=101,attempt_count=1,sent_at=NOW,created_at=NOW,updated_at=NOW))
+        publisher=RecordingPublisher();await UpdatePublicationService(self.transactions,RecordingImages(),publisher,lambda:NOW).process(delivery_id)
+        self.assertEqual(publisher.photos[0][3],150)
 
     async def test_details_terminal_failure_falls_back_to_initial(self):
         delivery_id, _, _ = await self.seed(SignalEventKind.TP_HIT, details_status=PublicationStatus.FAILED)

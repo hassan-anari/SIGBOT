@@ -94,7 +94,9 @@ class SqlAlchemyUpdatePublicationRepository:
    SignalDetailsPublicationRecord.destination_id==row.destination_id,
    SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT)))))
   if details_in_flight:return None
-  comment_in_flight=await self.session.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+  # Only an older Comment is a barrier. A newer Comment waits for this update,
+  # avoiding a symmetric PENDING/PENDING deadlock while preserving chain order.
+  comment_in_flight=await self.session.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.created_at<=row.created_at,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
   if comment_in_flight:return None
   row.status=PublicationStatus.RENDERING;row.retry_at=None;row.first_attempt_at=row.first_attempt_at or now;row.updated_at=now
   dest=await self.session.get(DestinationRecord,row.destination_id)

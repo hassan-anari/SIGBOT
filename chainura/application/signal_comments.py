@@ -7,6 +7,7 @@ from html import escape
 from types import SimpleNamespace
 from sqlalchemy import exists,or_,select,update
 from chainura.application.profit import leveraged_return_percent
+from chainura.application.monitoring import MonitorWork
 from chainura.application.publication import DeliveryAmbiguous,DeliveryRateLimited,DeliveryRejected
 from chainura.domain.destination import DestinationStatus,Exchange
 from chainura.domain.monitoring import MonitorStage
@@ -41,11 +42,15 @@ class SignalCommentService:
    async with self.transactions() as tx:
     if not await self._eligible(tx._session,signal_id,signalist_id):return CommentCreationResult(False,reason="stale")
     signal=await tx.signals.get_by_id(signal_id)
+    work=MonitorWork(signal.id,signal.signalist_id,signal.mode,signal.canonical_symbol,
+     signal.selected_exchange,signal.direction,signal.entry_price,signal.leverage,
+     signal.take_profits,signal.stop_loss,signal.price_source_type,
+     signal.exchange_symbols,signal.created_at)
    try:
-    decision=(await self.snapshot_provider.snapshot((signal,))).get(signal_id)
+    decision=(await self.snapshot_provider.snapshot((work,))).get(signal_id)
     if decision is None and getattr(self.snapshot_provider.catalog,"market_service",None) is not None:
      await self.snapshot_provider.catalog.market_service.refresh_prices(tuple(e for e,_ in signal.exchange_symbols))
-     decision=(await self.snapshot_provider.snapshot((signal,))).get(signal_id)
+     decision=(await self.snapshot_provider.snapshot((work,))).get(signal_id)
    except Exception:decision=None
    if decision is None:return CommentCreationResult(False,reason="market_unavailable")
   now=self.clock()
@@ -76,6 +81,7 @@ class SignalCommentPublicationService:
   self.transactions=transactions;self.publisher=publisher;self.image_service=image_service;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
  async def recover(self):
   async with self.transactions() as tx:
+   await tx._session.execute(update(SignalCommentPublicationRecord).where(SignalCommentPublicationRecord.status==PublicationStatus.RENDERING).values(status=PublicationStatus.PENDING,last_error_category="restart_during_render",updated_at=self.clock()))
    await tx._session.execute(update(SignalCommentPublicationRecord).where(SignalCommentPublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category="restart_during_send",updated_at=self.clock()));await tx.commit()
  async def pending_ids(self):
   now=self.clock()
@@ -86,7 +92,10 @@ class SignalCommentPublicationService:
    s=tx._session;row=await s.get(SignalCommentPublicationRecord,item_id)
    if not row or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return
    earlier=await s.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.id<row.id,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
-   foreign=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN))))) or await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN))))) or await s.scalar(select(exists().where(SignalCancellationPublicationRecord.signal_id==row.signal_id,SignalCancellationPublicationRecord.destination_id==row.destination_id,SignalCancellationPublicationRecord.status.in_((PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
+   details_barrier=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
+   older_update=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.created_at<=row.created_at,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
+   cancellation_barrier=await s.scalar(select(exists().where(SignalCancellationPublicationRecord.signal_id==row.signal_id,SignalCancellationPublicationRecord.destination_id==row.destination_id,SignalCancellationPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
+   foreign=details_barrier or older_update or cancellation_barrier
    req=await s.get(SignalCommentRequestRecord,row.comment_request_id);signal=await tx.signals.get_by_id(row.signal_id);dest=await s.get(DestinationRecord,row.destination_id);actor=await s.get(SignalistRecord,signal.signalist_id) if signal else None;state=await s.get(SignalMonitorStateRecord,row.signal_id)
    assigned=signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id)))
    valid=signal and signal.status is SignalLifecycleStatus.ACTIVE and state and state.stage in OPEN_STAGES and actor and actor.status is SignalistStatus.ACTIVE and dest and dest.status is DestinationStatus.ACTIVE and assigned
@@ -113,16 +122,16 @@ class SignalCommentPublicationService:
   except DeliveryRejected as exc:return await self._finish(item_id,PublicationStatus.FAILED,str(exc))
   except DeliveryAmbiguous as exc:return await self._finish(item_id,PublicationStatus.DELIVERY_UNKNOWN,str(exc))
   except asyncio.CancelledError:raise
-  except Exception as exc:return await self._finish(item_id,PublicationStatus.FAILED,type(exc).__name__)
+  except Exception as exc:return await self._finish(item_id,PublicationStatus.FAILED,type(exc).__name__,expected=(PublicationStatus.RENDERING,PublicationStatus.SENDING))
   finally:
    if output is not None:
     try:self.image_service.cleanup(output.file_path)
     except Exception:pass
   await self._finish(item_id,PublicationStatus.SENT,message_id=message_id)
- async def _finish(self,item_id,target,error=None,retry=None,message_id=None):
+ async def _finish(self,item_id,target,error=None,retry=None,message_id=None,expected=(PublicationStatus.SENDING,)):
   async with self.transactions() as tx:
    row=await tx._session.get(SignalCommentPublicationRecord,item_id)
-   if row and row.status is PublicationStatus.SENDING:
+   if row and row.status in expected:
     row.status=target;row.last_error_category=error;row.retry_at=retry;row.updated_at=self.clock()
     if target is PublicationStatus.SENT:row.telegram_message_id=message_id;row.sent_at=self.clock()
    await tx.commit()
