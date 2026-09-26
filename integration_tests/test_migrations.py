@@ -19,6 +19,80 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_upgrade_downgrade_and_reupgrade(self) -> None:
         migrate("head", self.safe)
 
+    async def test_warmup_template_constraint_migration_preserves_rows_and_indexes(self) -> None:
+        migrate("base", self.safe); migrate("20260813_01", self.safe)
+        engine = create_safe_engine(self.safe)
+        created = "2026-08-13T08:00:00+00:00"; updated = "2026-08-13T09:00:00+00:00"
+        async with engine.begin() as connection:
+            signalist = (await connection.execute(text(
+                "INSERT INTO signalists(telegram_user_id,display_name,status,created_at,updated_at) "
+                "VALUES(7001,'legacy','active',:c,:u) RETURNING id"), {"c":created,"u":updated})).scalar_one()
+            destination = (await connection.execute(text(
+                "INSERT INTO destinations(internal_name,telegram_chat_id,destination_type,access_level,status,daily_limit,created_at,updated_at) "
+                "VALUES('legacy destination',-7001,'channel','public','active',5,:c,:u) RETURNING id"),
+                {"c":created,"u":updated})).scalar_one()
+            await connection.execute(text(
+                "INSERT INTO destination_message_templates(message_kind,destination_id,template_text,created_at,updated_at) VALUES"
+                "('signal_details',NULL,'global legacy',:c,:u),"
+                "('tp_hit',:d,'destination legacy',:c,:u)"), {"d":destination,"c":created,"u":updated})
+            original = (await connection.execute(text(
+                "SELECT message_kind,destination_id,template_text,created_at,updated_at "
+                "FROM destination_message_templates ORDER BY id"))).all()
+            old_indexes = set((await connection.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='destination_message_templates' "
+                "AND name NOT LIKE 'sqlite_%'"))).scalars())
+        await engine.dispose(); migrate("20260813_02", self.safe)
+        engine = create_safe_engine(self.safe)
+        async with engine.begin() as connection:
+            preserved = (await connection.execute(text(
+                "SELECT message_kind,destination_id,template_text,created_at,updated_at "
+                "FROM destination_message_templates ORDER BY id"))).all()
+            self.assertEqual(preserved, original)
+            upgraded_indexes = set((await connection.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='destination_message_templates' "
+                "AND name NOT LIKE 'sqlite_%'"))).scalars())
+            self.assertEqual(upgraded_indexes, old_indexes)
+            await connection.execute(text(
+                "INSERT INTO destination_message_templates(message_kind,destination_id,template_text,created_at,updated_at) "
+                "VALUES('warmup',NULL,'global warmup',:c,:u),('warmup',:d,'destination warmup',:c,:u)"),
+                {"d":destination,"c":created,"u":updated})
+        # Isolate the deliberately rejected statement so it cannot roll back the
+        # successful migration revision marker or the valid Warm-up fixtures.
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            with self.assertRaises(Exception):
+                await connection.execute(text(
+                    "INSERT INTO destination_message_templates(message_kind,template_text,created_at,updated_at) "
+                    "VALUES('unsupported','bad',:c,:u)"), {"c":created,"u":updated})
+            await transaction.rollback()
+        async with engine.begin() as connection:
+            self.assertEqual(await connection.scalar(text(
+                "SELECT count(*) FROM destination_message_templates WHERE message_kind='warmup'")), 2)
+            tables = set((await connection.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"))).scalars())
+            self.assertTrue({"warmup_requests","destination_warmup_cooldowns","warmup_publications"} <= tables)
+            indexes = set((await connection.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='index'"))).scalars())
+            self.assertIn("ix_warmup_publications_status_retry", indexes)
+            warmup_sql = await connection.scalar(text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='warmup_publications'"))
+            self.assertIn("ck_warmup_publications_sent", warmup_sql)
+        await engine.dispose(); migrate("-1", self.safe)
+        engine = create_safe_engine(self.safe)
+        async with engine.connect() as connection:
+            rows = (await connection.execute(text(
+                "SELECT message_kind,destination_id,template_text,created_at,updated_at "
+                "FROM destination_message_templates ORDER BY id"))).all()
+            self.assertEqual(rows, original)
+            indexes = set((await connection.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='destination_message_templates' "
+                "AND name NOT LIKE 'sqlite_%'"))).scalars())
+            self.assertEqual(indexes, old_indexes)
+            table_sql = await connection.scalar(text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='destination_message_templates'"))
+            self.assertNotIn("'warmup'", table_sql)
+        await engine.dispose(); migrate("head", self.safe)
+
     async def test_phase6_rows_survive_phase7_upgrade(self) -> None:
         """Upgrade realistic pre-Phase-7 durable data, not only an empty schema."""
         migrate("base", self.safe); migrate("20260809_01", self.safe)

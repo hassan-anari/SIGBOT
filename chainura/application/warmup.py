@@ -142,8 +142,10 @@ class WarmupPublicationService:
             else:
                 target = PublicationStatus.SENDING
             values = {"status": target, "updated_at": now}
+            attempts = publication.attempt_count
             if target is PublicationStatus.SENDING:
-                values.update(attempt_count=publication.attempt_count + 1,
+                attempts += 1
+                values.update(attempt_count=attempts,
                               retry_at=None)
                 if publication.first_attempt_at is None:
                     values["first_attempt_at"] = now
@@ -153,11 +155,18 @@ class WarmupPublicationService:
             await tx.commit()
         if not changed or target is not PublicationStatus.SENDING:
             return
-        attempts = publication.attempt_count + 1
+        # Preparation is complete before entering the Telegram ambiguity boundary.
+        # A template failure cannot mean that Telegram accepted the message.
         try:
             text = (await self.message_templates.resolve(
                 DestinationMessageKind.WARMUP, destination_id=publication.destination_id,
                 context={})).text
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return await self._finish(publication_id, PublicationStatus.FAILED,
+                                      type(exc).__name__)
+        try:
             message_id = await self.publisher.send_standalone_text(chat_id, text)
         except DeliveryRateLimited as exc:
             if attempts < self.max_attempts:
@@ -176,7 +185,14 @@ class WarmupPublicationService:
         except Exception as exc:
             return await self._finish(publication_id, PublicationStatus.DELIVERY_UNKNOWN,
                                       type(exc).__name__)
-        await self._finish(publication_id, PublicationStatus.SENT, message_id=message_id)
+        try:
+            await self._finish(publication_id, PublicationStatus.SENT, message_id=message_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Telegram has accepted the send, but persisting SENT was uncertain.
+            await self._finish(publication_id, PublicationStatus.DELIVERY_UNKNOWN,
+                               "sent_commit_failed")
 
     async def recover_unexpected_failure(self, publication_id):
         await self._finish(publication_id, PublicationStatus.DELIVERY_UNKNOWN,
