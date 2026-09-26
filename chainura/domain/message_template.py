@@ -8,6 +8,7 @@ class DestinationMessageKind(str, Enum):
     SL_HIT = "sl_hit"
     BREAKEVEN = "breakeven"
     SIGNAL_CANCELLED = "signal_cancelled"
+    WARMUP = "warmup"
 
 
 class MessageTemplateSource(str, Enum):

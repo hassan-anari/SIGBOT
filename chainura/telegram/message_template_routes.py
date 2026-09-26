@@ -14,7 +14,8 @@ from chainura.telegram.states import AdminMessageTemplateManagement
 router = Router(name="phase7-message-template-management")
 KINDS = {"i":DestinationMessageKind.INITIAL_PHOTO_CAPTION,"d":DestinationMessageKind.SIGNAL_DETAILS,
          "t":DestinationMessageKind.TP_HIT,"s":DestinationMessageKind.SL_HIT,
-         "b":DestinationMessageKind.BREAKEVEN,"c":DestinationMessageKind.SIGNAL_CANCELLED}
+         "b":DestinationMessageKind.BREAKEVEN,"c":DestinationMessageKind.SIGNAL_CANCELLED,
+         "w":DestinationMessageKind.WARMUP}
 LABELS = texts.MESSAGE_TEMPLATE_KIND_LABELS
 SOURCES = texts.MESSAGE_TEMPLATE_SOURCE_LABELS
 def kb(rows): return InlineKeyboardMarkup(inline_keyboard=rows)

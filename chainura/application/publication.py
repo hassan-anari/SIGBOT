@@ -70,6 +70,15 @@ class TelegramPhotoPublisher:
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
   return message_id
+ async def send_standalone_text(self,chat_id,text):
+  try:message=await self.bot.send_message(chat_id=chat_id,text=text)
+  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
+  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
+  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  message_id=getattr(message,"message_id",None)
+  if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
+  return message_id
  async def send_initial_status(self,telegram_user_id,text,reply_markup):
   try:message=await self.bot.send_message(chat_id=telegram_user_id,text=text,reply_markup=reply_markup)
   except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None

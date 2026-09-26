@@ -22,6 +22,7 @@ BUILTIN_TEMPLATES = {
     DestinationMessageKind.SL_HIT: "🛑 <b>حد ضرر {symbol} فعال شد</b>",
     DestinationMessageKind.BREAKEVEN: "⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>",
     DestinationMessageKind.SIGNAL_CANCELLED: "❌ <b>سیگنال {symbol} کنسل شد</b>",
+    DestinationMessageKind.WARMUP: "🔥 <b>آماده باشید</b>\n\nبه‌زودی سیگنال جدید منتشر می‌شود.",
 }
 
 PLACEHOLDERS = {
@@ -31,6 +32,7 @@ PLACEHOLDERS = {
     DestinationMessageKind.SL_HIT: frozenset(("symbol", "direction", "entry", "leverage", "stop_loss", "execution_price", "roi", "exchange", "private_tag")),
     DestinationMessageKind.BREAKEVEN: frozenset(("symbol", "direction", "entry", "leverage", "execution_price", "roi", "exchange", "private_tag")),
     DestinationMessageKind.SIGNAL_CANCELLED: frozenset(("symbol", "direction", "entry", "leverage", "private_tag")),
+    DestinationMessageKind.WARMUP: frozenset(),
 }
 
 PHOTO_KINDS = frozenset((DestinationMessageKind.INITIAL_PHOTO_CAPTION, DestinationMessageKind.TP_HIT, DestinationMessageKind.BREAKEVEN))
