@@ -13,11 +13,24 @@ Use this checklist for staging/manual handoff after automated acceptance passes.
 
 Never put real tokens, credentials, connection URLs, or sensitive Telegram payloads in screenshots, logs, or commits.
 
+## Phase 1 foundations
+
+- New signals accept leverage from `1x` through `50x`; historical rows above
+  `50x` remain readable.
+- Stage One requires explicit Signalist review and confirmation before P1 is
+  captured, `PENDING_DETAILS` is persisted, or initial publication is queued.
+- Stage Two offers Edit, which clears only the uncommitted TP/SL FSM draft and
+  returns to TP entry.
+- Persisted trades use the stable public identifier `TR-000123`, derived from
+  the immutable signal ID.
+- Production Telegram HTML parsing remains enabled while web-page previews are
+  globally disabled in the Bot default properties.
+
 ## Signalist creation and continuation
 
 1. Tap **Create Signal** and select a shared Symbol. Record the reference shown at selection time; this is the immutable Entry captured by the system (the UI need not expose internal P0/P1 names).
-2. Select Long or Short, then select leverage.
-3. Observe the fresh confirmation price. At drift `<= 0.70%`, confirm that exactly one durable Pending Details Signal is created, Entry remains the selection-time price, and the fresh price is retained as the initial snapshot. At drift `> 0.70%`, confirm that no Signal or publication row is created.
+2. Select Long or Short, enter leverage from `1` through `50`, and verify the Stage-One review. Confirm no Signal or publication row exists yet.
+3. Confirm Stage One. At drift `<= 0.70%`, confirm that exactly one durable Pending Details Signal is created, Entry remains the selection-time price, and the fresh P1 price is retained as the initial snapshot. At drift `> 0.70%`, confirm that no Signal or publication row is created.
 4. Verify an Initial **Photo** is published and its Telegram message ID is stored.
 5. Verify the Signalist receives the publication-completion notification and **Continue Details** action.
 6. Continue from the durable Pending Signal, enter ordered TPs and SL, and finalize.
@@ -115,4 +128,3 @@ Inspect preserved rows and relationships without modifying them. Useful tables i
 - [ ] Migration/DB verification
 
 Operator: ____________________  Date/time: ____________________  Build/commit: ____________________
-

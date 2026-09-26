@@ -6,7 +6,8 @@ from typing import Protocol
 
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import (PriceSourceType, Signal, SignalLifecycleStatus,
-    SignalMode, TradeDirection, initial_entry_drift_is_acceptable)
+    SignalMode, TradeDirection, initial_entry_drift_is_acceptable,
+    MAX_NEW_SIGNAL_LEVERAGE)
 from chainura.domain.signalist import SignalistStatus
 from chainura.errors import (DuplicateSignalCreationTokenError,
     InconsistentReferencePriceError, InitialEntryDriftExceededError,
@@ -103,6 +104,7 @@ class SignalService:
         async with self._transactions() as tx:
             existing=await tx.signals.get_by_creation_token(command.creation_token)
             if existing is not None:return existing
+        self._validate_new_leverage(command.leverage)
         self._validate_result(SnapshotRequest(command.mode,command.canonical_symbol,
             command.selected_exchange,command.native_symbol),command.p0)
         # This is deliberately a second provider call. P0 is never replaced.
@@ -138,6 +140,7 @@ class SignalService:
         async with self._transactions() as tx:
             existing=await tx.signals.get_by_creation_token(command.creation_token)
             if existing is not None:return existing
+        self._validate_new_leverage(command.leverage)
         snapshot=await self.capture_snapshot(SnapshotRequest(command.mode,
             command.canonical_symbol,command.selected_exchange,command.native_symbol))
         now=self._clock()
@@ -180,6 +183,14 @@ class SignalService:
         if self._details_publication_wake:self._details_publication_wake()
         if self._monitoring_wake:self._monitoring_wake()
         return candidate
+
+    @staticmethod
+    def _validate_new_leverage(leverage: int) -> None:
+        # Deliberately enforced only at creation; legacy persisted rows above the
+        # current product maximum must remain readable.
+        if (isinstance(leverage, bool) or not isinstance(leverage, int)
+                or not 1 <= leverage <= MAX_NEW_SIGNAL_LEVERAGE):
+            raise SignalCreationError("new signal leverage must be between 1 and 50")
 
     @staticmethod
     def _validate_result(request: SnapshotRequest, result: ReferencePriceResult) -> None:

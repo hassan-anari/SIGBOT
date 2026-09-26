@@ -1,7 +1,7 @@
 from __future__ import annotations
 from html import escape
 from datetime import timezone
-from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii_id,
+from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii, bidi_ascii_id,
     format_datetime, format_priority, persian_digits)
 
 MENU_MAIN="🏠 منوی اصلی"; MENU_ADMIN_STATUS="🛡 وضعیت دسترسی"; MENU_SIGNALIST_STATUS="👤 وضعیت حساب"
@@ -130,13 +130,15 @@ SIGNAL_SELECT_RESULT="قرارداد دقیق را انتخاب کنید."
 SIGNAL_SELECT_DIRECTION="جهت معامله را انتخاب کنید."
 SIGNAL_LONG="🟢 لانگ"; SIGNAL_SHORT="🔴 شورت"
 SIGNAL_ENTRY_VALID="✅ قیمت ورود معتبر است."
-SIGNAL_ASK_LEVERAGE="اهرم را به‌صورت عدد صحیح مثبت انگلیسی وارد کنید."
+SIGNAL_ASK_LEVERAGE="اهرم را به‌صورت عدد صحیح انگلیسی بین ۱ تا ۵۰ وارد کنید."
+SIGNAL_INVALID_LEVERAGE="اهرم باید یک عدد صحیح انگلیسی بین ۱ تا ۵۰ باشد."
 SIGNAL_ASK_TP="قیمت تارگت را با ارقام انگلیسی وارد کنید."
 SIGNAL_TP_ADD="➕ افزودن تارگت بعدی"; SIGNAL_TP_FINISH="✅ پایان ثبت تارگت‌ها"
 SIGNAL_ASK_SL="قیمت حد ضرر را با ارقام انگلیسی وارد کنید."
 SIGNAL_INVALID_DIRECTIONAL_PRICE="قیمت با جهت، ترتیب تارگت‌ها یا قیمت ورود سازگار نیست."
 SIGNAL_REVIEW_TITLE="<b>📋 بررسی نهایی سیگنال</b>"
 SIGNAL_CONFIRM="✅ تأیید و ثبت"
+SIGNAL_EDIT_DETAILS="✏️ ویرایش اطلاعات"
 SIGNAL_CANCEL="❌ لغو"
 SIGNAL_BACK="⬅️ بازگشت"
 SIGNAL_BACK_EXCHANGE="⬅️ بازگشت به انتخاب صرافی"
@@ -187,6 +189,25 @@ def signal_review(data):
         f"🛑 <b>حد ضرر:</b> {format_decimal(Decimal(data['stop_loss']))}",
     ]
     return "\n".join(rows)
+
+def signal_stage_one_review(data):
+    from decimal import Decimal
+    from chainura.telegram.presentation.formatting import format_decimal, format_leverage, format_symbol
+    direction=SIGNAL_DIRECTION_LONG if data["direction"]=="long" else SIGNAL_DIRECTION_SHORT
+    mode=SIGNAL_MODE_COMPOSITE if data["mode"]=="composite" else SIGNAL_MODE_SINGLE
+    rows=["<b>📋 بررسی مرحله اول سیگنال</b>", "",
+          f"🪙 <b>نماد:</b> {format_symbol(data['canonical_symbol'])}",
+          f"🔀 <b>حالت:</b> {mode}"]
+    if data.get("selected_exchange"):
+        rows.append(f"🏦 <b>صرافی:</b> {EXCHANGE_NAMES[data['selected_exchange']]}")
+    rows.extend([f"{'📈' if data['direction']=='long' else '📉'} <b>جهت:</b> {direction}",
+                 f"💵 <b>قیمت مرجع اولیه:</b> {format_decimal(Decimal(data['p0_reference_price']))}",
+                 f"⚡ <b>اهرم:</b> {format_leverage(data['leverage'])}", "",
+                 "آیا اطلاعات بالا برای ایجاد و ارسال شات اولیه تأیید می‌شود؟"])
+    return "\n".join(rows)
+
+SIGNAL_STAGE_ONE_CONFIRM="✅ تأیید و ایجاد سیگنال"
+SIGNAL_STAGE_ONE_EDIT="✏️ بازگشت و ویرایش"
 SIGNAL_PRICE_UNAVAILABLE = "⚠️ قیمت فعلی این نماد ناموجود است. لطفاً دوباره تلاش کنید."
 EVENT_APPROVED = "✅ درخواست انتشار این آپدیت ثبت شد."
 EVENT_DECLINED = "این آپدیت برای مقصدها منتشر نخواهد شد."
@@ -218,6 +239,8 @@ SIGNAL_COMMENT_MARKET_UNAVAILABLE="قیمت تازه و معتبر بازار د
 SIGNAL_COMMENT_NO_DESTINATIONS="هیچ مقصد واجد شرایطی برای این کامنت وجود ندارد."
 SIGNAL_COMMENT_QUEUED="✅ کامنت برای ارسال به مقصدهای سیگنال ثبت شد."
 SIGNAL_COMMENT_CANCELLED="ارسال کامنت لغو شد."
+def signal_comment_prompt(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_COMMENT_PROMPT}"
+def signal_comment_queued(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_COMMENT_QUEUED}"
 ACTIVE_SIGNAL_CANCEL_YES="✅ بله، کنسل شود";ACTIVE_SIGNAL_CANCEL_NO="❌ خیر"
 ACTIVE_SIGNAL_CANCEL_CONFIRM="آیا از کنسل کردن سیگنال {symbol} مطمئن هستید؟"
 ACTIVE_SIGNAL_STALE="این سیگنال دیگر در دسترس یا قابل انجام نیست."
@@ -225,6 +248,10 @@ ACTIVE_SIGNAL_NOT_CANCELLABLE="سیگنال دیگر قابل کنسل نیست.
 ACTIVE_SIGNAL_CANCELLED="✅ سیگنال کنسل شد."
 ACTIVE_SIGNAL_CANCELLED_QUEUED="✅ سیگنال کنسل شد.\nپیام کنسلی برای مقصدهای مرتبط در صف انتشار قرار گرفت."
 ACTIVE_SIGNAL_TP_REACHED="✅ تارگت {index}";ACTIVE_SIGNAL_TP_WAITING="⏳ تارگت {index}";ACTIVE_SIGNAL_SL_WAITING="⏳ حد ضرر"
+def active_signal_cancel_confirm(trade_id,symbol):
+    return f"{_trade_line(trade_id)}\nآیا از کنسل کردن سیگنال {symbol} مطمئن هستید؟"
+def active_signal_cancelled(trade_id,queued):
+    return f"{_trade_line(trade_id)}\n{ACTIVE_SIGNAL_CANCELLED_QUEUED if queued else ACTIVE_SIGNAL_CANCELLED}"
 
 # Phase 6C reports and API health
 MENU_ADMIN_REPORTS="📊 گزارش‌ها"
@@ -261,7 +288,8 @@ def trade_history_text(page, all_scope=True):
     rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {persian_digits(page.page)} از {persian_digits(page.pages)}"]
     for item in page.items:
         who=f"\nسیگنالیست: {safe(item.signalist_display_name)}" if all_scope else ""
-        rows.append(f"\n#{persian_digits(item.signal_id)}{who}\nنماد: {safe(item.canonical_symbol)}\nجهت: {safe(_report_direction(item.direction))}\nزمان: {datetime_value(item.created_at_tehran)}\nمنبع: {safe(_report_source(item.source_label))}\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {persian_digits(item.highest_tp) if item.highest_tp else REPORT_DASH}\nROI: {_dec(item.theoretical_roi)}\nانتشار قطعی: {REPORT_YES if item.confirmed_published else REPORT_NO}")
+        from chainura.trade_id import format_trade_id
+        rows.append(f"\n{bidi_ascii(format_trade_id(item.signal_id))}{who}\nنماد: {safe(item.canonical_symbol)}\nجهت: {safe(_report_direction(item.direction))}\nزمان: {datetime_value(item.created_at_tehran)}\nمنبع: {safe(_report_source(item.source_label))}\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {persian_digits(item.highest_tp) if item.highest_tp else REPORT_DASH}\nROI: {_dec(item.theoretical_roi)}\nانتشار قطعی: {REPORT_YES if item.confirmed_published else REPORT_NO}")
     if not page.items: rows.append(EMPTY_LIST)
     return "\n".join(rows)
 def _duration_text(start, end):
@@ -296,3 +324,13 @@ SIGNAL_INITIAL_PARTIAL="⚠️ پردازش شات اولیه پایان یاف�
 SIGNAL_CONTINUE_DETAILS="ادامه ثبت اطلاعات"
 SIGNAL_DETAILS_STALE="این سیگنال در وضعیت انتظار اطلاعات تکمیلی نیست یا به شما تعلق ندارد."
 SIGNAL_DETAILS_RECORDED="✅ اطلاعات تکمیلی سیگنال ثبت شد و انتشار متن جزئیات در مقصدها آغاز شد."
+
+def _trade_line(trade_id):
+    from chainura.telegram.presentation.formatting import bidi_ascii
+    return f"شناسه معامله: {bidi_ascii(trade_id)}"
+
+def signal_initial_queued(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_INITIAL_QUEUED}"
+def signal_initial_published(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_INITIAL_PUBLISHED}"
+def signal_initial_partial(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_INITIAL_PARTIAL}"
+def signal_continue_details(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_ASK_TP}"
+def signal_details_recorded(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_DETAILS_RECORDED}"

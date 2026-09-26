@@ -10,6 +10,7 @@ from chainura.domain.destination import Exchange
 from chainura.errors import InvalidSignalInputError
 
 INITIAL_ENTRY_MAX_DRIFT_PERCENT = Decimal("0.70")
+MAX_NEW_SIGNAL_LEVERAGE = 50
 _PRICE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _LEVERAGE = re.compile(r"^[0-9]+$")
 
@@ -50,8 +51,8 @@ def parse_leverage(value: object) -> int:
     if not isinstance(value, str) or not _LEVERAGE.fullmatch(value.strip()):
         raise InvalidSignalInputError("leverage must be a positive ASCII integer")
     result = int(value.strip())
-    if result < 1:
-        raise InvalidSignalInputError("leverage must be at least one")
+    if result < 1 or result > MAX_NEW_SIGNAL_LEVERAGE:
+        raise InvalidSignalInputError("leverage must be between one and fifty")
     return result
 
 

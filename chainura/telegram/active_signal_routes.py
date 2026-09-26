@@ -9,6 +9,8 @@ from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.formatting import format_decimal,format_leverage,format_symbol
 from chainura.telegram.presentation.keyboards import signalist_menu
 from chainura.telegram.states import SignalCreate,SignalComment
+from chainura.trade_id import format_trade_id
+from chainura.telegram.presentation.formatting import bidi_ascii
 
 router=Router(name="phase7-active-signals");PREFIX="as7:"
 def cb(action,*parts):return PREFIX+":".join((action,*(str(x) for x in parts)))
@@ -16,7 +18,7 @@ def _parse(data):
  try:
   parts=data.split(":");return parts[1],tuple(int(x) for x in parts[2:])
  except (ValueError,IndexError,AttributeError):return None,()
-def _label(x):return f"{x.symbol} • {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'} • {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"
+def _label(x):return f"{format_trade_id(x.id)} • {x.symbol} • {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'} • {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"
 def list_keyboard(page):
  rows=[[InlineKeyboardButton(text=_label(x),callback_data=cb("d",x.id,page.page))] for x in page.items];nav=[]
  if page.page>1:nav.append(InlineKeyboardButton(text=texts.BUTTON_PREVIOUS,callback_data=cb("l",page.page-1)))
@@ -24,7 +26,7 @@ def list_keyboard(page):
  if nav:rows.append(nav)
  rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("m"))]);return InlineKeyboardMarkup(inline_keyboard=rows)
 def detail_text(x):
- rows=["<b>📋 سیگنال فعال</b>","",f"نماد: {format_symbol(x.symbol)}",f"جهت: {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'}",f"ورود: {format_decimal(x.entry)}",f"اهرم: {format_leverage(x.leverage)}",f"وضعیت: {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"]
+ rows=["<b>📋 سیگنال فعال</b>","",f"شناسه معامله: {bidi_ascii(format_trade_id(x.id))}",f"نماد: {format_symbol(x.symbol)}",f"جهت: {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'}",f"ورود: {format_decimal(x.entry)}",f"اهرم: {format_leverage(x.leverage)}",f"وضعیت: {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"]
  if x.status is SignalLifecycleStatus.ACTIVE:
   rows.extend([f"تارگت {i}: {format_decimal(v)}" for i,v in enumerate(x.take_profits,1)]);rows.append(f"حد ضرر: {format_decimal(x.stop_loss)}")
  return "\n".join(rows)
@@ -81,7 +83,7 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
  if action=="o":
   if item.status is not SignalLifecycleStatus.ACTIVE or signal_comment_service is None or not await signal_comment_service.eligible(signal_id,actor.signalist.id):return await callback.message.answer(texts.SIGNAL_COMMENT_STALE)
   await state.set_state(SignalComment.waiting_text);await state.set_data({"comment_signal_id":signal_id,"comment_page":page})
-  return await callback.message.answer(texts.SIGNAL_COMMENT_PROMPT)
+  return await callback.message.answer(texts.signal_comment_prompt(format_trade_id(signal_id)))
  if action=="x":
   current=await state.get_state()
   if current in (SignalComment.waiting_text.state,SignalComment.waiting_snapshot_choice.state):await state.clear()
@@ -92,7 +94,8 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
   result=await signal_comment_service.create(signal_id,actor.signalist.id,data.get("comment_text",""),action=="s")
   if result.reason=="caption_too_long":return await callback.message.answer(texts.SIGNAL_COMMENT_CAPTION_TOO_LONG,reply_markup=comment_choice_keyboard(signal_id,page))
   await state.clear()
-  if result.created:return await callback.message.answer(texts.SIGNAL_COMMENT_QUEUED)
+  if result.created:return await callback.message.answer(
+      texts.signal_comment_queued(format_trade_id(signal_id)))
   return await callback.message.answer({"market_unavailable":texts.SIGNAL_COMMENT_MARKET_UNAVAILABLE,"no_destinations":texts.SIGNAL_COMMENT_NO_DESTINATIONS}.get(result.reason,texts.SIGNAL_COMMENT_STALE))
  if action=="r":
   if item.status is not SignalLifecycleStatus.PENDING_DETAILS:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
@@ -102,9 +105,11 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
   return await signal_callback_handler(callback,SignalCallback(kind="continue",flow="resume",ref=str(signal_id),page=1),actor,state,callback_ack,None,signal_service)
  if action=="c":
   markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL_YES,callback_data=cb("y",signal_id,page)),InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL_NO,callback_data=cb("d",signal_id,page))],[InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("d",signal_id,page))]])
-  return await callback.message.answer(texts.ACTIVE_SIGNAL_CANCEL_CONFIRM.format(symbol=format_symbol(item.symbol)),reply_markup=markup)
+  return await callback.message.answer(texts.active_signal_cancel_confirm(
+      format_trade_id(signal_id),format_symbol(item.symbol)),reply_markup=markup)
  if action=="y":
   result=await active_signal_service.cancel_signal(signal_id,actor.signalist.id)
   if not result.cancelled:return await callback.message.answer(texts.ACTIVE_SIGNAL_NOT_CANCELLABLE)
   await clear_cancelled_signal_fsm(state,signal_id)
-  return await callback.message.answer(texts.ACTIVE_SIGNAL_CANCELLED_QUEUED if result.publication_count else texts.ACTIVE_SIGNAL_CANCELLED,reply_markup=signalist_menu())
+  return await callback.message.answer(texts.active_signal_cancelled(
+      format_trade_id(signal_id),bool(result.publication_count)),reply_markup=signalist_menu())

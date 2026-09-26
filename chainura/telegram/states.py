@@ -51,6 +51,8 @@ class SignalCreate(StatesGroup):
     native_search = State()
     direction = State()
     leverage = State()
+    stage_one_review = State()
+    stage_one_creating = State()
     take_profits = State()
     stop_loss = State()
     review = State()

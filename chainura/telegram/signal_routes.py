@@ -19,7 +19,8 @@ from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.keyboards import (remove_menu, signal_directions,
     signal_exchanges, signal_form_navigation, signal_native_navigation,
     signal_results, signal_review_actions, signal_shared_navigation,
-    signal_tp_actions, signalist_menu)
+    signal_stage_one_actions, signal_tp_actions, signalist_menu)
+from chainura.trade_id import format_trade_id
 from chainura.telegram.presentation.signal_callbacks import SignalCallback
 from chainura.telegram.states import SignalCreate
 from chainura.telegram.phase5_coordination import (FinalizationClaim,
@@ -209,23 +210,15 @@ async def native_query(message:Message,actor:Actor,state:FSMContext,symbol_catal
 async def leverage_input(message:Message,actor:Actor,state:FSMContext,signal_service):
     if actor.kind is not ActorKind.ACTIVE_SIGNALIST: await _reject_actor(message,state,actor); return
     try: leverage=parse_leverage(message.text)
-    except InvalidSignalInputError: await message.answer(texts.INVALID_INPUT); return
+    except InvalidSignalInputError: await message.answer(texts.SIGNAL_INVALID_LEVERAGE); return
     async with phase5_lock(message):
         data=await state.get_data();flow=data.get("flow_token")
         if not await _owned(state,SignalCreate.leverage,flow):return
-        token=_token();await state.update_data(stage_one_token=token,leverage=leverage)
-        command=_pending_command(await state.get_data())
-    try: signal=await signal_service.create_pending(command)
-    except InitialEntryDriftExceededError:
-        async with phase5_lock(message):
-            if await _owned(state,SignalCreate.leverage,flow,("stage_one_token",token)):await state.clear()
-        await message.answer(texts.SIGNAL_DRIFT_EXCEEDED,reply_markup=signalist_menu());return
-    except ApplicationError:
-        await message.answer(texts.TEMPORARY_ERROR);return
-    async with phase5_lock(message):
-        if not await _owned(state,SignalCreate.leverage,flow,("stage_one_token",token)):return
-        await state.clear()
-    await message.answer(texts.SIGNAL_INITIAL_QUEUED,reply_markup=signalist_menu())
+        await state.update_data(leverage=leverage)
+        await state.set_state(SignalCreate.stage_one_review)
+        data=await state.get_data()
+    await message.answer(texts.signal_stage_one_review(data),
+                         reply_markup=signal_stage_one_actions(flow))
 
 @router.message(SignalCreate.take_profits, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def tp_input(message:Message,actor:Actor,state:FSMContext):
@@ -276,7 +269,7 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             "signalist_id":pending.signalist_id,"canonical_symbol":pending.canonical_symbol,
             "direction":pending.direction.value,"entry_price":str(pending.entry_price),
             "leverage":pending.leverage,"take_profits":[],"details_only":True})
-        await callback.message.answer(texts.SIGNAL_ASK_TP,
+        await callback.message.answer(texts.signal_continue_details(format_trade_id(pending.id)),
             reply_markup=signal_tp_actions(flow,False,details_only=True));return
     reconciliation=await reconcile_finalizing(callback,callback.message,state,
         signal_service,show_live=(kind!="confirm" or actor.kind is not ActorKind.ACTIVE_SIGNALIST),actor=actor)
@@ -291,6 +284,38 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         await callback.message.answer(texts.INACTIVE if actor.kind is ActorKind.INACTIVE_SIGNALIST else texts.ARCHIVED,reply_markup=remove_menu()); return
     if data.get("flow_token") != flow: return
     if kind=="cancel": await _cancel(callback.message,state,flow,event=callback,signal_service=signal_service); return
+    if kind=="edit1":
+        async with phase5_lock(callback):
+            if not await _owned(state,SignalCreate.stage_one_review,flow): return
+            await state.set_state(SignalCreate.leverage)
+        await callback.message.answer(texts.SIGNAL_ASK_LEVERAGE,
+            reply_markup=signal_form_navigation(flow,"direction")); return
+    if kind=="confirm1":
+        async with phase5_lock(callback):
+            if not await _owned(state,SignalCreate.stage_one_review,flow): return
+            token=_token()
+            await state.update_data(stage_one_token=token)
+            await state.set_state(SignalCreate.stage_one_creating)
+            command=_pending_command(await state.get_data())
+        try: signal=await signal_service.create_pending(command)
+        except InitialEntryDriftExceededError:
+            async with phase5_lock(callback):
+                if await _owned(state,SignalCreate.stage_one_creating,flow,
+                                ("stage_one_token",token)): await state.clear()
+            await callback.message.answer(texts.SIGNAL_DRIFT_EXCEEDED,
+                                          reply_markup=signalist_menu()); return
+        except ApplicationError:
+            async with phase5_lock(callback):
+                if await _owned(state,SignalCreate.stage_one_creating,flow,
+                                ("stage_one_token",token)):
+                    await state.set_state(SignalCreate.stage_one_review)
+            await callback.message.answer(texts.TEMPORARY_ERROR); return
+        async with phase5_lock(callback):
+            if not await _owned(state,SignalCreate.stage_one_creating,flow,
+                                ("stage_one_token",token)): return
+            await state.clear()
+        await callback.message.answer(texts.signal_initial_queued(format_trade_id(signal.id)),
+                                      reply_markup=signalist_menu()); return
     if kind=="out":
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.shared_search,flow): return
@@ -402,7 +427,17 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             await callback.message.answer(texts.SIGNAL_DETAILS_STALE);return
         except ApplicationError:
             await callback.message.answer(texts.TEMPORARY_ERROR);return
-        await state.clear();await callback.message.answer(texts.SIGNAL_DETAILS_RECORDED,reply_markup=signalist_menu());return
+        await state.clear();await callback.message.answer(
+            texts.signal_details_recorded(format_trade_id(int(current["pending_signal_id"]))),
+            reply_markup=signalist_menu());return
+    if kind=="edit2":
+        async with phase5_lock(callback):
+            if not await _owned(state,SignalCreate.review,flow): return
+            await state.update_data(take_profits=[],stop_loss=None)
+            await state.set_state(SignalCreate.take_profits)
+        await callback.message.answer(texts.SIGNAL_ASK_TP,
+            reply_markup=signal_tp_actions(flow,False,
+                details_only=bool(data.get("details_only")))); return
     if kind=="back":
         allowed={
             "shared":SignalCreate.exchange_selection.state,
