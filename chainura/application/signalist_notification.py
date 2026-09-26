@@ -9,6 +9,7 @@ from chainura.domain.monitoring import *
 from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.models import (SignalistNotificationRecord,SignalistRecord,
  SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,BreakevenPromptRecord)
+from chainura.trade_id import format_trade_id
 
 FSI="\u2068";PDI="\u2069"
 def iso(value)->str:return f"{FSI}{escape(str(value))}{PDI}"
@@ -34,7 +35,10 @@ def fmt_percent(value: Decimal) -> str:
         display_value = Decimal("0")
     return fmt_decimal(display_value)
 
-def event_text(kind, symbol, price, roi, tp_index=None):
+def event_text(kind, symbol, price, roi, tp_index=None, signal_id=None):
+    if signal_id is None:
+        raise ValueError("signal_id is required for event notification")
+    trade = iso(format_trade_id(signal_id))
     symbol_text = iso(symbol)
     price_text = fmt_decimal(price)
     roi_text = fmt_percent(roi)
@@ -60,10 +64,12 @@ def event_text(kind, symbol, price, roi, tp_index=None):
         )
     else:
         raise ValueError("unsupported event kind")
-    return head + "\n\nآیا این آپدیت برای مقصدها منتشر شود؟"
+    return f"شناسه معامله: {trade}\n" + head + "\n\nآیا این آپدیت برای مقصدها منتشر شود؟"
 
-def prompt_text(symbol,entry,current):
-    return f"⚖️ قیمت {iso(symbol)} به محدوده بریک‌ایون بازگشته است.\n\nقیمت ورود: {iso(entry)}\nقیمت فعلی: {iso(current)}\n\nآیا بریک‌ایون ثبت شود؟"
+def prompt_text(symbol,entry,current,signal_id=None):
+    if signal_id is None:
+        raise ValueError("signal_id is required for Breakeven prompt")
+    return f"شناسه معامله: {iso(format_trade_id(signal_id))}\n⚖️ قیمت {iso(symbol)} به محدوده بریک‌ایون بازگشته است.\n\nقیمت ورود: {iso(entry)}\nقیمت فعلی: {iso(current)}\n\nآیا بریک‌ایون ثبت شود؟"
 
 class SignalistNotificationService:
     def __init__(self,sessions,transport,max_attempts=3,retry_base_seconds=.5,clock=lambda:datetime.now(timezone.utc)):
@@ -86,11 +92,11 @@ class SignalistNotificationService:
             if row.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,row.candidate_id);event=await s.get(SignalEventRecord,candidate.event_id);signal=await s.get(SignalRecord,event.signal_id)
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
-                text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index);source=candidate
+                text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index,signal.id);source=candidate
             else:
                 prompt=await s.get(BreakevenPromptRecord,row.prompt_id);signal=await s.get(SignalRecord,prompt.signal_id)
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return
-                text=prompt_text(signal.canonical_symbol,signal.entry_price,prompt.observed_price_at_creation);source=prompt
+                text=prompt_text(signal.canonical_symbol,signal.entry_price,prompt.observed_price_at_creation,signal.id);source=prompt
         try:message_id=await self.transport.send(telegram_id,text,row.kind,row.candidate_id or row.prompt_id)
         except asyncio.TimeoutError:
             async with self.sessions() as s,s.begin():

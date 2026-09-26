@@ -81,6 +81,14 @@ class RuntimeShutdownRequested(Exception):
     """Internal control flow used to stop partial startup safely."""
 
 
+def production_bot_defaults() -> DefaultBotProperties:
+    """Return the single global policy inherited by production Bot methods."""
+    return DefaultBotProperties(
+        parse_mode=ParseMode.HTML,
+        link_preview_is_disabled=True,
+    )
+
+
 def create_production_storage(redis: Redis, identity: str) -> RedisStorage:
     builder = DefaultKeyBuilder(prefix=f"chainura:tg:{identity}:fsm", separator=":")
     return RedisStorage(redis=redis, key_builder=builder, state_ttl=FSM_TTL_SECONDS,
@@ -248,8 +256,7 @@ class Runtime:
             self.renewal_task.add_done_callback(self._renewal_done)
             self._checkpoint()
 
-            self.bot = Bot(self.settings.bot_token,
-                           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            self.bot = Bot(self.settings.bot_token, default=production_bot_defaults())
             self._checkpoint()
             self.storage = create_production_storage(self.redis, identity)
             idempotency = UpdateIdempotency(self.redis, identity)

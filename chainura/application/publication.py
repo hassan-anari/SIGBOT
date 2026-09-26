@@ -172,13 +172,16 @@ class InitialPublicationService:
   from chainura.persistence.models import InitialPublicationNotificationRecord,SignalRecord,SignalistRecord
   from chainura.telegram.presentation import texts
   from chainura.telegram.presentation.keyboards import signal_continue_details
+  from chainura.trade_id import format_trade_id
   async with self.transactions() as tx:
    row=(await tx._session.scalars(select(InitialPublicationNotificationRecord).where(InitialPublicationNotificationRecord.status=="pending").order_by(InitialPublicationNotificationRecord.id).limit(1))).one_or_none()
    if row is None:return False
    claimed=(await tx._session.execute(update(InitialPublicationNotificationRecord).where(InitialPublicationNotificationRecord.id==row.id,InitialPublicationNotificationRecord.status=="pending").values(status="sending",updated_at=self.clock()))).rowcount
    signal=await tx._session.get(SignalRecord,row.signal_id);actor=await tx._session.get(SignalistRecord,signal.signalist_id) if signal else None;await tx.commit()
   if not claimed or actor is None:return False
-  copy=texts.SIGNAL_INITIAL_PUBLISHED if row.outcome=="success" else texts.SIGNAL_INITIAL_PARTIAL
+  trade_id=format_trade_id(row.signal_id)
+  copy=(texts.signal_initial_published(trade_id) if row.outcome=="success"
+        else texts.signal_initial_partial(trade_id))
   try:message_id=await self.publisher.send_initial_status(actor.telegram_user_id,copy,signal_continue_details(row.signal_id))
   except Exception:
    # Delivery after intent is ambiguous and is deliberately never auto-resent.

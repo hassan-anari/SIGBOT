@@ -20,6 +20,15 @@ class FinalizationClaim:
     canonical_symbol: str
 
 
+@dataclass(frozen=True, slots=True)
+class StageOneCreationClaim:
+    identity: FlowIdentity
+    flow_token: str
+    creation_token: str
+    stage_one_token: str
+    canonical_symbol: str
+
+
 @dataclass(slots=True)
 class _LockEntry:
     lock: asyncio.Lock
@@ -29,7 +38,7 @@ class _LockEntry:
 class Phase5Coordination:
     def __init__(self) -> None:
         self._locks: dict[FlowIdentity, _LockEntry] = {}
-        self._claims: dict[FlowIdentity, FinalizationClaim] = {}
+        self._claims: dict[FlowIdentity, FinalizationClaim | StageOneCreationClaim] = {}
 
     @asynccontextmanager
     async def hold(self, identity: FlowIdentity):
@@ -50,13 +59,13 @@ class Phase5Coordination:
             if entry.references == 0 and not entry.lock.locked():
                 self._locks.pop(identity, None)
 
-    def register_claim(self, claim: FinalizationClaim) -> None:
+    def register_claim(self, claim: FinalizationClaim | StageOneCreationClaim) -> None:
         self._claims[claim.identity] = claim
 
-    def live_claim(self, identity: FlowIdentity) -> FinalizationClaim | None:
+    def live_claim(self, identity: FlowIdentity) -> FinalizationClaim | StageOneCreationClaim | None:
         return self._claims.get(identity)
 
-    def remove_claim(self, claim: FinalizationClaim) -> None:
+    def remove_claim(self, claim: FinalizationClaim | StageOneCreationClaim) -> None:
         if self._claims.get(claim.identity) == claim:
             self._claims.pop(claim.identity, None)
 

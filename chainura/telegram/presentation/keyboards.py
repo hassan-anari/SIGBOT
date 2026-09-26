@@ -86,7 +86,19 @@ def signal_review_actions(flow: str) -> InlineKeyboardMarkup:
     from chainura.telegram.presentation.signal_callbacks import signal_callback
     return InlineKeyboardMarkup(inline_keyboard=[
       [InlineKeyboardButton(text=texts.SIGNAL_CONFIRM,callback_data=signal_callback("confirm",flow))],
+      [InlineKeyboardButton(text=texts.SIGNAL_EDIT_DETAILS,callback_data=signal_callback("edit2",flow))],
       [InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"sl")),InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))]])
+
+
+def signal_stage_one_actions(flow: str) -> InlineKeyboardMarkup:
+    from chainura.telegram.presentation.signal_callbacks import signal_callback
+    return InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=texts.SIGNAL_STAGE_ONE_CONFIRM,
+                            callback_data=signal_callback("confirm1", flow))],
+      [InlineKeyboardButton(text=texts.SIGNAL_STAGE_ONE_EDIT,
+                            callback_data=signal_callback("edit1", flow)),
+       InlineKeyboardButton(text=texts.SIGNAL_CANCEL,
+                            callback_data=signal_callback("cancel", flow))]])
 
 
 def signal_form_navigation(flow: str, back_target: str) -> InlineKeyboardMarkup:
