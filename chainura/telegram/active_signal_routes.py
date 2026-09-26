@@ -69,6 +69,9 @@ async def active_list(message:Message,actor:Actor,active_signal_service):await _
 async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,signal_comment_service=None):
  action,args=_parse(callback.data);await callback_ack.answer_once()
  if not isinstance(callback.message,Message):return
+ from chainura.telegram.signal_routes import reconcile_stage_one_creating
+ if await reconcile_stage_one_creating(callback,callback.message,state,signal_service,
+                                        actor=actor) is not None:return
  if actor.kind is not ActorKind.ACTIVE_SIGNALIST:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
  if action=="n":return
  if action=="m":return await callback.message.answer(texts.DASHBOARD_SIGNALIST,reply_markup=signalist_menu())

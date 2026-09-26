@@ -23,7 +23,7 @@ from chainura.telegram.presentation.keyboards import (remove_menu, signal_direct
 from chainura.trade_id import format_trade_id
 from chainura.telegram.presentation.signal_callbacks import SignalCallback
 from chainura.telegram.states import SignalCreate
-from chainura.telegram.phase5_coordination import (FinalizationClaim,
+from chainura.telegram.phase5_coordination import (FinalizationClaim, StageOneCreationClaim,
     identity_from_callback, identity_from_message, phase5_coordination)
 
 router=Router(name="phase5-signal-create")
@@ -41,6 +41,58 @@ def phase5_lock(event):
 def _access_text(actor):
     return (texts.INACTIVE if actor.kind is ActorKind.INACTIVE_SIGNALIST else
             texts.ARCHIVED if actor.kind is ActorKind.ARCHIVED_SIGNALIST else texts.UNKNOWN)
+
+async def reconcile_stage_one_creating(event,message,state,signal_service,*,actor=None,
+        show_live=True):
+    """Recover an orphaned Stage-One operation without repeating creation."""
+    identity=(identity_from_callback(event) if hasattr(event,"message")
+              else identity_from_message(event))
+    async with phase5_coordination.hold(identity):
+        if await state.get_state()!=SignalCreate.stage_one_creating.state: return None
+        data=await state.get_data()
+        expected=(data.get("flow_token"),data.get("creation_token"),
+                  data.get("stage_one_token"),data.get("canonical_symbol"))
+        live=phase5_coordination.live_claim(identity)
+        if isinstance(live,StageOneCreationClaim) and (
+                live.flow_token,live.creation_token,live.stage_one_token,
+                live.canonical_symbol)==expected:
+            outcome="live"
+        else:
+            outcome=None
+            signalist_id=data.get("signalist_id")
+            creation_token=data.get("creation_token")
+    if outcome=="live":
+        if show_live: await message.answer(texts.SIGNAL_STAGE_ONE_CREATING)
+        return outcome
+    if signal_service is None:
+        await message.answer(texts.TEMPORARY_ERROR); return "error"
+    try: signal=await signal_service.get_by_creation_token(creation_token,signalist_id)
+    except ApplicationError:
+        await message.answer(texts.TEMPORARY_ERROR); return "error"
+    async with phase5_coordination.hold(identity):
+        if await state.get_state()!=SignalCreate.stage_one_creating.state:return "stale"
+        current=await state.get_data()
+        if ((current.get("flow_token"),current.get("creation_token"),
+             current.get("stage_one_token"),current.get("canonical_symbol"))!=expected
+                or phase5_coordination.live_claim(identity) is not None):return "stale"
+        if signal is not None:
+            await state.clear(); outcome="success"
+        elif actor is not None and actor.kind is not ActorKind.ACTIVE_SIGNALIST:
+            await state.clear(); outcome="denied"
+        else:
+            preserved={k:v for k,v in current.items() if k!="stage_one_token"}
+            await state.set_data(preserved)
+            await state.set_state(SignalCreate.stage_one_review)
+            outcome="review"
+    if outcome=="success":
+        await message.answer(texts.signal_initial_queued(format_trade_id(signal.id)),
+                             reply_markup=signalist_menu())
+    elif outcome=="denied":
+        await message.answer(_access_text(actor),reply_markup=remove_menu())
+    else:
+        await message.answer(texts.signal_stage_one_review(preserved),
+                             reply_markup=signal_stage_one_actions(preserved["flow_token"]))
+    return outcome
 
 async def reconcile_finalizing(event,message,state,signal_service,*,show_live=True,actor=None):
     identity=(identity_from_callback(event) if hasattr(event,"message")
@@ -115,6 +167,8 @@ async def _owned(state:FSMContext, expected, flow:str, operation:str|None=None, 
     return data
 
 async def _cancel(message:Message,state:FSMContext,flow:str|None=None,event=None,signal_service=None):
+    if await reconcile_stage_one_creating(event or message,message,state,
+            signal_service) is not None:return
     reconciliation=await reconcile_finalizing(event or message,message,state,
         signal_service)
     if reconciliation is not None: return
@@ -133,6 +187,8 @@ async def _cancel(message:Message,state:FSMContext,flow:str|None=None,event=None
 
 @router.message(F.text == texts.MENU_CREATE_SIGNAL)
 async def start_signal(message:Message,actor:Actor,state:FSMContext,signal_service=None):
+    if await reconcile_stage_one_creating(message,message,state,signal_service,
+            actor=actor) is not None:return
     if await reconcile_finalizing(message,message,state,signal_service,actor=actor) is not None: return
     if actor.kind is not ActorKind.ACTIVE_SIGNALIST:
         await _reject_actor(message,state,actor); return
@@ -155,6 +211,10 @@ async def start_signal(message:Message,actor:Actor,state:FSMContext,signal_servi
 @router.message(SignalCreate.finalizing)
 async def finalizing_input(message:Message,actor:Actor,state:FSMContext,signal_service):
     await reconcile_finalizing(message,message,state,signal_service,actor=actor)
+
+@router.message(SignalCreate.stage_one_creating)
+async def stage_one_creating_input(message:Message,actor:Actor,state:FSMContext,signal_service):
+    await reconcile_stage_one_creating(message,message,state,signal_service,actor=actor)
 
 @router.message(SignalCreate.shared_search, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def shared_query(message:Message,actor:Actor,state:FSMContext,symbol_catalog):
@@ -259,6 +319,8 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if (callback.message is None or callback.from_user is None
             or not hasattr(callback.message, "answer")): return
     kind=callback_data.kind
+    if await reconcile_stage_one_creating(callback,callback.message,state,
+            signal_service,actor=actor) is not None:return
     if kind=="continue":
         try: pending=await signal_service.get_pending_for_owner(int(callback_data.ref),actor.signalist.id)
         except (ValueError,AttributeError,PendingSignalStateError):
@@ -291,31 +353,40 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         await callback.message.answer(texts.SIGNAL_ASK_LEVERAGE,
             reply_markup=signal_form_navigation(flow,"direction")); return
     if kind=="confirm1":
+        claim=None
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.stage_one_review,flow): return
             token=_token()
             await state.update_data(stage_one_token=token)
             await state.set_state(SignalCreate.stage_one_creating)
-            command=_pending_command(await state.get_data())
-        try: signal=await signal_service.create_pending(command)
-        except InitialEntryDriftExceededError:
+            creating_data=await state.get_data()
+            command=_pending_command(creating_data)
+            claim=StageOneCreationClaim(identity_from_callback(callback),flow,
+                creating_data["creation_token"],token,creating_data["canonical_symbol"])
+            phase5_coordination.register_claim(claim)
+        try:
+            try: signal=await signal_service.create_pending(command)
+            except InitialEntryDriftExceededError:
+                async with phase5_lock(callback):
+                    if await _owned(state,SignalCreate.stage_one_creating,flow,
+                                    ("stage_one_token",token)): await state.clear()
+                await callback.message.answer(texts.SIGNAL_DRIFT_EXCEEDED,
+                                              reply_markup=signalist_menu()); return
+            except ApplicationError:
+                async with phase5_lock(callback):
+                    if await _owned(state,SignalCreate.stage_one_creating,flow,
+                                    ("stage_one_token",token)):
+                        await state.update_data(stage_one_token=None)
+                        await state.set_state(SignalCreate.stage_one_review)
+                await callback.message.answer(texts.TEMPORARY_ERROR); return
             async with phase5_lock(callback):
-                if await _owned(state,SignalCreate.stage_one_creating,flow,
-                                ("stage_one_token",token)): await state.clear()
-            await callback.message.answer(texts.SIGNAL_DRIFT_EXCEEDED,
+                if not await _owned(state,SignalCreate.stage_one_creating,flow,
+                                    ("stage_one_token",token)): return
+                await state.clear()
+            await callback.message.answer(texts.signal_initial_queued(format_trade_id(signal.id)),
                                           reply_markup=signalist_menu()); return
-        except ApplicationError:
-            async with phase5_lock(callback):
-                if await _owned(state,SignalCreate.stage_one_creating,flow,
-                                ("stage_one_token",token)):
-                    await state.set_state(SignalCreate.stage_one_review)
-            await callback.message.answer(texts.TEMPORARY_ERROR); return
-        async with phase5_lock(callback):
-            if not await _owned(state,SignalCreate.stage_one_creating,flow,
-                                ("stage_one_token",token)): return
-            await state.clear()
-        await callback.message.answer(texts.signal_initial_queued(format_trade_id(signal.id)),
-                                      reply_markup=signalist_menu()); return
+        finally:
+            phase5_coordination.remove_claim(claim)
     if kind=="out":
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.shared_search,flow): return
