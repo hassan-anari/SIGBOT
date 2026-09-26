@@ -37,6 +37,16 @@ The system also maintains complete trade history, Signalist performance statisti
 
 # 2. System Roles
 
+## Phase 2 — Warm-up messages
+
+Active Signalists have a one-tap Warm-up action. It creates standalone, text-only
+messages for their currently assigned active destinations. A rolling one-hour
+cooldown is global per destination across all Signalists and begins at the durable
+SQLite reservation, regardless of the later delivery outcome. Text resolution uses
+destination override, then global Main Admin override, then the built-in template.
+Warm-up messages neither consume daily Signal capacity nor participate in Signal
+reply chains or the Signal lifecycle.
+
 ## 2.1. Main Admin
 
 The Main Admin has access to system-wide administrative functions and is responsible for managing:

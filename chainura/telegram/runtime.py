@@ -41,6 +41,8 @@ from chainura.telegram.template_routes import router as template_router
 from chainura.telegram.message_template_routes import router as message_template_router
 from chainura.telegram.event_routes import router as event_router
 from chainura.telegram.active_signal_routes import router as active_signal_router
+from chainura.telegram.warmup_routes import router as warmup_router
+from chainura.application.warmup import WarmupService, WarmupPublicationService, WarmupPublicationWorker
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider, MarketPriceWorker
@@ -109,6 +111,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.include_router(template_router)
     dispatcher.include_router(message_template_router)
     dispatcher.include_router(active_signal_router)
+    dispatcher.include_router(warmup_router)
     dispatcher.include_router(signal_router)
     dispatcher.include_router(event_router)
     dispatcher.include_router(router)
@@ -153,6 +156,7 @@ class Runtime:
         self.admin_alert_worker=None;self.admin_alert_task=None
         self.cancellation_publication_worker=None;self.cancellation_publication_task=None
         self.comment_publication_worker=None;self.comment_publication_task=None
+        self.warmup_publication_worker=None;self.warmup_publication_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -312,6 +316,22 @@ class Runtime:
                     self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)
             template_admin_service=None
             message_template_service=DestinationMessageTemplateService(transactions)
+            warmup_service = None
+            if hasattr(sessions,"class_"):
+                warmup_delivery = WarmupPublicationService(
+                    transactions, TelegramPhotoPublisher(self.bot), message_template_service,
+                    max_attempts=self.settings.send_max_attempts,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.warmup_publication_worker = WarmupPublicationWorker(
+                    warmup_delivery, self.settings.publication_concurrency,
+                    self.settings.publication_sweep_seconds)
+                await self._startup_await(warmup_delivery.recover())
+                await self._startup_await(self.warmup_publication_worker.start())
+                self.warmup_publication_task = self.warmup_publication_worker.task
+                self.warmup_publication_task.add_done_callback(
+                    lambda task:self._observed_worker_done(task,"warm-up publication worker"))
+                warmup_service = WarmupService(
+                    transactions, wake=self.warmup_publication_worker.wake)
             if hasattr(sessions,"class_"):
                 cancellation_service=CancellationPublicationService(transactions,TelegramPhotoPublisher(self.bot),message_templates=message_template_service)
                 self.cancellation_publication_worker=CancellationPublicationWorker(cancellation_service,self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
@@ -410,6 +430,7 @@ class Runtime:
                 message_template_service=message_template_service,
                 active_signal_service=active_signal_service,
                 signal_comment_service=comment_service,
+                warmup_service=warmup_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
             self._checkpoint()
             await self._startup_await(self.bot.set_my_commands([
@@ -450,6 +471,7 @@ class Runtime:
         if self.update_publication_task is not None:watched.add(self.update_publication_task)
         if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
         if self.comment_publication_task is not None:watched.add(self.comment_publication_task)
+        if self.warmup_publication_task is not None:watched.add(self.warmup_publication_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -491,6 +513,9 @@ class Runtime:
         if self.comment_publication_task is not None and self.comment_publication_task in done:
             self._observe_task_failure(self.comment_publication_task,"signal comment publication worker")
             if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or "signal comment publication worker stopped unexpectedly"
+        if self.warmup_publication_task is not None and self.warmup_publication_task in done:
+            self._observe_task_failure(self.warmup_publication_task,"warm-up publication worker")
+            if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or "warm-up publication worker stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
@@ -559,6 +584,8 @@ class Runtime:
                 await self._best_effort(self.cancellation_publication_worker.close(), "signal cancellation publication worker")
             if self.comment_publication_worker:
                 await self._best_effort(self.comment_publication_worker.close(), "signal comment publication worker")
+            if self.warmup_publication_worker:
+                await self._best_effort(self.warmup_publication_worker.close(), "warm-up publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:

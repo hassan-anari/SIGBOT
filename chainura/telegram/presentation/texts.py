@@ -14,7 +14,7 @@ MESSAGE_TEMPLATE_SAVED="✅ متن با موفقیت ثبت شد."
 MESSAGE_TEMPLATE_REMOVED="✅ متن حذف شد و متن ارث‌برده‌شده استفاده می‌شود."
 MESSAGE_TEMPLATE_INVALID="❌ متن معتبر نیست؛ جای‌نگهدارها، HTML و طول متن را بررسی کنید."
 MESSAGE_TEMPLATE_VIEW="<b>متن فعلی</b>\nمنبع: {source}\n\n{template}"
-MESSAGE_TEMPLATE_KIND_LABELS={"i":"شات اولیه","d":"جزئیات سیگنال","t":"تارگت","s":"حد ضرر","b":"بریک‌ایون","c":"کنسل سیگنال"}
+MESSAGE_TEMPLATE_KIND_LABELS={"i":"شات اولیه","d":"جزئیات سیگنال","t":"تارگت","s":"حد ضرر","b":"بریک‌ایون","c":"کنسل سیگنال","w":"آماده‌باش"}
 MESSAGE_TEMPLATE_SOURCE_LABELS={"builtin":"پیش‌فرض","global":"پیش‌فرض سفارشی","destination":"اختصاصی مقصد"}
 MESSAGE_TEMPLATE_SCOPE_GLOBAL="پیش‌فرض عمومی"
 MESSAGE_TEMPLATE_SCOPE_DESTINATION="مقصد «{destination}»"
@@ -28,6 +28,8 @@ MESSAGE_TEMPLATE_CONFIRM_BUTTON="ثبت نهایی"
 MESSAGE_TEMPLATE_REEDIT_BUTTON="ویرایش مجدد"
 MENU_CREATE_SIGNAL="➕ ساخت سیگنال"
 MENU_ACTIVE_SIGNALS="📋 سیگنال‌های فعال"
+MENU_WARMUP="🔥 آماده‌باش"
+WARMUP_ACCEPTED="✅ درخواست آماده‌باش برای مقصدهای واجد شرایط ثبت شد."
 BUTTON_BACK="⬅️ بازگشت به منوی اصلی"; BUTTON_REFRESH="تازه‌سازی وضعیت"
 WELCOME_ADMIN="<b>👋 خوش آمدید</b>\n\nشما مدیر اصلی سامانه هستید."
 WELCOME_SIGNALIST="<b>👋 خوش آمدید، {name}</b>\n\nحساب سیگنالیست شما فعال است."

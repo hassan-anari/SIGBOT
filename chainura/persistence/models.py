@@ -155,6 +155,57 @@ class DestinationMessageTemplateRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
+class WarmupRequestRecord(Base):
+    __tablename__ = "warmup_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(["signalist_id"], ["signalists.id"], name="fk_warmup_requests_signalist"),
+        Index("ix_warmup_requests_signalist_created", "signalist_id", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signalist_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+class DestinationWarmupCooldownRecord(Base):
+    __tablename__ = "destination_warmup_cooldowns"
+    __table_args__ = (
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_warmup_cooldowns_destination"),
+        ForeignKeyConstraint(["last_request_id"], ["warmup_requests.id"], name="fk_warmup_cooldowns_request"),
+        CheckConstraint("next_allowed_at > reserved_at", name="ck_warmup_cooldowns_window"),
+        Index("ix_warmup_cooldowns_next_allowed", "next_allowed_at"),
+    )
+    destination_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_request_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    next_allowed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+WARMUP_PUBLICATION_STATUS_ENUM = _enum(PublicationStatus, "warmup_publication_status")
+
+class WarmupPublicationRecord(Base):
+    __tablename__ = "warmup_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["request_id"], ["warmup_requests.id"], ondelete="CASCADE", name="fk_warmup_publications_request"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_warmup_publications_destination"),
+        UniqueConstraint("request_id", "destination_id", name="uq_warmup_publications_request_destination"),
+        CheckConstraint("attempt_count >= 0", name="ck_warmup_publications_attempts"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_warmup_publications_message"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)", name="ck_warmup_publications_sent"),
+        Index("ix_warmup_publications_status_retry", "status", "retry_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(WARMUP_PUBLICATION_STATUS_ENUM, nullable=False, default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
 SIGNAL_MODE_ENUM = _enum(SignalMode, "signal_mode")
 TRADE_DIRECTION_ENUM = _enum(TradeDirection, "trade_direction")
 PRICE_SOURCE_ENUM = _enum(PriceSourceType, "signal_price_source_type")
