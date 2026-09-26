@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from datetime import datetime,timezone
 from decimal import Decimal
-from sqlalchemy import func,or_,select,update
+from sqlalchemy import delete,func,or_,select,update
 from chainura.application.pagination import Page,PageRequest
 from chainura.domain.monitoring import CandidateStatus,MonitorStage,NotificationStatus,PromptStatus
 from chainura.domain.publication import PublicationRequestStatus,PublicationStatus
@@ -13,6 +13,7 @@ from chainura.persistence.models import (BreakevenPromptRecord,DestinationPublic
  SignalCancellationPublicationRecord,SignalDetailsPublicationRecord,SignalMonitorStateRecord,SignalRecord,
  SignalTakeProfitRecord,SignalUpdateCandidateRecord,SignalistNotificationRecord,SignalistRecord,
  UpdatePublicationRequestRecord)
+from chainura.persistence.models import DestinationTradeLockRecord
 
 OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1)
 
@@ -61,6 +62,8 @@ class ActiveSignalService:
    eligibility=(SignalRecord.status==SignalLifecycleStatus.PENDING_DETAILS) if row.status is SignalLifecycleStatus.PENDING_DETAILS else SignalRecord.id.in_(select(SignalMonitorStateRecord.signal_id).where(SignalMonitorStateRecord.signal_id==signal_id,SignalMonitorStateRecord.stage.in_(OPEN_STAGES)))
    changed=(await s.execute(update(SignalRecord).where(SignalRecord.id==signal_id,SignalRecord.signalist_id==signalist_id,SignalRecord.status==row.status,eligibility).values(status=SignalLifecycleStatus.CANCELLED,cancelled_at=now,updated_at=now))).rowcount
    if changed!=1:return CancellationResult(False,False,0)
+   await s.execute(delete(DestinationTradeLockRecord).where(
+    DestinationTradeLockRecord.signal_id==signal_id))
    await s.execute(update(SignalUpdateCandidateRecord).where(SignalUpdateCandidateRecord.signal_id==signal_id,SignalUpdateCandidateRecord.status.in_((CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION,CandidateStatus.APPROVED))).values(status=CandidateStatus.SUPERSEDED,updated_at=now))
    await s.execute(update(BreakevenPromptRecord).where(BreakevenPromptRecord.signal_id==signal_id,BreakevenPromptRecord.status.in_((PromptStatus.PENDING_NOTIFICATION,PromptStatus.AWAITING_RESPONSE))).values(status=PromptStatus.SUPERSEDED,expired_at=now,updated_at=now))
    related=or_(SignalistNotificationRecord.candidate_id.in_(select(SignalUpdateCandidateRecord.id).where(SignalUpdateCandidateRecord.signal_id==signal_id)),SignalistNotificationRecord.prompt_id.in_(select(BreakevenPromptRecord.id).where(BreakevenPromptRecord.signal_id==signal_id)))

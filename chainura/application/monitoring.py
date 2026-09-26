@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Awaitable, Callable, Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from chainura.domain.monitoring import *
@@ -18,7 +18,8 @@ LOGGER=logging.getLogger("chainura.monitoring")
 from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
  SignalExchangeSymbolRecord,SignalInitialPriceRecord,SignalMonitorStateRecord,
  SignalEventRecord,SignalEventSourcePriceRecord,SignalUpdateCandidateRecord,
- BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord,UpdatePublicationRequestRecord)
+ BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord,UpdatePublicationRequestRecord,
+ DestinationTradeLockRecord)
 
 
 @dataclass(frozen=True,slots=True)
@@ -109,7 +110,10 @@ class MonitoringService:
                     state.stage=MonitorStage.COMPLETED_TARGETS if decision.tp_index==len(work.take_profits) else MonitorStage.POST_TP1
                 else:state.current_result_kind=ResultKind.LOSS;state.stage=MonitorStage.COMPLETED_SL
                 state.current_result_price=decision.threshold_price;state.current_leveraged_roi=decision.leveraged_roi
-                if state.stage in (MonitorStage.COMPLETED_TARGETS,MonitorStage.COMPLETED_SL):state.completed_at=now
+                if state.stage in (MonitorStage.COMPLETED_TARGETS,MonitorStage.COMPLETED_SL):
+                    state.completed_at=now
+                    await s.execute(delete(DestinationTradeLockRecord).where(
+                        DestinationTradeLockRecord.signal_id==work.signal_id))
             elif state.stage is MonitorStage.PRE_TP1:
                 await self._breakeven_state(s,state,work,market,now)
             state.last_checked_at=now;state.last_reference_price=market.reference_price;state.updated_at=now;state.version=version+1
@@ -211,6 +215,8 @@ class MonitoringService:
                 prompt.updated_at=now;return False
             event=SignalEventRecord(signal_id=signal.id,kind=SignalEventKind.BREAKEVEN,tp_index=None,threshold_price=signal.entry_price,observed_reference_price=market.reference_price,roi_basis_price=signal.entry_price,leveraged_roi=Decimal("0"),price_source_type=market.price_source_type,occurred_at=now,created_at=now);s.add(event);await s.flush();s.add_all([SignalEventSourcePriceRecord(event_id=event.id,exchange=e,price=p) for e,p in market.source_prices])
             prompt.status=PromptStatus.ACCEPTED;prompt.accepted_at=now;prompt.updated_at=now;state.stage=MonitorStage.COMPLETED_BREAKEVEN;state.current_result_kind=ResultKind.NEUTRAL;state.current_result_price=signal.entry_price;state.current_leveraged_roi=Decimal("0");state.completed_at=now;state.updated_at=now;state.version+=1
+            await s.execute(delete(DestinationTradeLockRecord).where(
+                DestinationTradeLockRecord.signal_id==signal.id))
             candidate=SignalUpdateCandidateRecord(signal_id=signal.id,event_id=event.id,signalist_id=signalist_id,status=CandidateStatus.AWAITING_NOTIFICATION,created_at=now,updated_at=now);s.add(candidate);await s.flush();s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,signalist_id=signalist_id,status=NotificationStatus.PENDING,created_at=now,updated_at=now));return True
 
 

@@ -358,6 +358,26 @@ class DestinationPublicationRecord(Base):
     sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 DestinationPublicationRecord.__table__.primary_key.name = "pk_destination_publications"
 
+class DestinationTradeLockRecord(Base):
+    """The durable owner of one destination/canonical-symbol publication slot."""
+    __tablename__ = "destination_trade_locks"
+    __table_args__ = (
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE",
+                             name="fk_destination_trade_locks_destination"),
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE",
+                             name="fk_destination_trade_locks_signal"),
+        CheckConstraint("trim(canonical_symbol) <> ''",
+                        name="ck_destination_trade_locks_symbol_nonempty"),
+        Index("ix_destination_trade_locks_signal_id", "signal_id"),
+    )
+    destination_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    canonical_symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+DestinationTradeLockRecord.__table__.primary_key.name = "pk_destination_trade_locks"
+
 class SignalDetailsPublicationRecord(Base):
     """Durable destination-specific Stage-Two text outbox."""
     __tablename__ = "signal_details_publications"

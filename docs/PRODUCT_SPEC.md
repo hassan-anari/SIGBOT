@@ -234,6 +234,20 @@ Each destination contains the following information:
 
 An ordered exchange-priority list is stored for each destination.
 
+## 8.2. Destination Trade Lock
+
+Initial-publication admission permits at most one open trade for each persisted
+canonical Symbol in each destination. The rule is destination-specific, global
+across Signalists, and independent of direction and Signal mode. An admitted
+`PENDING_DETAILS` Signal occupies the slot immediately. A blocked destination is
+permanently skipped for that Signal and is never backfilled after the owner closes;
+the blocked Signal itself remains valid, is monitored, and counts normally.
+
+Pending/retrying/template-blocked, `sent`, and `delivery_unknown` Initials retain
+occupancy while their Signal is open. A definite pre-send or delivery failure
+releases occupancy, as does durable cancellation, final TP, SL, or accepted
+Breakeven. Warm-up messages neither inspect nor modify destination trade locks.
+
 Example:
 
 1. Ourbit
