@@ -8,6 +8,9 @@ are upgraded to the Phase-4B interaction exactly once; historical approved or
 declined TP decisions and terminal trades are not rewritten. `PENDING_DETAILS`
 signals remain resumable through **Active Signals → Continue**. Open legacy
 Breakeven prompts are retired without being converted into Risk Free actions.
+An unresolved pre-4B final TP already stored as `COMPLETED_TARGETS` remains
+terminal and receives only the historical Publish / Decline decision UI; it
+never receives position actions or reconstructed accounting.
 
 Ambiguous destination deliveries are never automatically resent. If a final TP
 is already confirmed and its owner becomes inactive or archived, reconciliation
@@ -15,6 +18,10 @@ closes the remaining accounting volume without destination publication and
 releases its trade locks. An unmonitorable active legacy trade remains visible,
 is explicitly labelled as unavailable for automatic monitoring, and can be
 cancelled through the normal durable cancellation path.
+
+Lifecycle-only inactive-final cleanup also runs from the direct-notification
+sweep, so disabling market monitoring does not strand an already-confirmed final
+TP or require any exchange request.
 
 Recommended production rollout (never run schema migration concurrently with
 live application writers):

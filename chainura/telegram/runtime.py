@@ -46,7 +46,9 @@ from chainura.application.warmup import WarmupService, WarmupPublicationService,
 from chainura.application.signal_service import SignalService
 from chainura.application.market_gateway import MarketReferencePriceProvider, SymbolCatalogProvider
 from chainura.application.market_gateway import BatchedMarketSnapshotProvider, MarketPriceWorker
-from chainura.application.monitoring import MonitoringService,MonitoringWorker,BreakevenSettings
+from chainura.application.monitoring import (MonitoringService,MonitoringWorker,BreakevenSettings,
+    LEGACY_TERMINAL_INTERACTION_VERSION)
+from sqlalchemy import select
 from chainura.application.health import HealthRepository, AdminAlertWorker
 from chainura.application.reporting import ReportingRepository, ReportingService
 from chainura.application.signalist_notification import SignalistNotificationService,SignalistNotificationWorker
@@ -290,9 +292,12 @@ class Runtime:
                 async def send(inner,telegram_id,text,kind,source_id):
                     if kind is NotificationKind.EVENT:
                         async with sessions() as session:
-                            from chainura.persistence.models import SignalUpdateCandidateRecord
+                            from chainura.persistence.models import SignalUpdateCandidateRecord,SignalistNotificationRecord
                             candidate=await session.get(SignalUpdateCandidateRecord,source_id)
-                        actions=await monitoring_service.tp_action_availability(source_id,candidate.signalist_id) if candidate else ()
+                            notification=await session.scalar(select(SignalistNotificationRecord).where(
+                                SignalistNotificationRecord.candidate_id==source_id))
+                        actions=(await monitoring_service.tp_action_availability(source_id,candidate.signalist_id)
+                            if candidate and (not notification or notification.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION) else ())
                         markup=event_decision_keyboard(source_id,actions)
                     else:
                         markup=breakeven_prompt_keyboard(source_id)
@@ -316,7 +321,8 @@ class Runtime:
             if monitoring_service is not None:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
                 await self._startup_await(notification_service.recover())
-                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds)
+                self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds,
+                    lifecycle_reconcile=monitoring_service.reconcile_inactive_final_positions)
                 monitoring_service.notification_wake=self.notification_worker.wake
                 if self.settings.monitoring_enabled:
                     self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)

@@ -53,6 +53,7 @@ class MonitorWork:
 
 
 CURRENT_INTERACTION_VERSION = 2
+LEGACY_TERMINAL_INTERACTION_VERSION = 3
 TERMINAL_MONITOR_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_SL,
     MonitorStage.COMPLETED_BREAKEVEN, MonitorStage.COMPLETED_FULL_CLOSE,
     MonitorStage.COMPLETED_RISK_FREE)
@@ -157,18 +158,41 @@ class MonitoringService:
             ~SignalUpdateCandidateRecord.id.in_(select(SignalPositionActionRecord.candidate_id).where(
                 SignalPositionActionRecord.candidate_id.is_not(None)))))).all()
         refreshed=repaired=0
-        for candidate,_,_,actor,note in rows:
+        for candidate,event,signal,actor,note in rows:
+            legacy_terminal=await self._is_legacy_terminal_tp(s,candidate,event,signal)
+            target_version=(LEGACY_TERMINAL_INTERACTION_VERSION if legacy_terminal
+                            else CURRENT_INTERACTION_VERSION)
             if note is None:
                 s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,
                     signalist_id=candidate.signalist_id,status=NotificationStatus.PENDING,
-                    interaction_version=CURRENT_INTERACTION_VERSION,created_at=now,updated_at=now))
+                    interaction_version=target_version,created_at=now,updated_at=now))
                 repaired+=1
-            elif note.interaction_version<CURRENT_INTERACTION_VERSION and actor.status is SignalistStatus.ACTIVE:
-                note.interaction_version=CURRENT_INTERACTION_VERSION
+            elif ((legacy_terminal and note.interaction_version!=target_version) or
+                    (not legacy_terminal and note.interaction_version<CURRENT_INTERACTION_VERSION)):
+                note.interaction_version=target_version
                 note.status=NotificationStatus.PENDING;note.attempt_count=0;note.retry_at=None
                 note.telegram_message_id=None;note.sent_at=None;note.last_error_category=None;note.updated_at=now
                 refreshed+=1
         return refreshed,repaired
+
+    async def _is_legacy_terminal_tp(self,s,candidate,event=None,signal=None):
+        event=event or await s.get(SignalEventRecord,candidate.event_id)
+        signal=signal or await s.get(SignalRecord,candidate.signal_id)
+        if not event or event.kind is not SignalEventKind.TP_HIT or not signal:return False
+        monitor=await s.get(SignalMonitorStateRecord,signal.id)
+        position=await s.get(SignalPositionStateRecord,signal.id)
+        tp_count=await s.scalar(select(func.count()).select_from(SignalTakeProfitRecord).where(
+            SignalTakeProfitRecord.signal_id==signal.id))
+        action=await s.scalar(select(SignalPositionActionRecord.id).where(
+            (SignalPositionActionRecord.candidate_id==candidate.id)|
+            (SignalPositionActionRecord.event_id==event.id)))
+        return bool(monitor and monitor.stage is MonitorStage.COMPLETED_TARGETS and
+            position is None and action is None and event.tp_index==tp_count)
+
+    async def reconcile_inactive_final_positions(self)->int:
+        """Run lifecycle-only cleanup without requiring market monitoring."""
+        async with self.sessions() as s,s.begin():
+            return await self._terminalize_inactive_final_positions(s,self.clock())
 
     async def _terminalize_inactive_final_positions(self,s,now):
         rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord,
@@ -385,8 +409,7 @@ class MonitoringService:
     async def run_cycle(self,limit:int=100,concurrency:int=8)->int:
         # No market call is needed to close an already-confirmed final target whose
         # owner can no longer choose presentation semantics.
-        async with self.sessions() as s,s.begin():
-            await self._terminalize_inactive_final_positions(s,self.clock())
+        await self.reconcile_inactive_final_positions()
         if self.market is None:return 0
         work=await self.load_work(limit);snapshots=await self.market.snapshot(work);sem=asyncio.Semaphore(concurrency)
         async def one(item):
@@ -410,10 +433,13 @@ class MonitoringService:
             signal=await s.get(SignalRecord,row.signal_id) if row else None
             event=await s.get(SignalEventRecord,row.event_id) if row else None
             if row is None or signal is None or signal.status is not SignalLifecycleStatus.ACTIVE or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
-            # Phase 4B TP decisions must always pass through the atomic position
-            # action boundary. This server-side guard also rejects forged legacy
-            # EventDecisionCallback payloads.
-            if event is None or event.kind is SignalEventKind.TP_HIT:
+            legacy_terminal=(event is not None and event.kind is SignalEventKind.TP_HIT and
+                row.status in (CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION) and
+                row.superseded_by_event_id is None and
+                await self._is_legacy_terminal_tp(s,row,event,signal))
+            # Generic TP decisions remain forbidden except for the narrowly
+            # proven pre-4B terminal publication decision shape.
+            if event is None or (event.kind is SignalEventKind.TP_HIT and not legacy_terminal):
                 raise ValueError("TP candidates require a position action")
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted

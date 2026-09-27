@@ -5,7 +5,9 @@ from decimal import Decimal
 from sqlalchemy import func, select, update
 
 from chainura.application.active_signals import ActiveSignalService
-from chainura.application.monitoring import CURRENT_INTERACTION_VERSION, MonitoringService
+from chainura.application.monitoring import (CURRENT_INTERACTION_VERSION,
+    LEGACY_TERMINAL_INTERACTION_VERSION, MonitoringService)
+from chainura.application.signalist_notification import event_text
 from chainura.application.pagination import PageRequest
 from chainura.application.signal_service import CreateSignalCommand, ReferencePriceResult, SignalService
 from chainura.domain.destination import DestinationAccessLevel, DestinationStatus, DestinationType, Exchange
@@ -19,7 +21,7 @@ from chainura.persistence.database import create_session_factory
 from chainura.persistence.models import (DestinationRecord, DestinationTradeLockRecord,
     DestinationUpdatePublicationRecord, SignalEventRecord, SignalMonitorStateRecord,
     SignalPositionActionRecord, SignalPositionStateRecord, SignalRecord,
-    SignalUpdateCandidateRecord, SignalistNotificationRecord, SignalistRecord,
+    SignalTakeProfitRecord, SignalUpdateCandidateRecord, SignalistNotificationRecord, SignalistRecord,
     UpdatePublicationRequestRecord)
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
@@ -113,6 +115,84 @@ class ProductionUpgradeCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 SignalistNotificationRecord.candidate_id.in_((historical,sl))))).all()
             self.assertTrue(all(x.interaction_version==1 and x.status is NotificationStatus.SENT for x in rows))
 
+    async def _legacy_terminal_candidate(self,token,notification_status=None):
+        async with self.sessions() as s,s.begin():
+            signal=SignalRecord(signalist_id=self.actor.id,creation_token=token,mode=SignalMode.COMPOSITE,
+                canonical_symbol="OLDTPUSDT",base_asset="OLDTP",quote_asset="USDT",
+                direction=TradeDirection.LONG,entry_price=Decimal("100"),leverage=10,
+                stop_loss=Decimal("90"),reference_price=Decimal("100"),
+                price_source_type=PriceSourceType.COMPOSITE,status=SignalLifecycleStatus.ACTIVE,
+                created_at=NOW,updated_at=NOW)
+            s.add(signal);await s.flush()
+            s.add_all((SignalTakeProfitRecord(signal_id=signal.id,position=1,price=Decimal("110")),
+                SignalTakeProfitRecord(signal_id=signal.id,position=2,price=Decimal("120"))))
+            s.add(SignalMonitorStateRecord(signal_id=signal.id,stage=MonitorStage.COMPLETED_TARGETS,
+                highest_tp_index=2,current_result_kind=__import__('chainura.domain.monitoring',fromlist=['ResultKind']).ResultKind.WIN,
+                current_result_price=Decimal("120"),current_leveraged_roi=Decimal("200"),
+                completed_at=NOW,created_at=NOW,updated_at=NOW))
+            event=SignalEventRecord(signal_id=signal.id,kind=SignalEventKind.TP_HIT,tp_index=2,
+                threshold_price=Decimal("120"),observed_reference_price=Decimal("121"),
+                roi_basis_price=Decimal("120"),leveraged_roi=Decimal("200"),
+                price_source_type=PriceSourceType.COMPOSITE,occurred_at=NOW,created_at=NOW)
+            s.add(event);await s.flush()
+            candidate=SignalUpdateCandidateRecord(signal_id=signal.id,event_id=event.id,
+                signalist_id=self.actor.id,status=CandidateStatus.AWAITING_DECISION,
+                created_at=NOW,updated_at=NOW);s.add(candidate);await s.flush()
+            if notification_status is not None:
+                sent=notification_status is NotificationStatus.SENT
+                s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,
+                    signalist_id=self.actor.id,status=notification_status,interaction_version=1,
+                    attempt_count=1,telegram_message_id=91 if sent else None,sent_at=NOW if sent else None,
+                    created_at=NOW,updated_at=NOW))
+            return signal.id,candidate.id
+
+    async def test_historical_terminal_final_tp_keeps_publication_only_semantics(self):
+        seeded=[await self._legacy_terminal_candidate(f"legacy-terminal-{status}",status) for status in
+            (NotificationStatus.SENT,NotificationStatus.DELIVERY_UNKNOWN,NotificationStatus.FAILED)]
+        seeded.append(await self._legacy_terminal_candidate("legacy-terminal-missing"))
+        service=MonitoringService(self.sessions,clock=lambda:NOW)
+        first=await service.reconcile();second=await service.reconcile()
+        self.assertEqual((first.legacy_tp_interactions_refreshed,
+            first.missing_tp_notification_intents_repaired),(3,1))
+        self.assertEqual((second.legacy_tp_interactions_refreshed,
+            second.missing_tp_notification_intents_repaired),(0,0))
+        candidate_ids=[candidate_id for _,candidate_id in seeded]
+        async with self.sessions() as s:
+            notes=(await s.scalars(select(SignalistNotificationRecord).where(
+                SignalistNotificationRecord.candidate_id.in_(candidate_ids)))).all()
+            self.assertEqual(len(notes),4)
+            self.assertTrue(all(n.interaction_version==LEGACY_TERMINAL_INTERACTION_VERSION and
+                n.status is NotificationStatus.PENDING for n in notes))
+        self.assertIn("آیا این آپدیت برای مقصدها منتشر شود؟",event_text(SignalEventKind.TP_HIT,
+            "OLDTPUSDT",Decimal("120"),Decimal("200"),2,seeded[0][0],position_action=False))
+        self.assertIs(await service.decide_candidate(candidate_ids[0],self.actor.id,True),CandidateStatus.APPROVED)
+        self.assertIs(await service.decide_candidate(candidate_ids[3],self.actor.id,True),CandidateStatus.APPROVED)
+        self.assertIs(await service.decide_candidate(candidate_ids[1],self.actor.id,False),CandidateStatus.DECLINED)
+        async with self.sessions() as s:
+            self.assertEqual(await s.scalar(select(func.count()).select_from(UpdatePublicationRequestRecord)),2)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(SignalPositionStateRecord).where(
+                SignalPositionStateRecord.signal_id.in_([x[0] for x in seeded]))),0)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(SignalPositionActionRecord).where(
+                SignalPositionActionRecord.signal_id.in_([x[0] for x in seeded]))),0)
+            monitors=(await s.scalars(select(SignalMonitorStateRecord).where(
+                SignalMonitorStateRecord.signal_id.in_([x[0] for x in seeded])))).all()
+            self.assertTrue(all(m.stage is MonitorStage.COMPLETED_TARGETS and
+                m.current_leveraged_roi==Decimal("200") for m in monitors))
+            self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationTradeLockRecord).where(
+                DestinationTradeLockRecord.signal_id.in_([x[0] for x in seeded]))),0)
+
+    async def test_awaiting_final_phase4_tp_rejects_generic_decisions(self):
+        candidate=await self._candidate(CandidateStatus.AWAITING_DECISION,tp_index=2)
+        async with self.sessions() as s,s.begin():
+            monitor=await s.get(SignalMonitorStateRecord,self.signal.id)
+            monitor.stage=MonitorStage.AWAITING_FINAL_TP_ACTION
+        service=MonitoringService(self.sessions,clock=lambda:NOW)
+        for approve in (True,False):
+            with self.assertRaises(ValueError):await service.decide_candidate(candidate,self.actor.id,approve)
+        async with self.sessions() as s:
+            self.assertFalse((await s.get(SignalPositionStateRecord,self.signal.id)).is_closed)
+            self.assertIsNone(await s.scalar(select(SignalPositionActionRecord.id)))
+
     async def test_inactive_final_target_is_terminalized_without_publication_and_is_idempotent(self):
         candidate=await self._candidate(CandidateStatus.AWAITING_DECISION,tp_index=2)
         async with self.sessions() as s,s.begin():
@@ -171,14 +251,16 @@ class NotificationInteractionMigrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_pre_patch_notification_is_durably_legacy_and_new_rows_are_current(self):
         safe=require_safe_test_database()
         try:
-            migrate("20260816_01",safe);engine=create_safe_engine(safe)
+            migrate("20260815_01",safe);engine=create_safe_engine(safe)
             async with engine.begin() as c:
                 actor=(await c.exec_driver_sql("INSERT INTO signalists(telegram_user_id,display_name,status,created_at,updated_at) VALUES(817100,'legacy','active',?,?) RETURNING id",(NOW,NOW))).scalar_one()
                 signal=(await c.exec_driver_sql("INSERT INTO signals(signalist_id,creation_token,mode,canonical_symbol,base_asset,quote_asset,direction,entry_price,leverage,stop_loss,reference_price,price_source_type,status,created_at,updated_at) VALUES(?,'legacy-ui','composite','BTCUSDT','BTC','USDT','long','100',10,'90','100','composite','active',?,?) RETURNING id",(actor,NOW,NOW))).scalar_one()
-                event=(await c.exec_driver_sql("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(?,'tp_hit',1,'110','110','110','100','composite',?,?) RETURNING id",(signal,NOW,NOW))).scalar_one()
+                await c.exec_driver_sql("INSERT INTO signal_take_profits(signal_id,position,price) VALUES(?,1,'110'),(?,2,'120')",(signal,signal))
+                await c.exec_driver_sql("INSERT INTO signal_monitor_states(signal_id,stage,highest_tp_index,next_tp_index,current_result_kind,current_result_price,current_leveraged_roi,completed_at,version,breakeven_cycle,currently_inside_breakeven_zone,created_at,updated_at) VALUES(?,'completed_targets',2,3,'win','120','200',?,1,0,0,?,?)",(signal,NOW,NOW,NOW))
+                event=(await c.exec_driver_sql("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(?,'tp_hit',2,'120','120','120','200','composite',?,?) RETURNING id",(signal,NOW,NOW))).scalar_one()
                 candidate=(await c.exec_driver_sql("INSERT INTO signal_update_candidates(signal_id,event_id,signalist_id,status,created_at,updated_at) VALUES(?,?,?,'awaiting_decision',?,?) RETURNING id",(signal,event,actor,NOW,NOW))).scalar_one()
                 await c.exec_driver_sql("INSERT INTO signalist_notifications(kind,candidate_id,signalist_id,status,attempt_count,telegram_message_id,sent_at,created_at,updated_at) VALUES('event',?,?,'sent',1,817,?,?,?)",(candidate,actor,NOW,NOW,NOW))
-            await engine.dispose();migrate("head",safe);engine=create_safe_engine(safe)
+            await engine.dispose();migrate("20260816_01",safe);migrate("head",safe);engine=create_safe_engine(safe)
             sessions=create_session_factory(engine)
             async with sessions() as s,s.begin():
                 legacy=(await s.scalars(select(SignalistNotificationRecord))).one()
@@ -191,9 +273,22 @@ class NotificationInteractionMigrationTests(unittest.IsolatedAsyncioTestCase):
                 second_candidate=SignalUpdateCandidateRecord(signal_id=signal,event_id=second_event.id,
                     signalist_id=actor,status=CandidateStatus.AWAITING_NOTIFICATION,created_at=NOW,updated_at=NOW)
                 s.add(second_candidate);await s.flush()
-                current=SignalistNotificationRecord(kind=NotificationKind.EVENT,
-                    candidate_id=second_candidate.id,signalist_id=actor,status=NotificationStatus.PENDING,
-                    created_at=NOW,updated_at=NOW);s.add(current);await s.flush()
+                await s.execute(__import__('sqlalchemy').text("INSERT INTO signalist_notifications(kind,candidate_id,signalist_id,status,attempt_count,created_at,updated_at) VALUES('event',:c,:a,'pending',0,:n,:n)"),{"c":second_candidate.id,"a":actor,"n":NOW})
+                current=await s.scalar(select(SignalistNotificationRecord).where(
+                    SignalistNotificationRecord.candidate_id==second_candidate.id))
                 self.assertEqual(current.interaction_version,CURRENT_INTERACTION_VERSION)
-            await engine.dispose()
+            service=MonitoringService(sessions,clock=lambda:NOW)
+            await service.reconcile()
+            self.assertIs(await service.decide_candidate(candidate,actor,True),CandidateStatus.APPROVED)
+            async with sessions() as s:
+                legacy=await s.scalar(select(SignalistNotificationRecord).where(
+                    SignalistNotificationRecord.candidate_id==candidate))
+                monitor=await s.get(SignalMonitorStateRecord,signal)
+                self.assertEqual(legacy.interaction_version,LEGACY_TERMINAL_INTERACTION_VERSION)
+                self.assertIs(monitor.stage,MonitorStage.COMPLETED_TARGETS)
+                self.assertEqual(monitor.current_leveraged_roi,Decimal("200"))
+                self.assertIsNone(await s.get(SignalPositionStateRecord,signal))
+                self.assertIsNone(await s.scalar(select(SignalPositionActionRecord.id).where(
+                    SignalPositionActionRecord.signal_id==signal)))
+            await engine.dispose();migrate("-1",safe);migrate("head",safe)
         finally:safe.cleanup()

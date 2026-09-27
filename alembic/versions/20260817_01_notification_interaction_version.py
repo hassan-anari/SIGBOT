@@ -13,12 +13,14 @@ depends_on = None
 
 
 def upgrade():
-    # All rows predating this migration used the legacy Publish/Decline UI.
+    # The schema default represents current application behavior. Existing rows
+    # are then explicitly marked as legacy in the same offline migration.
     with op.batch_alter_table("signalist_notifications") as batch:
         batch.add_column(sa.Column("interaction_version", sa.Integer(),
-                                   nullable=False, server_default="1"))
+                                   nullable=False, server_default="2"))
         batch.create_check_constraint("ck_signalist_notifications_interaction_version",
                                       "interaction_version >= 1")
+    op.execute("UPDATE signalist_notifications SET interaction_version = 1")
 
 
 def downgrade():

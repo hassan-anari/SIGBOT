@@ -36,9 +36,21 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: object) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
-    with context.begin_transaction():
-        context.run_migrations()
+    # SQLite batch migrations rebuild referenced tables. Foreign-key enforcement
+    # during the temporary DROP can cascade-delete valid child workflow rows.
+    # Migrations run with enforcement suspended, then restore and verify it before
+    # returning the connection to the application.
+    connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    connection.commit()
+    try:
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        connection.commit()
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()!=1:
+            raise RuntimeError("SQLite foreign-key enforcement was not restored")
 
 
 async def run_async_migrations() -> None:
