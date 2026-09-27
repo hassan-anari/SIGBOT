@@ -52,6 +52,15 @@ class Phase6CReportingHealthTests(unittest.IsolatedAsyncioTestCase):
             state=(await s.scalars(select(SignalMonitorStateRecord))).one()
             state.stage=MonitorStage.COMPLETED_FULL_CLOSE
         self.assertEqual((await svc.summary(flt)).open_signals,0)
+    async def test_disabled_legacy_is_operationally_open(self):
+        now,sid=await self._seed()
+        async with self.sessions() as s,s.begin():
+            state=(await s.scalars(select(SignalMonitorStateRecord))).one()
+            state.stage=MonitorStage.DISABLED_LEGACY;state.current_result_kind=None
+            state.current_result_price=None;state.current_leveraged_roi=None
+        summary=await ReportingRepository(self.sessions).summary(period_filter('today',now,sid))
+        self.assertEqual(summary.open_signals,1)
+        self.assertEqual(summary.resulted_signals,0)
     async def test_health_down_repeat_recovery_deduplicates(self):
         repo=HealthRepository(self.sessions); now=datetime(2026,8,4,0,tzinfo=timezone.utc)
         await repo.observe(HealthObservation('ourbit_prices',Exchange.OURBIT,ApiOperation.PRICES,ServiceHealthStatus.DOWN,now,'network'))

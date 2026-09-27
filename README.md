@@ -1,5 +1,33 @@
 # Haz Market Data — REST Probe + File Logging
 
+## Production Upgrade Compatibility
+
+The Phase 1–4 deployment gate preserves open `PRE_TP1` and `POST_TP1` trades
+without reconstructing weighted history. Legacy unresolved TP decision messages
+are upgraded to the Phase-4B interaction exactly once; historical approved or
+declined TP decisions and terminal trades are not rewritten. `PENDING_DETAILS`
+signals remain resumable through **Active Signals → Continue**. Open legacy
+Breakeven prompts are retired without being converted into Risk Free actions.
+
+Ambiguous destination deliveries are never automatically resent. If a final TP
+is already confirmed and its owner becomes inactive or archived, reconciliation
+closes the remaining accounting volume without destination publication and
+releases its trade locks. An unmonitorable active legacy trade remains visible,
+is explicitly labelled as unavailable for automatic monitoring, and can be
+cancelled through the normal durable cancellation path.
+
+Recommended production rollout (never run schema migration concurrently with
+live application writers):
+
+1. Stop application workers and polling cleanly.
+2. Take and verify a SQLite backup.
+3. Run `alembic upgrade head`.
+4. Start the application.
+5. Let compatibility reconciliation finish before normal monitoring activity.
+6. Inspect the privacy-neutral compatibility summary counts in application logs.
+7. Compare open-signal and trade-lock counts with pre-deployment expectations.
+8. Only then consider the deployment healthy.
+
 ## Production initial rendering
 
 Configure `RENDER_TEMPLATE_ASSET_ROOT`, `RENDER_OUTPUT_ROOT`,

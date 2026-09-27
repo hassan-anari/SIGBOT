@@ -235,6 +235,7 @@ BREAKEVEN_STALE="این درخواست بریک‌ایون دیگر قابل ا�
 ACTIVE_SIGNALS_TITLE="<b>📋 سیگنال‌های فعال</b>\n\nصفحه {page} از {pages}"
 ACTIVE_SIGNALS_EMPTY="در حال حاضر سیگنال فعالی ندارید."
 ACTIVE_SIGNAL_PENDING="نیازمند تکمیل اطلاعات";ACTIVE_SIGNAL_ACTIVE="فعال"
+ACTIVE_SIGNAL_LEGACY_UNAVAILABLE="قدیمی — پایش خودکار در دسترس نیست"
 ACTIVE_SIGNAL_CONTINUE="ادامه ثبت اطلاعات";ACTIVE_SIGNAL_CANCEL="❌ کنسل سیگنال"
 ACTIVE_SIGNAL_COMMENT="💬 کامنت"
 SIGNAL_COMMENT_PROMPT="متن کامنتی که می‌خواهید برای این سیگنال ارسال شود را بفرستید."

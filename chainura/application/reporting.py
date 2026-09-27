@@ -64,7 +64,8 @@ class ReportingRepository:
                 if sig.status is not SignalLifecycleStatus.ACTIVE:
                     continue
                 if st and st.stage in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1,
-                                       MonitorStage.AWAITING_FINAL_TP_ACTION): open_count+=1
+                                       MonitorStage.AWAITING_FINAL_TP_ACTION,
+                                       MonitorStage.DISABLED_LEGACY): open_count+=1
                 if st and st.current_result_kind is ResultKind.WIN:
                     wins+=1; roi=Decimal(st.current_leveraged_roi); rois.append(roi); pos.append(roi)
                     if st.highest_tp_index==1: tp1+=1
