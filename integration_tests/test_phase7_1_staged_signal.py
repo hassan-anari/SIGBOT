@@ -45,6 +45,8 @@ class Stage71PersistenceTests(unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(PendingSignalStateError):await restarted.finalize_details(FinalizeSignalDetailsCommand(pending.id,self.actor.id,(Decimal('101'),),Decimal('99')))
   async with self.engine.connect() as c:
    self.assertEqual(await c.scalar(text("select count(*) from signal_monitor_states where signal_id=:s"),{'s':pending.id}),1)
+   self.assertEqual(await c.scalar(text("select count(*) from signal_position_states where signal_id=:s"),{'s':pending.id}),1)
+   self.assertEqual((await c.execute(text("select remaining_fraction,realized_weighted_roi,effective_stop_price,version from signal_position_states where signal_id=:s"),{'s':pending.id})).one(),('1','0','99',1))
  async def test_excess_drift_writes_neither_signal_nor_publication(self):
   service=SignalService(self.factory,SequencePrices(snap('100.7001')),lambda:self.now)
   with self.assertRaises(InitialEntryDriftExceededError):await service.create_pending(self.command(snap('100')))

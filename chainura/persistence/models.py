@@ -16,6 +16,7 @@ from chainura.domain.publication import PublicationRequestStatus, PublicationSta
 from chainura.domain.monitoring import (MonitorStage, SignalEventKind, ResultKind,
     CandidateStatus, PromptStatus, NotificationKind, NotificationStatus)
 from chainura.domain.message_template import DestinationMessageKind
+from chainura.domain.position import PositionActionKind
 
 SIGNALIST_STATUS_ENUM = Enum(
     SignalistStatus,
@@ -239,6 +240,59 @@ class SignalRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 SignalRecord.__table__.primary_key.name = "pk_signals"
+
+POSITION_ACTION_KIND_ENUM = _enum(PositionActionKind, "position_action_kind")
+
+class SignalPositionStateRecord(Base):
+    __tablename__ = "signal_position_states"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_signal_position_states_signal"),
+        CheckConstraint("CAST(remaining_fraction AS NUMERIC) >= 0 AND CAST(remaining_fraction AS NUMERIC) <= 1", name="ck_signal_position_states_fraction"),
+        CheckConstraint("version >= 1", name="ck_signal_position_states_version"),
+        CheckConstraint("(is_closed = 1 AND CAST(remaining_fraction AS NUMERIC) = 0 AND closed_at IS NOT NULL) OR (is_closed = 0 AND CAST(remaining_fraction AS NUMERIC) > 0 AND closed_at IS NULL)", name="ck_signal_position_states_closed_shape"),
+        CheckConstraint("risk_free_active = 0 OR (risk_free_used = 1 AND effective_stop_price IS NOT NULL AND is_closed = 0)", name="ck_signal_position_states_risk_free"),
+        Index("ix_signal_position_states_open", "is_closed", "signal_id"),
+    )
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    remaining_fraction: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    realized_weighted_roi: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    risk_free_used: Mapped[bool] = mapped_column(nullable=False, default=False)
+    risk_free_active: Mapped[bool] = mapped_column(nullable=False, default=False)
+    save_profit_50_used: Mapped[bool] = mapped_column(nullable=False, default=False)
+    effective_stop_price: Mapped[object | None] = mapped_column(ExactDecimal())
+    is_closed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+SignalPositionStateRecord.__table__.primary_key.name = "pk_signal_position_states"
+
+class SignalPositionActionRecord(Base):
+    __tablename__ = "signal_position_actions"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_signal_position_actions_signal"),
+        ForeignKeyConstraint(["event_id"], ["signal_events.id"], name="fk_signal_position_actions_event"),
+        ForeignKeyConstraint(["candidate_id"], ["signal_update_candidates.id"], name="fk_signal_position_actions_candidate"),
+        UniqueConstraint("candidate_id", name="uq_signal_position_actions_candidate"),
+        UniqueConstraint("event_id", "action_kind", name="uq_signal_position_actions_event_kind"),
+        CheckConstraint("CAST(remaining_fraction_before AS NUMERIC) >= 0 AND CAST(remaining_fraction_before AS NUMERIC) <= 1 AND CAST(closed_fraction AS NUMERIC) >= 0 AND CAST(remaining_fraction_after AS NUMERIC) >= 0 AND CAST(remaining_fraction_after AS NUMERIC) <= CAST(remaining_fraction_before AS NUMERIC) AND CAST(remaining_fraction_before AS NUMERIC) - CAST(closed_fraction AS NUMERIC) = CAST(remaining_fraction_after AS NUMERIC)", name="ck_signal_position_actions_fractions"),
+        CheckConstraint("(CAST(closed_fraction AS NUMERIC) = 0 AND CAST(weighted_roi_delta AS NUMERIC) = 0) OR CAST(closed_fraction AS NUMERIC) > 0", name="ck_signal_position_actions_zero_close"),
+        Index("ix_signal_position_actions_signal_created", "signal_id", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[int | None] = mapped_column(Integer)
+    action_kind: Mapped[PositionActionKind] = mapped_column(POSITION_ACTION_KIND_ENUM, nullable=False)
+    remaining_fraction_before: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    closed_fraction: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    remaining_fraction_after: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    execution_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    leveraged_roi: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    weighted_roi_delta: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    realized_weighted_roi_after: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+SignalPositionActionRecord.__table__.primary_key.name = "pk_signal_position_actions"
 
 class SignalTakeProfitRecord(Base):
     __tablename__ = "signal_take_profits"

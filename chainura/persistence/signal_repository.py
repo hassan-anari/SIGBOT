@@ -1,3 +1,4 @@
+from decimal import Decimal
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -7,7 +8,7 @@ from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecor
                                           SignalTakeProfitRecord, SignalInitialPriceRecord,
                                           InitialPublicationRequestRecord,
                                           SignalMonitorStateRecord, DestinationPublicationRecord,
-                                          SignalDetailsPublicationRecord)
+                                          SignalDetailsPublicationRecord, SignalPositionStateRecord)
 from chainura.domain.signal import SignalLifecycleStatus
 from chainura.domain.publication import PublicationStatus
 from chainura.domain.monitoring import MonitorStage
@@ -48,6 +49,13 @@ class SqlAlchemySignalRepository:
                 self._session.add(SignalMonitorStateRecord(signal_id=row.id,
                     stage=MonitorStage.PRE_TP1,created_at=signal.created_at,
                     updated_at=signal.created_at))
+                self._session.add(SignalPositionStateRecord(signal_id=row.id,
+                    remaining_fraction=Decimal('1'),
+                    realized_weighted_roi=Decimal('0'),
+                    risk_free_used=False,risk_free_active=False,
+                    save_profit_50_used=False,effective_stop_price=signal.stop_loss,
+                    is_closed=False,version=1,created_at=signal.created_at,
+                    updated_at=signal.created_at))
             await self._session.flush()
         except IntegrityError as exc:
             raw = str(exc.orig)
@@ -74,6 +82,12 @@ class SqlAlchemySignalRepository:
                                for i,p in enumerate(signal.take_profits,1)])
         self._session.add(SignalMonitorStateRecord(signal_id=signal.id,
             stage=MonitorStage.PRE_TP1,created_at=signal.updated_at,updated_at=signal.updated_at))
+        self._session.add(SignalPositionStateRecord(signal_id=signal.id,
+            remaining_fraction=Decimal('1'),
+            realized_weighted_roi=Decimal('0'),
+            risk_free_used=False,risk_free_active=False,save_profit_50_used=False,
+            effective_stop_price=signal.stop_loss,is_closed=False,version=1,
+            created_at=signal.updated_at,updated_at=signal.updated_at))
         # Only destinations with an actually-sent initial photo receive details.
         initial=(await self._session.execute(select(
             DestinationPublicationRecord.destination_id,
