@@ -8,7 +8,8 @@ from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecor
                                           SignalTakeProfitRecord, SignalInitialPriceRecord,
                                           InitialPublicationRequestRecord,
                                           SignalMonitorStateRecord, DestinationPublicationRecord,
-                                          SignalDetailsPublicationRecord, SignalPositionStateRecord)
+                                          SignalDetailsPublicationRecord, SignalPositionStateRecord,
+                                          LimitAdmissionRequestRecord)
 from chainura.domain.signal import SignalEntryType, SignalLifecycleStatus
 from chainura.domain.publication import PublicationStatus
 from chainura.domain.monitoring import MonitorStage
@@ -47,6 +48,9 @@ class SqlAlchemySignalRepository:
             self._session.add_all([SignalInitialPriceRecord(signal_id=row.id, exchange=e, price=p) for e,p in signal.initial_source_prices])
             if signal.entry_type is SignalEntryType.MARKET:
                 self._session.add(InitialPublicationRequestRecord(signal_id=row.id))
+            else:
+                self._session.add(LimitAdmissionRequestRecord(signal_id=row.id,
+                    status="pending",created_at=signal.created_at,updated_at=signal.created_at))
             if signal.status is SignalLifecycleStatus.ACTIVE:
                 self._session.add(SignalMonitorStateRecord(signal_id=row.id,
                     stage=MonitorStage.PRE_TP1,created_at=signal.created_at,

@@ -59,6 +59,9 @@ class ReportingRepository:
                 else: single+=1
                 if sig.status is SignalLifecycleStatus.PENDING_DETAILS:
                     pending+=1;continue
+                if sig.status in (SignalLifecycleStatus.PENDING_ENTRY,
+                                  SignalLifecycleStatus.ENTRY_TRIGGERED):
+                    open_count+=1;continue
                 if sig.status is SignalLifecycleStatus.CANCELLED:
                     cancelled+=1;continue
                 if sig.status is not SignalLifecycleStatus.ACTIVE:
@@ -98,6 +101,10 @@ class ReportingRepository:
                 roi=Decimal(st.current_leveraged_roi) if st and st.current_leveraged_roi is not None else None
                 if sig.status is SignalLifecycleStatus.PENDING_DETAILS:
                     state="Pending Details";roi=None
+                elif sig.status is SignalLifecycleStatus.PENDING_ENTRY:
+                    state="Limit Pending Entry";roi=None
+                elif sig.status is SignalLifecycleStatus.ENTRY_TRIGGERED:
+                    state="Limit Entry Triggered";roi=None
                 elif sig.status is SignalLifecycleStatus.CANCELLED:
                     state="Cancelled"+(f" after TP{highest}" if highest else "");roi=None
                 elif not st or st.current_result_kind is None: state="Active without result"

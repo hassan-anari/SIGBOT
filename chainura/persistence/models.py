@@ -398,11 +398,15 @@ class LimitPendingPublicationRecord(Base):
         UniqueConstraint("signal_id", "destination_id", name="uq_limit_pending_signal_destination"),
         CheckConstraint("attempt_count >= 0", name="ck_limit_pending_attempts"),
         CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_limit_pending_message"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR "
+                        "(status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)",
+                        name="ck_limit_pending_sent"),
         Index("ix_limit_pending_status_retry", "status", "retry_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
     destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, nullable=False)
     status: Mapped[PublicationStatus] = mapped_column(_enum(PublicationStatus, "limit_pending_publication_status"), nullable=False,
                                                        default=PublicationStatus.PENDING)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -414,21 +418,50 @@ class LimitPendingPublicationRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
-class LimitAdmissionDailySlotRecord(Base):
-    __tablename__ = "limit_admission_daily_slots"
+class LimitAdmissionRequestRecord(Base):
+    __tablename__ = "limit_admission_requests"
     __table_args__ = (
-        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE"),
-        ForeignKeyConstraint(["publication_id"], ["limit_pending_publications.id"], ondelete="CASCADE"),
-        UniqueConstraint("destination_id", "local_date", "slot_number", name="uq_limit_slot_destination_date_number"),
-        UniqueConstraint("publication_id", name="uq_limit_slot_publication"),
-        CheckConstraint("slot_number > 0", name="ck_limit_slot_positive"),
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE"),
+        UniqueConstraint("signal_id", name="uq_limit_admission_request_signal"),
+        Index("ix_limit_admission_requests_status", "status", "created_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    local_date: Mapped[object] = mapped_column(Date, nullable=False)
-    slot_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    planned_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class LimitCancellationPublicationRecord(Base):
+    __tablename__ = "limit_cancellation_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["pending_publication_id"], ["limit_pending_publications.id"], ondelete="CASCADE"),
+        UniqueConstraint("signal_id", "destination_id", name="uq_limit_cancellation_signal_destination"),
+        CheckConstraint("reply_to_message_id > 0", name="ck_limit_cancellation_reply"),
+        CheckConstraint("attempt_count >= 0", name="ck_limit_cancellation_attempts"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR "
+                        "(status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)",
+                        name="ck_limit_cancellation_sent"),
+        Index("ix_limit_cancellation_status_retry", "status", "retry_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    pending_publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    reply_to_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(
+        _enum(PublicationStatus, "limit_cancellation_publication_status"), nullable=False,
+        default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 class SignalTemplateRecord(Base):
     __tablename__="signal_templates"
@@ -493,7 +526,9 @@ class DestinationPublicationRecord(Base):
         CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')", name="ck_destination_publications_exchange"),
         CheckConstraint("attempt_count >= 0", name="ck_destination_publications_attempt_nonnegative"),
         CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_destination_publications_message_positive"),
-        CheckConstraint("reply_to_message_id IS NULL", name="ck_destination_publications_initial_no_reply"),
+        CheckConstraint("(origin = 'market' AND reply_to_message_id IS NULL) OR "
+                        "(origin = 'limit_activation' AND reply_to_message_id IS NOT NULL)",
+                        name="ck_destination_publications_origin_reply"),
         CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)", name="ck_destination_publications_sent_consistency"),
         Index("ix_destination_publications_status_updated", "status", "updated_at"),
     )
@@ -501,6 +536,7 @@ class DestinationPublicationRecord(Base):
     signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
     destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
     event_kind: Mapped[str] = mapped_column(Text, nullable=False, default="initial")
+    origin: Mapped[str] = mapped_column(Text, nullable=False, default="market")
     selected_exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, nullable=False)
     status: Mapped[PublicationStatus] = mapped_column(PUBLICATION_STATUS_ENUM, nullable=False, default=PublicationStatus.PENDING)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -620,8 +656,12 @@ class InitialPublicationDailySlotRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_initial_publication_daily_slots_destination_id_destinations"),
         ForeignKeyConstraint(["publication_id"], ["destination_publications.id"], ondelete="CASCADE", name="fk_initial_publication_daily_slots_publication_id_publications"),
+        ForeignKeyConstraint(["limit_publication_id"], ["limit_pending_publications.id"], ondelete="CASCADE", name="fk_initial_publication_daily_slots_limit_publication"),
         UniqueConstraint("destination_id", "local_date", "slot_number", name="uq_initial_publication_daily_slots_destination_date_slot"),
         UniqueConstraint("publication_id", name="uq_initial_publication_daily_slots_publication_id"),
+        UniqueConstraint("limit_publication_id", name="uq_initial_publication_daily_slots_limit_publication"),
+        CheckConstraint("(publication_id IS NOT NULL) <> (limit_publication_id IS NOT NULL)",
+                        name="ck_initial_publication_daily_slots_one_owner"),
         CheckConstraint("slot_number > 0", name="ck_initial_publication_daily_slots_slot_positive"),
         Index("ix_initial_publication_daily_slots_destination_date", "destination_id", "local_date"),
     )
@@ -629,7 +669,8 @@ class InitialPublicationDailySlotRecord(Base):
     destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
     local_date: Mapped[object] = mapped_column(Date, nullable=False)
     slot_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    publication_id: Mapped[int | None] = mapped_column(Integer)
+    limit_publication_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 InitialPublicationDailySlotRecord.__table__.primary_key.name = "pk_initial_publication_daily_slots"
 
@@ -756,8 +797,8 @@ class BreakevenPromptRecord(Base):
 
 class SignalistNotificationRecord(Base):
     __tablename__="signalist_notifications"
-    __table_args__=(ForeignKeyConstraint(["candidate_id"],["signal_update_candidates.id"],ondelete="CASCADE",name="fk_signalist_notifications_candidate_id_candidates"),ForeignKeyConstraint(["prompt_id"],["breakeven_prompts.id"],ondelete="CASCADE",name="fk_signalist_notifications_prompt_id_prompts"),ForeignKeyConstraint(["signalist_id"],["signalists.id"],name="fk_signalist_notifications_signalist_id_signalists"),UniqueConstraint("candidate_id",name="uq_signalist_notifications_candidate_id"),UniqueConstraint("prompt_id",name="uq_signalist_notifications_prompt_id"),CheckConstraint("(kind='event' AND candidate_id IS NOT NULL AND prompt_id IS NULL) OR (kind='breakeven_prompt' AND prompt_id IS NOT NULL AND candidate_id IS NULL)",name="ck_signalist_notifications_source"),CheckConstraint("attempt_count >= 0",name="ck_signalist_notifications_attempts"),Index("ix_signalist_notifications_status_retry","status","retry_at"))
-    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);kind:Mapped[NotificationKind]=mapped_column(NOTIFICATION_KIND_ENUM,nullable=False);candidate_id:Mapped[int|None]=mapped_column(Integer);prompt_id:Mapped[int|None]=mapped_column(Integer);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False);status:Mapped[NotificationStatus]=mapped_column(NOTIFICATION_STATUS_ENUM,nullable=False,default=NotificationStatus.PENDING);interaction_version:Mapped[int]=mapped_column(Integer,nullable=False,default=2);attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime());telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);last_error_category:Mapped[str|None]=mapped_column(Text);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
+    __table_args__=(ForeignKeyConstraint(["candidate_id"],["signal_update_candidates.id"],ondelete="CASCADE",name="fk_signalist_notifications_candidate_id_candidates"),ForeignKeyConstraint(["prompt_id"],["breakeven_prompts.id"],ondelete="CASCADE",name="fk_signalist_notifications_prompt_id_prompts"),ForeignKeyConstraint(["limit_trigger_signal_id"],["limit_entry_triggers.signal_id"],ondelete="CASCADE",name="fk_signalist_notifications_limit_trigger"),ForeignKeyConstraint(["signalist_id"],["signalists.id"],name="fk_signalist_notifications_signalist_id_signalists"),UniqueConstraint("candidate_id",name="uq_signalist_notifications_candidate_id"),UniqueConstraint("prompt_id",name="uq_signalist_notifications_prompt_id"),UniqueConstraint("limit_trigger_signal_id",name="uq_signalist_notifications_limit_trigger"),CheckConstraint("(kind='event' AND candidate_id IS NOT NULL AND prompt_id IS NULL AND limit_trigger_signal_id IS NULL) OR (kind='breakeven_prompt' AND prompt_id IS NOT NULL AND candidate_id IS NULL AND limit_trigger_signal_id IS NULL) OR (kind='limit_trigger' AND limit_trigger_signal_id IS NOT NULL AND candidate_id IS NULL AND prompt_id IS NULL)",name="ck_signalist_notifications_source"),CheckConstraint("attempt_count >= 0",name="ck_signalist_notifications_attempts"),Index("ix_signalist_notifications_status_retry","status","retry_at"))
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);kind:Mapped[NotificationKind]=mapped_column(NOTIFICATION_KIND_ENUM,nullable=False);candidate_id:Mapped[int|None]=mapped_column(Integer);prompt_id:Mapped[int|None]=mapped_column(Integer);limit_trigger_signal_id:Mapped[int|None]=mapped_column(Integer);signalist_id:Mapped[int]=mapped_column(Integer,nullable=False);status:Mapped[NotificationStatus]=mapped_column(NOTIFICATION_STATUS_ENUM,nullable=False,default=NotificationStatus.PENDING);interaction_version:Mapped[int]=mapped_column(Integer,nullable=False,default=2);attempt_count:Mapped[int]=mapped_column(Integer,nullable=False,default=0);retry_at:Mapped[datetime|None]=mapped_column(UTCDateTime());telegram_message_id:Mapped[int|None]=mapped_column(BigInteger);last_error_category:Mapped[str|None]=mapped_column(Text);created_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);updated_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False,default=utc_now);sent_at:Mapped[datetime|None]=mapped_column(UTCDateTime())
 
 from chainura.domain.health import ApiOperation,ServiceHealthStatus,AdminAlertKind,AdminAlertStatus
 API_OPERATION_ENUM=_enum(ApiOperation,"api_health_operation")
