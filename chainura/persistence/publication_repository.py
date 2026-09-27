@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from chainura.domain.destination import DestinationAccessLevel, DestinationStatus
@@ -11,12 +12,53 @@ from chainura.errors import DailyCapacityError, PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord, DestinationPublicationRecord,
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
-    SignalInitialPriceRecord, SignalRecord, utc_now)
+    SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
+    DestinationTradeLockRecord, utc_now)
 from chainura.domain.signal import SignalLifecycleStatus
+from chainura.domain.monitoring import MonitorStage
+
+TRADE_LOCK_REASON = "destination_trade_lock_occupied"
+VISIBLE_INITIAL_STATUSES = (PublicationStatus.SENT, PublicationStatus.DELIVERY_UNKNOWN,
+                            PublicationStatus.SENDING)
+TERMINAL_MONITOR_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_SL,
+                           MonitorStage.COMPLETED_BREAKEVEN)
 
 
 class SqlAlchemyPublicationRepository:
     def __init__(self, session): self.session = session
+
+    async def acquire_trade_lock(self, signal_id: int, destination_id: int,
+                                 canonical_symbol: str, now: datetime) -> bool:
+        """Atomically admit a slot, while conservatively honoring visible legacy rows."""
+        legacy = await self.session.scalar(select(DestinationPublicationRecord.id).join(
+            SignalRecord, SignalRecord.id == DestinationPublicationRecord.signal_id).outerjoin(
+            SignalMonitorStateRecord, SignalMonitorStateRecord.signal_id == SignalRecord.id).where(
+            DestinationPublicationRecord.destination_id == destination_id,
+            DestinationPublicationRecord.signal_id != signal_id,
+            DestinationPublicationRecord.status.in_(VISIBLE_INITIAL_STATUSES),
+            DestinationPublicationRecord.signal_id == SignalRecord.id,
+            SignalRecord.canonical_symbol == canonical_symbol,
+            SignalRecord.status != SignalLifecycleStatus.CANCELLED,
+            SignalMonitorStateRecord.signal_id.is_(None) |
+            SignalMonitorStateRecord.stage.not_in(TERMINAL_MONITOR_STAGES),
+        ).limit(1))
+        if legacy is not None:
+            return False
+        statement = sqlite_insert(DestinationTradeLockRecord).values(
+            destination_id=destination_id, canonical_symbol=canonical_symbol,
+            signal_id=signal_id, acquired_at=now, updated_at=now).on_conflict_do_nothing(
+            index_elements=["destination_id", "canonical_symbol"])
+        await self.session.execute(statement)
+        owner = await self.session.scalar(select(DestinationTradeLockRecord.signal_id).where(
+            DestinationTradeLockRecord.destination_id == destination_id,
+            DestinationTradeLockRecord.canonical_symbol == canonical_symbol))
+        return owner == signal_id
+
+    async def release_trade_lock(self, signal_id: int, destination_id: int | None = None):
+        condition = DestinationTradeLockRecord.signal_id == signal_id
+        if destination_id is not None:
+            condition &= DestinationTradeLockRecord.destination_id == destination_id
+        await self.session.execute(delete(DestinationTradeLockRecord).where(condition))
 
     async def recover(self, now: datetime):
         try:
@@ -33,11 +75,41 @@ class SqlAlchemyPublicationRepository:
                 DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT,
                 DestinationPublicationRecord.retry_at <= now).values(
                 status=PublicationStatus.PENDING, retry_at=None, updated_at=now))
+            await self.reconcile_trade_locks(now)
             signal_ids=tuple((await self.session.scalars(select(InitialPublicationRequestRecord.signal_id).where(
                 InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,
                     PublicationRequestStatus.PLANNING])))).all())
             for signal_id in signal_ids:await self.complete_request(signal_id,now)
         except SQLAlchemyError as exc: raise PublicationPersistenceError("publication recovery failed") from exc
+
+    async def reconcile_trade_locks(self, now: datetime):
+        """Deterministically admit legacy queued Initials before new work is planned."""
+        queued = (PublicationStatus.PENDING, PublicationStatus.RETRY_WAIT,
+                  PublicationStatus.BLOCKED_TEMPLATE)
+        rows = (await self.session.execute(select(
+            DestinationPublicationRecord, SignalRecord, SignalMonitorStateRecord).join(
+            SignalRecord, SignalRecord.id == DestinationPublicationRecord.signal_id).outerjoin(
+            SignalMonitorStateRecord,
+            SignalMonitorStateRecord.signal_id == SignalRecord.id).where(
+            DestinationPublicationRecord.status.in_(queued)).order_by(
+            DestinationPublicationRecord.created_at,
+            DestinationPublicationRecord.id))).all()
+        for publication, signal, monitor in rows:
+            terminal = (signal.status is SignalLifecycleStatus.CANCELLED or
+                        (monitor is not None and monitor.stage in TERMINAL_MONITOR_STAGES))
+            if terminal:
+                publication.status = PublicationStatus.SUPERSEDED
+                publication.updated_at = now
+                await self.release_capacity(publication.id)
+                await self.release_trade_lock(signal.id, publication.destination_id)
+                continue
+            admitted = await self.acquire_trade_lock(signal.id, publication.destination_id,
+                                                     signal.canonical_symbol, now)
+            if not admitted:
+                publication.status = PublicationStatus.SUPERSEDED
+                publication.last_error_category = TRADE_LOCK_REASON
+                publication.updated_at = now
+                await self.release_capacity(publication.id)
 
     async def pending_request_ids(self, limit=50):
         try:return tuple((await self.session.scalars(select(InitialPublicationRequestRecord.id).where(
@@ -65,9 +137,12 @@ class SqlAlchemyPublicationRepository:
         for destination_id,exchange in rows:grouped.setdefault(destination_id,[]).append(exchange)
         for destination_id,priorities in grouped.items():
             selected=select_initial_exchange(signal.mode,signal.selected_exchange,priorities,sources)
-            if selected is not None:self.session.add(DestinationPublicationRecord(
-                signal_id=claimed,destination_id=destination_id,event_kind="initial",selected_exchange=selected,
-                status=PublicationStatus.PENDING,created_at=now,updated_at=now))
+            if selected is not None:
+                admitted=await self.acquire_trade_lock(claimed,destination_id,signal.canonical_symbol,now)
+                self.session.add(DestinationPublicationRecord(
+                    signal_id=claimed,destination_id=destination_id,event_kind="initial",selected_exchange=selected,
+                    status=PublicationStatus.PENDING if admitted else PublicationStatus.SUPERSEDED,
+                    last_error_category=None if admitted else TRADE_LOCK_REASON,created_at=now,updated_at=now))
         await self.session.flush()
         await self.session.execute(update(InitialPublicationRequestRecord).where(
             InitialPublicationRequestRecord.id==request_id).values(status=PublicationRequestStatus.PLANNED,
@@ -124,11 +199,19 @@ class SqlAlchemyPublicationRepository:
             target=PublicationStatus.SKIPPED_INACTIVE
         elif not assigned:target=PublicationStatus.SKIPPED_UNASSIGNED
         else:
+            admitted=await self.acquire_trade_lock(signal_id,destination_id,signal.canonical_symbol,now)
+            if not admitted:
+                changed=await self.transition(publication_id,PublicationStatus.RENDERING,
+                    PublicationStatus.SUPERSEDED,now,error=TRADE_LOCK_REASON)
+                if changed:await self.release_capacity(publication_id)
+                return PublicationStatus.SUPERSEDED.value if changed else "lost"
             changed=await self.transition(publication_id,PublicationStatus.RENDERING,
                 PublicationStatus.SENDING,now,increment=True)
             return "sending" if changed else "lost"
         changed=await self.transition(publication_id,PublicationStatus.RENDERING,target,now)
-        if changed:await self.release_capacity(publication_id)
+        if changed:
+            await self.release_capacity(publication_id)
+            await self.release_trade_lock(signal_id,destination_id)
         return target.value if changed else "lost"
 
     async def claim_capacity(self, publication_id,destination_id,local_date,limit,now):
@@ -160,9 +243,12 @@ class SqlAlchemyPublicationRepository:
                 InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING])).values(
                 status=PublicationRequestStatus.COMPLETED,completed_at=now,updated_at=now))).rowcount
             if changed:
-                statuses=tuple((await self.session.scalars(select(DestinationPublicationRecord.status).where(
+                results=tuple((await self.session.execute(select(
+                    DestinationPublicationRecord.status,DestinationPublicationRecord.last_error_category).where(
                     DestinationPublicationRecord.signal_id==signal_id))).all())
-                outcome="success" if statuses and all(x is PublicationStatus.SENT for x in statuses) else "partial"
+                visible=tuple(status for status,reason in results if reason != TRADE_LOCK_REASON)
+                hidden_only=bool(results) and not visible
+                outcome="success" if hidden_only or (visible and all(x is PublicationStatus.SENT for x in visible)) else "partial"
                 self.session.add(InitialPublicationNotificationRecord(signal_id=signal_id,status="pending",outcome=outcome,created_at=now,updated_at=now))
 
     async def last_published_message_id(self,signal_id,destination_id):

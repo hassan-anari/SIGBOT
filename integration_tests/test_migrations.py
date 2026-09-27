@@ -19,6 +19,49 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_upgrade_downgrade_and_reupgrade(self) -> None:
         migrate("head", self.safe)
 
+    async def test_phase3_trade_lock_migration_preserves_existing_data(self) -> None:
+        migrate("base", self.safe);migrate("20260813_02", self.safe)
+        engine=create_safe_engine(self.safe);now="2026-08-14T00:00:00+00:00"
+        async with engine.begin() as connection:
+            actor=(await connection.execute(text(
+                "INSERT INTO signalists(telegram_user_id,display_name,status,created_at,updated_at) "
+                "VALUES(8801,'legacy','active',:n,:n) RETURNING id"),{"n":now})).scalar_one()
+            destination=(await connection.execute(text(
+                "INSERT INTO destinations(internal_name,telegram_chat_id,destination_type,access_level,status,daily_limit,created_at,updated_at) "
+                "VALUES('phase3 legacy',-8801,'channel','private','active',5,:n,:n) RETURNING id"),{"n":now})).scalar_one()
+            await connection.execute(text("INSERT INTO destination_signalists(destination_id,signalist_id,created_at) VALUES(:d,:a,:n)"),{"d":destination,"a":actor,"n":now})
+            signal=(await connection.execute(text(
+                "INSERT INTO signals(signalist_id,creation_token,mode,canonical_symbol,base_asset,quote_asset,direction,entry_price,leverage,reference_price,price_source_type,status,created_at,updated_at) "
+                "VALUES(:a,'phase3-migration','composite','BTCUSDT','BTC','USDT','long','100',10,'100','composite','pending_details',:n,:n) RETURNING id"),{"a":actor,"n":now})).scalar_one()
+            await connection.execute(text("INSERT INTO destination_publications(signal_id,destination_id,event_kind,selected_exchange,status,attempt_count,created_at,updated_at) VALUES(:s,:d,'initial','ourbit','pending',0,:n,:n)"),{"s":signal,"d":destination,"n":now})
+        await engine.dispose();migrate("20260814_01",self.safe)
+        engine=create_safe_engine(self.safe)
+        async with engine.begin() as connection:
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE creation_token='phase3-migration'")),1)
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM destination_publications WHERE signal_id=:s"),{"s":signal}),1)
+            indexes=set((await connection.execute(text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='destination_trade_locks'"))).scalars())
+            self.assertIn("ix_destination_trade_locks_signal_id",indexes)
+            await connection.execute(text("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(:d,'BTCUSDT',:s,:n,:n)"),{"d":destination,"s":signal,"n":now})
+        for statement,params in (
+            ("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(:d,'BTCUSDT',:s,:n,:n)",{"d":destination,"s":signal,"n":now}),
+            ("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(:d,'   ',:s,:n,:n)",{"d":destination,"s":signal,"n":now}),
+            ("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(999999,'ETHUSDT',:s,:n,:n)",{"s":signal,"n":now}),
+            ("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(:d,'ETHUSDT',999999,:n,:n)",{"d":destination,"n":now}),):
+            async with engine.connect() as connection:
+                transaction=await connection.begin()
+                with self.assertRaises(Exception):await connection.execute(text(statement),params)
+                await transaction.rollback()
+        await engine.dispose();migrate("-1",self.safe)
+        engine=create_safe_engine(self.safe)
+        async with engine.begin() as connection:
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='destination_trade_locks'")),0)
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE creation_token='phase3-migration'")),1)
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM destination_publications WHERE signal_id=:s"),{"s":signal}),1)
+            await connection.execute(text("DELETE FROM signals WHERE id=:s"),{"s":signal})
+            await connection.execute(text("DELETE FROM destinations WHERE id=:d"),{"d":destination})
+            await connection.execute(text("DELETE FROM signalists WHERE id=:a"),{"a":actor})
+        await engine.dispose();migrate("head",self.safe)
+
     async def test_warmup_template_constraint_migration_preserves_rows_and_indexes(self) -> None:
         migrate("base", self.safe); migrate("20260813_01", self.safe)
         engine = create_safe_engine(self.safe)
@@ -140,7 +183,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         async with engine.begin() as connection:
             await connection.execute(text("INSERT INTO destinations (internal_name,telegram_chat_id,destination_type,access_level,daily_limit) VALUES ('d',-1,'channel','private',1)"))
         await engine.dispose()
-        migrate("-13", self.safe)
+        migrate("-14", self.safe)
         engine = create_safe_engine(self.safe)
         async with engine.connect() as connection:
             self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signalists WHERE telegram_user_id=123")),1)

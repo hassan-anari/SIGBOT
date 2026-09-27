@@ -280,6 +280,9 @@ class InitialPublicationService:
    changed=await tx.publications.transition(delivery.id,expected,target,self.clock(),error=error)
    if not changed:return False
    if release:await tx.publications.release_capacity(delivery.id)
+   if target in (PublicationStatus.FAILED,PublicationStatus.SKIPPED_INACTIVE,
+                 PublicationStatus.SKIPPED_UNASSIGNED,PublicationStatus.SKIPPED_DAILY_LIMIT):
+    await tx.publications.release_trade_lock(delivery.signal_id,delivery.destination_id)
    await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
    return True
 
