@@ -10,6 +10,7 @@ from chainura.errors import CaptionGenerationError
 from chainura.domain.signal import TradeDirection
 from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, format_decimal,
     format_leverage, format_percentage, format_symbol)
+from chainura.trade_id import format_trade_id
 
 
 BUILTIN_TEMPLATES = {
@@ -27,6 +28,12 @@ BUILTIN_TEMPLATES = {
     DestinationMessageKind.SAVE_PROFIT_50: "💰 <b>سیو سود</b>\n۵۰٪ از حجم باقی‌مانده پوزیشن بسته شد.",
     DestinationMessageKind.FULL_CLOSE: "⛔ <b>پوزیشن به‌طور کامل بسته شد.</b>",
     DestinationMessageKind.RISK_FREE_HIT: "⚖️ <b>ریسک فری فعال شد و باقی‌مانده پوزیشن در نقطه ورود بسته شد.</b>",
+    DestinationMessageKind.LIMIT_PENDING: (
+        "⏳ <b>سفارش لیمیت در انتظار رسیدن قیمت</b>\n\n"
+        "شناسه معامله: {trade_id}\nنماد: {symbol}\nجهت: {direction}\n"
+        "ورود لیمیت: {entry}\nاهرم: {leverage}\nاهداف: {targets}\nحد ضرر: {stop_loss}"
+    ),
+    DestinationMessageKind.LIMIT_CANCELLED: "❌ <b>سفارش لیمیت {symbol} لغو شد</b>",
 }
 
 PLACEHOLDERS = {
@@ -37,6 +44,8 @@ PLACEHOLDERS = {
     DestinationMessageKind.BREAKEVEN: frozenset(("symbol", "direction", "entry", "leverage", "execution_price", "roi", "exchange", "private_tag")),
     DestinationMessageKind.SIGNAL_CANCELLED: frozenset(("symbol", "direction", "entry", "leverage", "private_tag")),
     DestinationMessageKind.WARMUP: frozenset(),
+    DestinationMessageKind.LIMIT_PENDING: frozenset(("trade_id", "symbol", "direction", "entry", "leverage", "targets", "stop_loss", "private_tag")),
+    DestinationMessageKind.LIMIT_CANCELLED: frozenset(("trade_id", "symbol", "direction", "entry", "leverage", "private_tag")),
 }
 _ACTION_FIELDS=frozenset(("symbol","direction","entry","leverage","tp_index",
     "execution_price","remaining_fraction","realized_weighted_roi","private_tag"))
@@ -169,6 +178,16 @@ def cancellation_context(signal, *, private):
         "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
         "private_tag":_private(private)}
 
+def limit_pending_context(signal, *, private):
+    context=details_context(signal,private=private)
+    context["trade_id"]=_safe(format_symbol(format_trade_id(signal.id)))
+    return context
+
+def limit_cancellation_context(signal, *, private):
+    context=cancellation_context(signal,private=private)
+    context["trade_id"]=_safe(format_symbol(format_trade_id(signal.id)))
+    return context
+
 def position_action_context(signal,event,action,*,private):
     return {"symbol":_safe(format_symbol(signal.canonical_symbol)),"direction":_direction(signal),
         "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
@@ -187,6 +206,7 @@ SAMPLE_CONTEXT = {name: value for name, value in (
     ("stop_loss", "⁦63000⁩"), ("tp_index", "⁦2⁩"), ("tp_price", "⁦66000⁩"),
     ("execution_price", "⁦66000⁩"), ("roi", "⁦28.10%⁩"),
     ("remaining_fraction", "⁦50%⁩"), ("realized_weighted_roi", "⁦10%⁩"),
+    ("trade_id", "⁦TR-000123⁩"),
 )}
 
 

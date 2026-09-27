@@ -25,8 +25,15 @@ class TradeDirection(str, Enum):
     SHORT = "short"
 
 
+class SignalEntryType(str, Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+
+
 class SignalLifecycleStatus(str, Enum):
     PENDING_DETAILS = "pending_details"
+    PENDING_ENTRY = "pending_entry"
+    ENTRY_TRIGGERED = "entry_triggered"
     ACTIVE = "active"
     CANCELLED = "cancelled"
 
@@ -79,6 +86,27 @@ def initial_entry_drift_is_acceptable(p0: Decimal, p1: Decimal) -> bool:
     return initial_entry_drift_percent(p0, p1) <= INITIAL_ENTRY_MAX_DRIFT_PERCENT
 
 
+def validate_limit_entry(direction: TradeDirection, limit_entry: Decimal,
+                         current_reference: Decimal) -> None:
+    """Validate a requested Limit against a fresh sampled reference price."""
+    entry = _positive_decimal(limit_entry, "limit_entry")
+    current = _positive_decimal(current_reference, "current_reference")
+    if not isinstance(direction, TradeDirection):
+        raise InvalidSignalInputError("trade direction is invalid")
+    valid = entry < current if direction is TradeDirection.LONG else entry > current
+    if not valid:
+        raise InvalidSignalInputError("limit entry is not beyond the current market")
+
+
+def limit_entry_reached(direction: TradeDirection, current_reference: Decimal,
+                        limit_entry: Decimal) -> bool:
+    current = _positive_decimal(current_reference, "current_reference")
+    entry = _positive_decimal(limit_entry, "limit_entry")
+    if not isinstance(direction, TradeDirection):
+        raise InvalidSignalInputError("trade direction is invalid")
+    return current <= entry if direction is TradeDirection.LONG else current >= entry
+
+
 @dataclass(frozen=True, slots=True)
 class Signal:
     id: int | None
@@ -102,6 +130,7 @@ class Signal:
     updated_at: datetime
     initial_source_prices: tuple[tuple[Exchange, Decimal], ...]
     cancelled_at: datetime | None = None
+    entry_type: SignalEntryType = SignalEntryType.MARKET
 
     def __post_init__(self) -> None:
         if self.id is not None and (isinstance(self.id, bool) or not isinstance(self.id, int) or self.id < 1):
@@ -119,6 +148,8 @@ class Signal:
         if (not isinstance(self.price_source_type, PriceSourceType)
                 or not isinstance(self.status, SignalLifecycleStatus)):
             raise InvalidSignalInputError("signal state is invalid")
+        if not isinstance(self.entry_type, SignalEntryType):
+            raise InvalidSignalInputError("signal entry type is invalid")
         entry = _positive_decimal(self.entry_price, "entry_price")
         if self.stop_loss is not None:
             _positive_decimal(self.stop_loss, "stop_loss")
@@ -127,14 +158,21 @@ class Signal:
             raise InvalidSignalInputError("leverage must be a positive integer")
         if not isinstance(self.take_profits, tuple):
             raise InvalidSignalInputError("take profits must be an immutable tuple")
-        if self.status is SignalLifecycleStatus.ACTIVE and not self.take_profits:
+        if self.status in (SignalLifecycleStatus.ACTIVE, SignalLifecycleStatus.PENDING_ENTRY,
+                           SignalLifecycleStatus.ENTRY_TRIGGERED) and not self.take_profits:
             raise InvalidSignalInputError("active signal requires at least one take profit")
-        if self.status is SignalLifecycleStatus.ACTIVE and self.stop_loss is None:
+        if self.status in (SignalLifecycleStatus.ACTIVE, SignalLifecycleStatus.PENDING_ENTRY,
+                           SignalLifecycleStatus.ENTRY_TRIGGERED) and self.stop_loss is None:
             raise InvalidSignalInputError("active signal requires stop loss")
         pending_shape = not self.take_profits and self.stop_loss is None
         active_shape = bool(self.take_profits) and self.stop_loss is not None
         if self.status is SignalLifecycleStatus.PENDING_DETAILS and not pending_shape:
             raise InvalidSignalInputError("pending signal cannot contain final trade levels")
+        if self.entry_type is SignalEntryType.MARKET and self.status in (
+                SignalLifecycleStatus.PENDING_ENTRY, SignalLifecycleStatus.ENTRY_TRIGGERED):
+            raise InvalidSignalInputError("market signal cannot use limit lifecycle")
+        if self.entry_type is SignalEntryType.LIMIT and self.status is SignalLifecycleStatus.PENDING_DETAILS:
+            raise InvalidSignalInputError("limit signal must be complete when persisted")
         if self.status is SignalLifecycleStatus.CANCELLED and not (pending_shape or active_shape):
             raise InvalidSignalInputError("cancelled signal must preserve a valid pending or active shape")
         if self.status is SignalLifecycleStatus.CANCELLED and self.cancelled_at is None:

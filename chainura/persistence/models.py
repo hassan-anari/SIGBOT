@@ -10,8 +10,8 @@ from chainura.domain.destination import (DestinationAccessLevel, DestinationStat
                                           DestinationType, Exchange)
 from chainura.persistence.base import Base
 from chainura.persistence.types import UTCDateTime, ExactDecimal
-from chainura.domain.signal import (PriceSourceType, SignalLifecycleStatus, SignalMode,
-                                    TradeDirection)
+from chainura.domain.signal import (PriceSourceType, SignalEntryType,
+                                    SignalLifecycleStatus, SignalMode, TradeDirection)
 from chainura.domain.publication import PublicationRequestStatus, PublicationStatus
 from chainura.domain.monitoring import (MonitorStage, SignalEventKind, ResultKind,
     CandidateStatus, PromptStatus, NotificationKind, NotificationStatus)
@@ -211,6 +211,7 @@ SIGNAL_MODE_ENUM = _enum(SignalMode, "signal_mode")
 TRADE_DIRECTION_ENUM = _enum(TradeDirection, "trade_direction")
 PRICE_SOURCE_ENUM = _enum(PriceSourceType, "signal_price_source_type")
 SIGNAL_STATUS_ENUM = _enum(SignalLifecycleStatus, "signal_lifecycle_status")
+SIGNAL_ENTRY_TYPE_ENUM = _enum(SignalEntryType, "signal_entry_type")
 
 class SignalRecord(Base):
     __tablename__ = "signals"
@@ -224,6 +225,8 @@ class SignalRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     signalist_id: Mapped[int] = mapped_column(Integer, nullable=False)
     creation_token: Mapped[str] = mapped_column(Text, nullable=False)
+    entry_type: Mapped[SignalEntryType] = mapped_column(
+        SIGNAL_ENTRY_TYPE_ENUM, nullable=False, default=SignalEntryType.MARKET)
     mode: Mapped[SignalMode] = mapped_column(SIGNAL_MODE_ENUM, nullable=False)
     canonical_symbol: Mapped[str] = mapped_column(Text, nullable=False)
     base_asset: Mapped[str] = mapped_column(Text, nullable=False)
@@ -359,6 +362,73 @@ class SignalInitialPriceRecord(Base):
     signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
     price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+
+
+class LimitEntryTriggerRecord(Base):
+    __tablename__ = "limit_entry_triggers"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE",
+                             name="fk_limit_entry_triggers_signal"),
+        CheckConstraint("CAST(requested_entry AS NUMERIC) > 0 AND CAST(observed_reference_price AS NUMERIC) > 0",
+                        name="ck_limit_entry_triggers_prices"),
+        Index("ix_limit_entry_triggers_occurred", "occurred_at"),
+    )
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    requested_entry: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    observed_reference_price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+    price_source_type: Mapped[PriceSourceType] = mapped_column(PRICE_SOURCE_ENUM, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class LimitEntryTriggerSourcePriceRecord(Base):
+    __tablename__ = "limit_entry_trigger_source_prices"
+    __table_args__ = (ForeignKeyConstraint(["signal_id"], ["limit_entry_triggers.signal_id"],
+                                           ondelete="CASCADE", name="fk_limit_trigger_prices_trigger"),)
+    signal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exchange: Mapped[Exchange] = mapped_column(DESTINATION_EXCHANGE_ENUM, primary_key=True)
+    price: Mapped[object] = mapped_column(ExactDecimal(), nullable=False)
+
+
+class LimitPendingPublicationRecord(Base):
+    __tablename__ = "limit_pending_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE"),
+        UniqueConstraint("signal_id", "destination_id", name="uq_limit_pending_signal_destination"),
+        CheckConstraint("attempt_count >= 0", name="ck_limit_pending_attempts"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_limit_pending_message"),
+        Index("ix_limit_pending_status_retry", "status", "retry_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(_enum(PublicationStatus, "limit_pending_publication_status"), nullable=False,
+                                                       default=PublicationStatus.PENDING)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class LimitAdmissionDailySlotRecord(Base):
+    __tablename__ = "limit_admission_daily_slots"
+    __table_args__ = (
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["publication_id"], ["limit_pending_publications.id"], ondelete="CASCADE"),
+        UniqueConstraint("destination_id", "local_date", "slot_number", name="uq_limit_slot_destination_date_number"),
+        UniqueConstraint("publication_id", name="uq_limit_slot_publication"),
+        CheckConstraint("slot_number > 0", name="ck_limit_slot_positive"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_date: Mapped[object] = mapped_column(Date, nullable=False)
+    slot_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 class SignalTemplateRecord(Base):
     __tablename__="signal_templates"

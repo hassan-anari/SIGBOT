@@ -886,3 +886,34 @@ Telegram message ID. Failed or delivery-unknown TP images never cause a guessed 
 standalone follow-up. Final Normal, Full Close, SL, Risk Free hit, and cancellation
 release destination trade locks when product state becomes terminal; Telegram
 publication success does not control that release.
+
+---
+
+# Phase 5 — Durable Limit Orders
+
+The earlier Market-only wording describes the existing Market path and is retained
+for its compatibility contract. This approved phase adds `LIMIT` alongside
+`MARKET`. Market behavior remains unchanged.
+
+A complete Limit is persisted in `PENDING_ENTRY`, transitions irreversibly to
+`ENTRY_TRIGGERED` when a sampled Chainura reference price reaches its requested
+entry, and becomes `ACTIVE` only after explicit owner activation. It has no
+expiration and never places an exchange order. LONG entries must be strictly below
+the fresh confirmation reference; SHORT entries strictly above it. Decimal is used
+end-to-end, TP/SL are based on the requested entry, and that entry remains the
+trade's authoritative entry after triggering and activation.
+
+The pending text announcement is each destination's admission point. It consumes
+one Tehran-day Initial capacity slot and acquires the existing global destination
+Symbol Trade Lock. Activation consumes neither again and may publish only to a
+destination whose pending announcement is definitely sent, as a reply to that
+known message. There is no late backfill or standalone fallback for a missing or
+ambiguous reply parent. Pending and triggered Signals are operationally open and
+may be cancelled; no TP/SL or performance accounting occurs before activation.
+
+SQLite durably stores triggers, outboxes, capacity, and locks. Monitoring consumes
+the shared batched price cache and current sampled reference prices; it does not
+use WebSockets, candle high/low reconstruction, or per-Signal REST polling.
+Interrupted sends become `delivery_unknown` and are not blindly repeated.
+Telegram rate limits remain retryable until their explicit delay, while definite
+rejections use normalized privacy-safe categories rather than raw Telegram text.

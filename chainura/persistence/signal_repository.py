@@ -9,7 +9,7 @@ from chainura.persistence.models import (SignalExchangeSymbolRecord, SignalRecor
                                           InitialPublicationRequestRecord,
                                           SignalMonitorStateRecord, DestinationPublicationRecord,
                                           SignalDetailsPublicationRecord, SignalPositionStateRecord)
-from chainura.domain.signal import SignalLifecycleStatus
+from chainura.domain.signal import SignalEntryType, SignalLifecycleStatus
 from chainura.domain.publication import PublicationStatus
 from chainura.domain.monitoring import MonitorStage
 
@@ -32,6 +32,7 @@ class SqlAlchemySignalRepository:
 
     async def add(self, signal: Signal):
         row = SignalRecord(signalist_id=signal.signalist_id, creation_token=signal.creation_token,
+            entry_type=signal.entry_type,
             mode=signal.mode, canonical_symbol=signal.canonical_symbol, base_asset=signal.base_asset,
             quote_asset=signal.quote_asset, selected_exchange=signal.selected_exchange,
             direction=signal.direction, entry_price=signal.entry_price, leverage=signal.leverage,
@@ -44,7 +45,8 @@ class SqlAlchemySignalRepository:
             self._session.add_all([SignalTakeProfitRecord(signal_id=row.id, position=i, price=p) for i,p in enumerate(signal.take_profits,1)])
             self._session.add_all([SignalExchangeSymbolRecord(signal_id=row.id, exchange=e, native_symbol=s) for e,s in signal.exchange_symbols])
             self._session.add_all([SignalInitialPriceRecord(signal_id=row.id, exchange=e, price=p) for e,p in signal.initial_source_prices])
-            self._session.add(InitialPublicationRequestRecord(signal_id=row.id))
+            if signal.entry_type is SignalEntryType.MARKET:
+                self._session.add(InitialPublicationRequestRecord(signal_id=row.id))
             if signal.status is SignalLifecycleStatus.ACTIVE:
                 self._session.add(SignalMonitorStateRecord(signal_id=row.id,
                     stage=MonitorStage.PRE_TP1,created_at=signal.created_at,
@@ -69,7 +71,8 @@ class SqlAlchemySignalRepository:
             signal.base_asset, signal.quote_asset, signal.selected_exchange, signal.direction,
             signal.entry_price, signal.leverage, signal.take_profits, signal.stop_loss,
             signal.reference_price, signal.price_source_type, signal.status, signal.exchange_symbols,
-            signal.created_at, signal.updated_at, signal.initial_source_prices,signal.cancelled_at)
+            signal.created_at, signal.updated_at, signal.initial_source_prices,
+            signal.cancelled_at, signal.entry_type)
 
     async def activate_pending(self, signal: Signal) -> bool:
         changed=(await self._session.execute(update(SignalRecord).where(
@@ -106,6 +109,6 @@ class SqlAlchemySignalRepository:
             tps = tuple((await self._session.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id == row.id).order_by(SignalTakeProfitRecord.position))).all())
             maps = tuple((await self._session.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id == row.id).order_by(SignalExchangeSymbolRecord.exchange))).all())
             prices = tuple((await self._session.scalars(select(SignalInitialPriceRecord).where(SignalInitialPriceRecord.signal_id == row.id).order_by(SignalInitialPriceRecord.exchange))).all())
-            return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at,tuple((x.exchange,x.price) for x in prices),row.cancelled_at)
+            return Signal(row.id,row.signalist_id,row.creation_token,row.mode,row.canonical_symbol,row.base_asset,row.quote_asset,row.selected_exchange,row.direction,row.entry_price,row.leverage,tuple(x.price for x in tps),row.stop_loss,row.reference_price,row.price_source_type,row.status,tuple((x.exchange,x.native_symbol) for x in maps),row.created_at,row.updated_at,tuple((x.exchange,x.price) for x in prices),row.cancelled_at,row.entry_type)
         except SignalCreationError: raise
         except Exception as exc: raise SignalCreationError("signal aggregate could not be loaded") from exc

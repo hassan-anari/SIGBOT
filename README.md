@@ -423,3 +423,31 @@ The API-health subsystem durably monitors six services: Ourbit/Toobit/LBank pric
 دقیقاً به Entry منتقل می‌کند. جریان قدیمی Prompt بریک‌ایون دیگر دادهٔ جدید نمی‌سازد.
 انتشار متن اقدام فقط پس از `SENT` شدن تصویر TP و به‌صورت Reply به همان پیام انجام
 می‌شود؛ نتیجهٔ مبهم ارسال هرگز بازفرست یا حدس زده نمی‌شود.
+
+## Market and Limit entry lifecycle
+
+Chainura distinguishes durable `MARKET` and `LIMIT` entry types. Existing records
+are migrated explicitly to Market. Market creation and its drift protection remain
+unchanged. A Limit is created only after all levels have been supplied and a fresh
+snapshot proves that a LONG entry is below, or a SHORT entry is above, the current
+reference price. Its requested entry remains authoritative throughout its life.
+
+A Limit has no expiration and follows `PENDING_ENTRY → ENTRY_TRIGGERED → ACTIVE`.
+The trigger is irreversible, durable, and uses Chainura's sampled reference prices
+from the shared batched market cache—not candle wicks or reconstructed trade
+history. Reaching entry never activates the Signal: its Signalist must explicitly
+activate it. Before activation, TP/SL and position accounting do not run.
+
+Pending Limit text is the destination admission message. Admission retains the
+same global `(destination, canonical symbol)` Trade Lock and consumes one Tehran
+local-day initial slot; activation consumes neither a second slot nor a second
+lock. A destination blocked at admission is never backfilled. The activated photo
+must reply to the definitely-sent pending message, so an unknown parent never
+causes a standalone fallback.
+
+Limit trigger, publication, capacity, and lock facts live in SQLite. Restart
+recovery treats interrupted sends as `delivery_unknown`, never blindly resends an
+ambiguous Telegram delivery, and resumes retryable work without automatic
+activation. Telegram rate limits are stored as `retry_wait` using the explicit
+Telegram delay, while permanent rejections use privacy-safe categories and do not
+persist raw exception text.

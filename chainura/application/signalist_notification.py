@@ -12,6 +12,7 @@ from chainura.persistence.models import (SignalistNotificationRecord,SignalistRe
  SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,BreakevenPromptRecord)
 from chainura.trade_id import format_trade_id
 from chainura.application.monitoring import LEGACY_TERMINAL_INTERACTION_VERSION
+from chainura.application.telegram_delivery import normalize_telegram_error
 
 LOGGER=logging.getLogger("chainura.signalist_notification")
 
@@ -109,15 +110,19 @@ class SignalistNotificationService:
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return
                 text=prompt_text(signal.canonical_symbol,signal.entry_price,prompt.observed_price_at_creation,signal.id);source=prompt
         try:message_id=await self.transport.send(telegram_id,text,row.kind,row.candidate_id or row.prompt_id)
-        except asyncio.TimeoutError:
-            async with self.sessions() as s,s.begin():
-                current=await s.get(SignalistNotificationRecord,notification_id);current.status=NotificationStatus.DELIVERY_UNKNOWN;current.last_error_category="ambiguous_timeout";current.updated_at=self.clock()
-            return
         except Exception as exc:
+            failure=normalize_telegram_error(exc)
             async with self.sessions() as s,s.begin():
-                current=await s.get(SignalistNotificationRecord,notification_id);current.last_error_category=type(exc).__name__;current.updated_at=self.clock()
-                if current.attempt_count>=self.max_attempts:current.status=NotificationStatus.FAILED
-                else:current.status=NotificationStatus.RETRY_WAIT;current.retry_at=self.clock()+timedelta(seconds=self.retry_base*(2**(current.attempt_count-1)))
+                current=await s.get(SignalistNotificationRecord,notification_id)
+                current.last_error_category=failure.category;current.updated_at=self.clock()
+                if failure.retry_after is not None:
+                    current.status=NotificationStatus.RETRY_WAIT
+                    backoff=self.retry_base*(2**max(0,current.attempt_count-1))
+                    current.retry_at=self.clock()+timedelta(seconds=max(failure.retry_after,backoff))
+                elif failure.definite_no_send:
+                    current.status=NotificationStatus.FAILED;current.retry_at=None
+                else:
+                    current.status=NotificationStatus.DELIVERY_UNKNOWN;current.retry_at=None
             return
         async with self.sessions() as s,s.begin():
             current=await s.get(SignalistNotificationRecord,notification_id);current.status=NotificationStatus.SENT;current.telegram_message_id=message_id;current.sent_at=self.clock();current.updated_at=self.clock()
