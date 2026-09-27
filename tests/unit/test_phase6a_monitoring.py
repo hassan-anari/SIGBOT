@@ -17,10 +17,10 @@ class MonitoringRuleTests(unittest.TestCase):
   long=self.evaluate(TradeDirection.LONG,'111')[0];short=self.evaluate(TradeDirection.SHORT,'89')[0]
   self.assertEqual((long.kind,long.tp_index,long.leveraged_roi),(SignalEventKind.TP_HIT,1,Decimal('100')))
   self.assertEqual((short.kind,short.tp_index,short.leveraged_roi),(SignalEventKind.TP_HIT,1,Decimal('100')))
- def test_sl_before_tp1_and_ignored_after(self):
+ def test_sl_remains_active_after_tp1_without_risk_free(self):
   self.assertEqual(self.evaluate(TradeDirection.LONG,'94')[0].kind,SignalEventKind.SL_HIT)
   self.assertEqual(self.evaluate(TradeDirection.SHORT,'106')[0].kind,SignalEventKind.SL_HIT)
-  self.assertEqual(self.evaluate(TradeDirection.LONG,'94',2,MonitorStage.POST_TP1),())
+  self.assertEqual(self.evaluate(TradeDirection.LONG,'94',2,MonitorStage.POST_TP1)[0].kind,SignalEventKind.SL_HIT)
  def test_multi_cross_is_ordered_and_uses_threshold_roi(self):
   events=self.evaluate(TradeDirection.LONG,'135')
   self.assertEqual([x.tp_index for x in events],[1,2,3]);self.assertEqual(events[-1].threshold_price,Decimal('130'));self.assertEqual(events[-1].observed_reference_price,Decimal('135'));self.assertEqual(events[-1].leveraged_roi,Decimal('300'))

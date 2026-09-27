@@ -28,7 +28,8 @@ def update_content_type(event_kind):
  from chainura.domain.monitoring import SignalEventKind
  mapping={SignalEventKind.TP_HIT:UpdateContentType.PHOTO,
   SignalEventKind.SL_HIT:UpdateContentType.TEXT,
-  SignalEventKind.BREAKEVEN:UpdateContentType.PHOTO}
+  SignalEventKind.BREAKEVEN:UpdateContentType.PHOTO,
+  SignalEventKind.RISK_FREE_HIT:UpdateContentType.TEXT}
  try:return mapping[event_kind]
  except KeyError as exc:raise ValueError("unsupported update event kind") from exc
 
@@ -344,7 +345,8 @@ class UpdatePublicationService:
    if self.message_templates:
     kind={__import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.TP_HIT:DestinationMessageKind.TP_HIT,
           __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.SL_HIT:DestinationMessageKind.SL_HIT,
-          __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.BREAKEVEN:DestinationMessageKind.BREAKEVEN}[event.kind]
+          __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.BREAKEVEN:DestinationMessageKind.BREAKEVEN,
+          __import__('chainura.domain.monitoring',fromlist=['SignalEventKind']).SignalEventKind.RISK_FREE_HIT:DestinationMessageKind.RISK_FREE_HIT}[event.kind]
     caption=(await self.message_templates.resolve(kind,destination_id=delivery.destination_id,
       context=event_context(signal,event,delivery.selected_exchange,private=destination.access_level.value=="private"))).text
    else:
@@ -405,6 +407,73 @@ class UpdatePublicationWorker(InitialPublicationWorker):
    try:await asyncio.wait_for(self._wake.wait(),self.sweep_seconds)
    except asyncio.TimeoutError:pass
 
+class PositionActionPublicationService:
+ """Durable TP-follow-up text, activated only by a definitely sent TP image."""
+ def __init__(self,transactions,publisher,message_templates,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
+  self.transactions=transactions;self.publisher=publisher;self.message_templates=message_templates;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
+ async def recover(self):
+  from sqlalchemy import update
+  from chainura.persistence.models import SignalPositionActionPublicationRecord
+  async with self.transactions() as tx:
+   await tx._session.execute(update(SignalPositionActionPublicationRecord).where(SignalPositionActionPublicationRecord.status==PublicationStatus.SENDING).values(status=PublicationStatus.DELIVERY_UNKNOWN,last_error_category='restart_after_send_started',updated_at=self.clock()))
+   await tx.commit()
+ async def plan(self):
+  from chainura.domain.position import PositionActionKind
+  from chainura.persistence.models import SignalPositionActionRecord,SignalPositionActionPublicationRecord,DestinationUpdatePublicationRecord
+  async with self.transactions() as tx:
+   s=tx._session;rows=(await s.execute(select(SignalPositionActionRecord,DestinationUpdatePublicationRecord).join(DestinationUpdatePublicationRecord,DestinationUpdatePublicationRecord.candidate_id==SignalPositionActionRecord.candidate_id).where(SignalPositionActionRecord.action_kind.in_((PositionActionKind.RISK_FREE,PositionActionKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE)),DestinationUpdatePublicationRecord.status==PublicationStatus.SENT,DestinationUpdatePublicationRecord.telegram_message_id>0))).all()
+   for action,tp in rows:
+    exists=await s.scalar(select(SignalPositionActionPublicationRecord.id).where(SignalPositionActionPublicationRecord.action_id==action.id,SignalPositionActionPublicationRecord.destination_id==tp.destination_id))
+    if not exists:s.add(SignalPositionActionPublicationRecord(action_id=action.id,candidate_id=action.candidate_id,signal_id=action.signal_id,destination_id=tp.destination_id,tp_publication_id=tp.id,status=PublicationStatus.PENDING,reply_to_message_id=tp.telegram_message_id,created_at=self.clock(),updated_at=self.clock()))
+   await tx.commit()
+ async def pending_ids(self):
+  from chainura.persistence.models import SignalPositionActionPublicationRecord as R
+  now=self.clock()
+  async with self.transactions() as tx:
+   ids=tuple((await tx._session.scalars(select(R.id).where((R.status==PublicationStatus.PENDING)|((R.status==PublicationStatus.RETRY_WAIT)&(R.retry_at<=now))).order_by(R.created_at).limit(100))).all());await tx.commit();return ids
+ async def process(self,item_id):
+  from chainura.domain.position import PositionActionKind
+  from chainura.persistence.models import SignalPositionActionPublicationRecord as R,SignalPositionActionRecord,SignalEventRecord,SignalRecord,DestinationRecord,DestinationUpdatePublicationRecord
+  from chainura.application.message_templates import position_action_context
+  now=self.clock()
+  async with self.transactions() as tx:
+   s=tx._session;row=await s.get(R,item_id)
+   if not row or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return
+   tp=await s.get(DestinationUpdatePublicationRecord,row.tp_publication_id)
+   if not tp or tp.status is not PublicationStatus.SENT or tp.telegram_message_id!=row.reply_to_message_id:return
+   row.status=PublicationStatus.SENDING;row.attempt_count+=1;row.first_attempt_at=row.first_attempt_at or now;row.retry_at=None;row.updated_at=now
+   action=await s.get(SignalPositionActionRecord,row.action_id);event=await s.get(SignalEventRecord,action.event_id);signal=await s.get(SignalRecord,row.signal_id);dest=await s.get(DestinationRecord,row.destination_id);attempt=row.attempt_count;chat=dest.telegram_chat_id;parent=row.reply_to_message_id
+   await tx.commit()
+  kinds={PositionActionKind.RISK_FREE:DestinationMessageKind.RISK_FREE_ACTIVATED,PositionActionKind.SAVE_PROFIT_50:DestinationMessageKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE:DestinationMessageKind.FULL_CLOSE}
+  try:
+   text=(await self.message_templates.resolve(kinds[action.action_kind],destination_id=row.destination_id,context=position_action_context(signal,event,action,private=dest.access_level.value=='private'))).text
+   message_id=await self.publisher.send_text_update(chat,text,parent)
+  except DeliveryRateLimited as exc:
+   status=PublicationStatus.RETRY_WAIT if attempt<self.max_attempts else PublicationStatus.FAILED;retry=self.clock()+timedelta(seconds=max(exc.retry_after,self.retry_base_seconds*(2**(attempt-1)))) if status is PublicationStatus.RETRY_WAIT else None;error='rate_limited'
+  except DeliveryRejected as exc:status=PublicationStatus.FAILED;retry=None;error=str(exc)
+  except DeliveryAmbiguous as exc:status=PublicationStatus.DELIVERY_UNKNOWN;retry=None;error=str(exc)
+  except Exception as exc:status=PublicationStatus.FAILED;retry=None;error=type(exc).__name__
+  else:status=PublicationStatus.SENT;retry=None;error=None
+  async with self.transactions() as tx:
+   current=await tx._session.get(R,item_id)
+   if current and current.status is PublicationStatus.SENDING:
+    current.status=status;current.updated_at=self.clock();current.retry_at=retry;current.last_error_category=error
+    if status is PublicationStatus.SENT:current.telegram_message_id=message_id;current.sent_at=self.clock()
+   await tx.commit()
+
+class PositionActionPublicationWorker(InitialPublicationWorker):
+ async def _run(self):
+  await self.service.recover()
+  while not self._stop.is_set():
+   self._wake.clear()
+   try:
+    await self.service.plan();ids=await self.service.pending_ids();await asyncio.gather(*(self.service.process(i) for i in ids),return_exceptions=True)
+   except asyncio.CancelledError:raise
+   except Exception as exc:LOGGER.error('position action publication sweep failed category=%s',type(exc).__name__)
+   if self._stop.is_set():break
+   try:await asyncio.wait_for(self._wake.wait(),self.sweep_seconds)
+   except asyncio.TimeoutError:pass
+
 class SignalDetailsPublicationWorker(InitialPublicationWorker):
  async def _run(self):
   await self.service.recover()
@@ -457,7 +526,7 @@ class CancellationPublicationService:
    await s.flush();ids=tuple((await s.scalars(select(SignalCancellationPublicationRecord.id).where(or_(SignalCancellationPublicationRecord.status==PublicationStatus.PENDING,(SignalCancellationPublicationRecord.status==PublicationStatus.RETRY_WAIT)&(SignalCancellationPublicationRecord.retry_at<=now))).order_by(SignalCancellationPublicationRecord.id))).all());await tx.commit();return ids
  async def process(self,item_id):
   from sqlalchemy import exists,update
-  from chainura.persistence.models import (SignalCancellationPublicationRecord,SignalRecord,DestinationRecord,DestinationSignalistRecord,DestinationPublicationRecord,SignalDetailsPublicationRecord,DestinationUpdatePublicationRecord,SignalCommentPublicationRecord)
+  from chainura.persistence.models import (SignalCancellationPublicationRecord,SignalRecord,DestinationRecord,DestinationSignalistRecord,DestinationPublicationRecord,SignalDetailsPublicationRecord,DestinationUpdatePublicationRecord,SignalCommentPublicationRecord,SignalPositionActionPublicationRecord)
   from chainura.domain.signal import SignalLifecycleStatus
   now=self.clock()
   async with self.transactions() as tx:
@@ -467,7 +536,8 @@ class CancellationPublicationService:
    details_sending=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING)))
    update_sending=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.status==PublicationStatus.SENDING)))
    comment_sending=await s.scalar(select(exists().where(SignalCommentPublicationRecord.signal_id==row.signal_id,SignalCommentPublicationRecord.destination_id==row.destination_id,SignalCommentPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
-   inflight=details_sending or update_sending or comment_sending
+   action_sending=await s.scalar(select(exists().where(SignalPositionActionPublicationRecord.signal_id==row.signal_id,SignalPositionActionPublicationRecord.destination_id==row.destination_id,SignalPositionActionPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+   inflight=details_sending or update_sending or comment_sending or action_sending
    if inflight:return
    signal=await tx.signals.get_by_id(row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
    assigned=signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id)));

@@ -19,7 +19,7 @@ def build_update_caption(data:UpdateCaptionInput)->str:
   text=f"🎯 <b>تارگت {iso(data.tp_index)} {symbol} لمس شد</b>"
  elif data.kind is SignalEventKind.SL_HIT:
   text=f"🛑 <b>حد ضرر {symbol} فعال شد</b>"
- elif data.kind is SignalEventKind.BREAKEVEN:
+ elif data.kind in (SignalEventKind.BREAKEVEN,SignalEventKind.RISK_FREE_HIT):
   text=f"⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>"
  else:raise UpdateCaptionError('unsupported update kind')
  if len(text)>MAX_TELEGRAM_PHOTO_CAPTION:raise UpdateCaptionError('update caption exceeds Telegram photo limit')

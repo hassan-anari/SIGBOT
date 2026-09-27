@@ -60,7 +60,8 @@ from chainura.rendering.templates import TemplateAssetStore, TemplateService
 from chainura.application.initial_rendering import InitialPayloadFactory, InitialImageService
 from chainura.application.publication import (InitialPublicationService, InitialPublicationWorker, UpdatePublicationService, UpdatePublicationWorker,
                                                SignalDetailsPublicationService, SignalDetailsPublicationWorker,
-                                               TelegramPhotoPublisher)
+                                               TelegramPhotoPublisher,PositionActionPublicationService,
+                                               PositionActionPublicationWorker)
 from chainura.application.template_admin import TemplateAdministrationService
 from chainura.application.message_templates import DestinationMessageTemplateService
 from chainura.application.active_signals import ActiveSignalService
@@ -157,6 +158,7 @@ class Runtime:
         self.cancellation_publication_worker=None;self.cancellation_publication_task=None
         self.comment_publication_worker=None;self.comment_publication_task=None
         self.warmup_publication_worker=None;self.warmup_publication_task=None
+        self.position_action_publication_worker=None;self.position_action_publication_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -287,7 +289,11 @@ class Runtime:
             class DirectTransport:
                 async def send(inner,telegram_id,text,kind,source_id):
                     if kind is NotificationKind.EVENT:
-                        markup=event_decision_keyboard(source_id)
+                        async with sessions() as session:
+                            from chainura.persistence.models import SignalUpdateCandidateRecord
+                            candidate=await session.get(SignalUpdateCandidateRecord,source_id)
+                        actions=await monitoring_service.tp_action_availability(source_id,candidate.signalist_id) if candidate else ()
+                        markup=event_decision_keyboard(source_id,actions)
                     else:
                         markup=breakeven_prompt_keyboard(source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
@@ -354,6 +360,11 @@ class Runtime:
                     retry_base_seconds=self.settings.update_send_retry_base_seconds,message_templates=message_template_service)
                 self.update_publication_worker=UpdatePublicationWorker(update_publication_service,
                     self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
+                action_delivery=PositionActionPublicationService(transactions,photo_publisher,
+                    message_template_service,max_attempts=self.settings.update_send_max_attempts,
+                    retry_base_seconds=self.settings.update_send_retry_base_seconds)
+                self.position_action_publication_worker=PositionActionPublicationWorker(action_delivery,
+                    self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
                 details_service=SignalDetailsPublicationService(transactions,photo_publisher,
                     max_attempts=self.settings.send_max_attempts,
                     retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
@@ -379,6 +390,10 @@ class Runtime:
                 await self._startup_await(self.update_publication_worker.start())
                 self.update_publication_task=self.update_publication_worker.task
                 self.update_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"update publication worker"))
+            if self.position_action_publication_worker is not None:
+                await self._startup_await(self.position_action_publication_worker.start())
+                self.position_action_publication_task=self.position_action_publication_worker.task
+                self.position_action_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"position action publication worker"))
             if self.details_publication_worker is not None:
                 await self._startup_await(self.details_publication_worker.start())
                 self.details_publication_task=self.details_publication_worker.task
@@ -408,6 +423,7 @@ class Runtime:
             def wake_background():
                 if self.publication_worker:self.publication_worker.wake()
                 if self.update_publication_worker:self.update_publication_worker.wake()
+                if self.position_action_publication_worker:self.position_action_publication_worker.wake()
                 if self.details_publication_worker:self.details_publication_worker.wake()
                 if self.monitoring_worker:self.monitoring_worker.wake()
                 if self.admin_alert_worker:self.admin_alert_worker.wake()
@@ -578,6 +594,8 @@ class Runtime:
                 await self._best_effort(self.admin_alert_worker.stop(), "admin alert worker")
             if self.update_publication_worker:
                 await self._best_effort(self.update_publication_worker.close(), "update publication worker")
+            if self.position_action_publication_worker:
+                await self._best_effort(self.position_action_publication_worker.close(), "position action publication worker")
             if self.details_publication_worker:
                 await self._best_effort(self.details_publication_worker.close(), "signal details publication worker")
             if self.cancellation_publication_worker:

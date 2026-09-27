@@ -16,6 +16,10 @@ KINDS = {"i":DestinationMessageKind.INITIAL_PHOTO_CAPTION,"d":DestinationMessage
          "t":DestinationMessageKind.TP_HIT,"s":DestinationMessageKind.SL_HIT,
          "b":DestinationMessageKind.BREAKEVEN,"c":DestinationMessageKind.SIGNAL_CANCELLED,
          "w":DestinationMessageKind.WARMUP}
+KINDS.update({"r":DestinationMessageKind.RISK_FREE_ACTIVATED,
+              "v":DestinationMessageKind.SAVE_PROFIT_50,
+              "f":DestinationMessageKind.FULL_CLOSE,
+              "h":DestinationMessageKind.RISK_FREE_HIT})
 LABELS = texts.MESSAGE_TEMPLATE_KIND_LABELS
 SOURCES = texts.MESSAGE_TEMPLATE_SOURCE_LABELS
 def kb(rows): return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Awaitable, Callable, Protocol
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from chainura.domain.monitoring import *
@@ -20,7 +21,9 @@ from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
  SignalEventRecord,SignalEventSourcePriceRecord,SignalUpdateCandidateRecord,
  BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord,UpdatePublicationRequestRecord,
  DestinationTradeLockRecord)
-from chainura.persistence.models import SignalPositionStateRecord
+from chainura.persistence.models import SignalPositionStateRecord,SignalPositionActionRecord
+from chainura.domain.position import PositionState,PositionActionKind,apply_position_action,InvalidPositionTransition
+from chainura.domain.publication import PublicationRequestStatus
 
 
 @dataclass(frozen=True,slots=True)
@@ -84,6 +87,20 @@ class MonitoringService:
                     risk_free_used=False,risk_free_active=False,save_profit_50_used=False,
                     effective_stop_price=row.stop_loss,is_closed=False,version=1,
                     created_at=now,updated_at=now) for row in signals])
+            # Phase 4B retires (but deliberately does not delete) the legacy
+            # contextual Breakeven workflow. Old buttons become stale after this
+            # transaction and historical accepted/declined rows remain readable.
+            prompt_ids=select(BreakevenPromptRecord.id).where(BreakevenPromptRecord.status.in_(
+                (PromptStatus.PENDING_NOTIFICATION,PromptStatus.AWAITING_RESPONSE)))
+            await s.execute(update(SignalistNotificationRecord).where(
+                SignalistNotificationRecord.prompt_id.in_(prompt_ids),
+                SignalistNotificationRecord.status.in_((NotificationStatus.PENDING,
+                    NotificationStatus.SENDING,NotificationStatus.RETRY_WAIT))).values(
+                        status=NotificationStatus.SUPERSEDED,updated_at=now))
+            await s.execute(update(BreakevenPromptRecord).where(
+                BreakevenPromptRecord.status.in_((PromptStatus.PENDING_NOTIFICATION,
+                    PromptStatus.AWAITING_RESPONSE))).values(status=PromptStatus.SUPERSEDED,
+                        expired_at=now,updated_at=now))
 
     async def load_work(self,limit:int)->tuple[MonitorWork,...]:
         async with self.sessions() as s:
@@ -104,8 +121,10 @@ class MonitoringService:
             if signal is None or signal.status is not SignalLifecycleStatus.ACTIVE:return False
             state=await s.get(SignalMonitorStateRecord,work.signal_id)
             if state is None or state.stage not in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1):return False
+            position=await s.get(SignalPositionStateRecord,work.signal_id)
+            if position is None or position.is_closed:return False
             version=state.version
-            decisions=evaluate_price(direction=work.direction,entry=work.entry_price,leverage=work.leverage,take_profits=work.take_profits,stop_loss=work.stop_loss,next_tp_index=state.next_tp_index,stage=state.stage,market=market)
+            decisions=evaluate_price(direction=work.direction,entry=work.entry_price,leverage=work.leverage,take_profits=work.take_profits,stop_loss=work.stop_loss,next_tp_index=state.next_tp_index,stage=state.stage,market=market,risk_free_active=position.risk_free_active,effective_stop_price=position.effective_stop_price)
             if decisions:
                 created=[]
                 for decision in decisions:
@@ -122,17 +141,124 @@ class MonitoringService:
                 if actionable:s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,signalist_id=work.signalist_id,status=NotificationStatus.PENDING,created_at=now,updated_at=now))
                 if decision.kind is SignalEventKind.TP_HIT:
                     state.highest_tp_index=decision.tp_index;state.next_tp_index=decision.tp_index+1;state.current_result_kind=ResultKind.WIN
-                    state.stage=MonitorStage.COMPLETED_TARGETS if decision.tp_index==len(work.take_profits) else MonitorStage.POST_TP1
-                else:state.current_result_kind=ResultKind.LOSS;state.stage=MonitorStage.COMPLETED_SL
+                    state.stage=MonitorStage.AWAITING_FINAL_TP_ACTION if decision.tp_index==len(work.take_profits) else MonitorStage.POST_TP1
+                else:
+                    action=(PositionActionKind.RISK_FREE_HIT_CLOSE if decision.kind is SignalEventKind.RISK_FREE_HIT
+                            else PositionActionKind.STOP_LOSS_CLOSE)
+                    final_roi=await self._apply_position(s,position,signal,latest,None,action,now)
+                    state.current_result_kind=self._result_kind(final_roi)
+                    state.stage=(MonitorStage.COMPLETED_RISK_FREE if decision.kind is SignalEventKind.RISK_FREE_HIT
+                                 else MonitorStage.COMPLETED_SL)
                 state.current_result_price=decision.threshold_price;state.current_leveraged_roi=decision.leveraged_roi
-                if state.stage in (MonitorStage.COMPLETED_TARGETS,MonitorStage.COMPLETED_SL):
+                if state.stage in (MonitorStage.COMPLETED_SL,MonitorStage.COMPLETED_RISK_FREE):
+                    state.current_leveraged_roi=final_roi
                     state.completed_at=now
                     await s.execute(delete(DestinationTradeLockRecord).where(
                         DestinationTradeLockRecord.signal_id==work.signal_id))
-            elif state.stage is MonitorStage.PRE_TP1:
-                await self._breakeven_state(s,state,work,market,now)
+            # The old automatic Breakeven prompt generator is intentionally not
+            # called. Entry is meaningful only for an explicitly active RF stop.
             state.last_checked_at=now;state.last_reference_price=market.reference_price;state.updated_at=now;state.version=version+1
             return True
+
+    @staticmethod
+    def _result_kind(value:Decimal)->ResultKind:
+        return ResultKind.WIN if value>0 else ResultKind.LOSS if value<0 else ResultKind.NEUTRAL
+
+    async def _apply_position(self,s,row,signal,event,candidate_id,action,now):
+        current=PositionState(row.remaining_fraction,row.realized_weighted_roi,
+            row.risk_free_used,row.risk_free_active,row.save_profit_50_used,
+            row.effective_stop_price,row.is_closed,row.closed_at)
+        transition=apply_position_action(current,action,leveraged_roi=event.leveraged_roi,
+            entry_price=signal.entry_price,occurred_at=now)
+        expected=row.version
+        changed=(await s.execute(update(SignalPositionStateRecord).where(
+            SignalPositionStateRecord.signal_id==signal.id,
+            SignalPositionStateRecord.version==expected).values(
+                remaining_fraction=transition.state.remaining_fraction,
+                realized_weighted_roi=transition.state.realized_weighted_roi,
+                risk_free_used=transition.state.risk_free_used,
+                risk_free_active=transition.state.risk_free_active,
+                save_profit_50_used=transition.state.save_profit_50_used,
+                effective_stop_price=transition.state.effective_stop_price,
+                is_closed=transition.state.is_closed,closed_at=transition.state.closed_at,
+                version=expected+1,updated_at=now))).rowcount
+        if changed != 1:raise ValueError("position decision is stale")
+        ledger=SignalPositionActionRecord(signal_id=signal.id,event_id=event.id,
+            candidate_id=candidate_id,action_kind=action,
+            remaining_fraction_before=transition.remaining_fraction_before,
+            closed_fraction=transition.closed_fraction,
+            remaining_fraction_after=transition.state.remaining_fraction,
+            execution_price=event.roi_basis_price,leveraged_roi=transition.leveraged_roi,
+            weighted_roi_delta=transition.weighted_roi_delta,
+            realized_weighted_roi_after=transition.state.realized_weighted_roi,created_at=now)
+        s.add(ledger);await s.flush()
+        return transition.state.realized_weighted_roi
+
+    async def tp_action_availability(self,candidate_id:int,signalist_id:int):
+        async with self.sessions() as s:
+            candidate=await s.get(SignalUpdateCandidateRecord,candidate_id)
+            event=await s.get(SignalEventRecord,candidate.event_id) if candidate else None
+            signal=await s.get(SignalRecord,candidate.signal_id) if candidate else None
+            position=await s.get(SignalPositionStateRecord,candidate.signal_id) if candidate else None
+            if not candidate or not event or event.kind is not SignalEventKind.TP_HIT or not signal or signal.signalist_id!=signalist_id or not position or position.is_closed:return ()
+            count=await s.scalar(select(__import__('sqlalchemy').func.count()).select_from(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id))
+            result=[PositionActionKind.NORMAL_TP,PositionActionKind.FULL_CLOSE]
+            if event.tp_index != count:
+                if not position.risk_free_used:result.insert(1,PositionActionKind.RISK_FREE)
+                if not position.save_profit_50_used:result.insert(-1,PositionActionKind.SAVE_PROFIT_50)
+            return tuple(result)
+
+    async def decide_tp_action(self,candidate_id:int,signalist_id:int,action:PositionActionKind):
+        """Atomically decide one TP candidate and mutate authoritative accounting."""
+        now=self.clock();wake=False
+        try:
+            async with self.sessions() as s,s.begin():
+                candidate=await s.get(SignalUpdateCandidateRecord,candidate_id)
+                event=await s.get(SignalEventRecord,candidate.event_id) if candidate else None
+                signal=await s.get(SignalRecord,candidate.signal_id) if candidate else None
+                actor=await s.get(SignalistRecord,signalist_id)
+                existing=await s.scalar(select(SignalPositionActionRecord).where(
+                    SignalPositionActionRecord.candidate_id==candidate_id))
+                if existing is not None:
+                    if (existing.action_kind is action or
+                        (action is PositionActionKind.NORMAL_TP and
+                         existing.action_kind is PositionActionKind.FINAL_TP_CLOSE)):
+                        return existing.action_kind
+                    raise ValueError("candidate is already decided")
+                if (not candidate or candidate.status is not CandidateStatus.AWAITING_DECISION or
+                    candidate.superseded_by_event_id is not None or not event or
+                    event.kind is not SignalEventKind.TP_HIT or not signal or
+                    signal.status is not SignalLifecycleStatus.ACTIVE or
+                    signal.signalist_id!=signalist_id or not actor or
+                    actor.status is not SignalistStatus.ACTIVE):raise ValueError("candidate is not actionable")
+                position=await s.get(SignalPositionStateRecord,signal.id)
+                monitor=await s.get(SignalMonitorStateRecord,signal.id)
+                if not position or position.is_closed or not monitor:raise ValueError("position is not actionable")
+                tp_count=await s.scalar(select(__import__('sqlalchemy').func.count()).select_from(
+                    SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id))
+                final=event.tp_index==tp_count
+                if action is PositionActionKind.NORMAL_TP:ledger_action=PositionActionKind.FINAL_TP_CLOSE if final else action
+                elif action in (PositionActionKind.RISK_FREE,PositionActionKind.SAVE_PROFIT_50):
+                    if final:raise ValueError("action is unavailable for final TP")
+                    ledger_action=action
+                elif action is PositionActionKind.FULL_CLOSE:ledger_action=action
+                else:raise ValueError("unsupported TP action")
+                final_roi=await self._apply_position(s,position,signal,event,candidate.id,ledger_action,now)
+                candidate.status=CandidateStatus.APPROVED;candidate.approved_at=now;candidate.updated_at=now
+                s.add(UpdatePublicationRequestRecord(candidate_id=candidate.id,signal_id=signal.id,
+                    event_id=event.id,status=PublicationRequestStatus.PENDING,created_at=now,updated_at=now))
+                if ledger_action in (PositionActionKind.FINAL_TP_CLOSE,PositionActionKind.FULL_CLOSE):
+                    monitor.stage=(MonitorStage.COMPLETED_TARGETS if ledger_action is PositionActionKind.FINAL_TP_CLOSE
+                                   else MonitorStage.COMPLETED_FULL_CLOSE)
+                    monitor.current_result_kind=self._result_kind(final_roi)
+                    monitor.current_leveraged_roi=final_roi;monitor.current_result_price=event.roi_basis_price
+                    monitor.completed_at=now;monitor.updated_at=now;monitor.version+=1
+                    await s.execute(delete(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal.id))
+                wake=True
+        except IntegrityError as exc:
+            raise ValueError("candidate is already decided") from exc
+        if wake and self.update_publication_wake:self.update_publication_wake()
+        return ledger_action
 
     async def _breakeven_state(self,s,state,work,market,now):
         cfg=self.settings

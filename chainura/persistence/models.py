@@ -294,6 +294,39 @@ class SignalPositionActionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 SignalPositionActionRecord.__table__.primary_key.name = "pk_signal_position_actions"
 
+class SignalPositionActionPublicationRecord(Base):
+    __tablename__ = "signal_position_action_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["action_id"], ["signal_position_actions.id"], ondelete="CASCADE", name="fk_position_action_publications_action"),
+        ForeignKeyConstraint(["candidate_id"], ["signal_update_candidates.id"], ondelete="CASCADE", name="fk_position_action_publications_candidate"),
+        ForeignKeyConstraint(["signal_id"], ["signals.id"], ondelete="CASCADE", name="fk_position_action_publications_signal"),
+        ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_position_action_publications_destination"),
+        ForeignKeyConstraint(["tp_publication_id"], ["destination_update_publications.id"], ondelete="CASCADE", name="fk_position_action_publications_tp_publication"),
+        UniqueConstraint("action_id", "destination_id", name="uq_position_action_publications_action_destination"),
+        CheckConstraint("attempt_count >= 0", name="ck_position_action_publications_attempts"),
+        CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_position_action_publications_message"),
+        CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0", name="ck_position_action_publications_reply"),
+        CheckConstraint("(status = 'sent' AND telegram_message_id IS NOT NULL AND reply_to_message_id IS NOT NULL AND sent_at IS NOT NULL) OR (status <> 'sent' AND telegram_message_id IS NULL AND sent_at IS NULL)", name="ck_position_action_publications_sent"),
+        Index("ix_position_action_publications_status_retry", "status", "retry_at"),
+        Index("ix_position_action_publications_chain", "signal_id", "destination_id", "sent_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tp_publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[PublicationStatus] = mapped_column(_enum(PublicationStatus,"position_action_publication_status"), nullable=False, default=PublicationStatus.PENDING)
+    reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    first_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_error_category: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
 class SignalTakeProfitRecord(Base):
     __tablename__ = "signal_take_profits"
     __table_args__ = (

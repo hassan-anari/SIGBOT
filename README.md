@@ -378,3 +378,13 @@ Approved TP/SL/Breakeven candidates now create durable update-publication reques
 Main Admin reports are on-demand only. Report dates use the Asia/Tehran calendar and are converted to half-open UTC intervals based on Signal creation time. Win Rate is `wins / (wins + losses) * 100`; Breakeven and active no-result Signals are excluded. Theoretical ROI uses only persisted event ROI: highest reached TP for wins, SL ROI for losses, zero for Breakeven, and never current market prices.
 
 The API-health subsystem durably monitors six services: Ourbit/Toobit/LBank prices and Ourbit/Toobit/LBank catalogs. `down` opens one outage incident per service and sends immediate Main Admin alert, one repeat every 60 seconds while still down, and one recovery alert after usable connectivity returns. `degraded` is shown in health status but does not open an incident. The bot does not reconstruct historical events missed during outages.
+
+### Phase 4B: اقدام‌های پوزیشن
+
+پس از هر تارگت تأییدشده، سیگنالیست اقدام عادی، ریسک فری، سیو سود ۵۰٪ یا بستن کامل
+را انتخاب می‌کند (در تارگت نهایی فقط عادی و بستن کامل). ریسک فری و سیو سود مستقل
+و هرکدام یک‌بار مصرف‌اند. حسابداری Decimal وزن‌دار Phase 4A منبع حقیقت است؛ حد ضرر
+پس از TP1 نیز تا زمانی که ریسک فری فعال نشده پایش می‌شود و ریسک فری، Stop مؤثر را
+دقیقاً به Entry منتقل می‌کند. جریان قدیمی Prompt بریک‌ایون دیگر دادهٔ جدید نمی‌سازد.
+انتشار متن اقدام فقط پس از `SENT` شدن تصویر TP و به‌صورت Reply به همان پیام انجام
+می‌شود؛ نتیجهٔ مبهم ارسال هرگز بازفرست یا حدس زده نمی‌شود.

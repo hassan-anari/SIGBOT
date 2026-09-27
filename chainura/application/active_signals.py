@@ -13,14 +13,15 @@ from chainura.persistence.models import (BreakevenPromptRecord,DestinationPublic
  SignalCancellationPublicationRecord,SignalDetailsPublicationRecord,SignalMonitorStateRecord,SignalRecord,
  SignalTakeProfitRecord,SignalUpdateCandidateRecord,SignalistNotificationRecord,SignalistRecord,
  UpdatePublicationRequestRecord)
-from chainura.persistence.models import DestinationTradeLockRecord
+from chainura.persistence.models import DestinationTradeLockRecord,SignalPositionStateRecord
 
-OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1)
+OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1,MonitorStage.AWAITING_FINAL_TP_ACTION)
 
 @dataclass(frozen=True,slots=True)
 class ActiveSignalView:
  id:int;symbol:str;direction:TradeDirection;entry:Decimal;leverage:int;status:SignalLifecycleStatus
  take_profits:tuple[Decimal,...];stop_loss:Decimal|None;monitor_stage:MonitorStage|None;highest_tp_index:int;created_at:datetime
+ remaining_fraction:Decimal=Decimal("1");risk_free_used:bool=False;risk_free_active:bool=False;save_profit_50_used:bool=False;realized_weighted_roi:Decimal=Decimal("0")
 
 @dataclass(frozen=True,slots=True)
 class CancellationResult:
@@ -38,15 +39,16 @@ class ActiveSignalService:
    ids=[r.id for r,_ in rows];tpmap={i:[] for i in ids}
    if ids:
     for tp in (await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id.in_(ids)).order_by(SignalTakeProfitRecord.signal_id,SignalTakeProfitRecord.position))).all():tpmap[tp.signal_id].append(tp.price)
-   items=tuple(self._view(r,m,tuple(tpmap[r.id])) for r,m in rows)
+   positions={p.signal_id:p for p in (await s.scalars(select(SignalPositionStateRecord).where(SignalPositionStateRecord.signal_id.in_(ids)))).all()} if ids else {}
+   items=tuple(self._view(r,m,tuple(tpmap[r.id]),positions.get(r.id)) for r,m in rows)
   return Page(items,page.page,page.page_size,total)
  async def get_open(self,signal_id:int,signalist_id:int)->ActiveSignalView|None:
   async with self.transactions() as tx:
    s=tx._session;r=await s.get(SignalRecord,signal_id);m=await s.get(SignalMonitorStateRecord,signal_id)
    if not r or r.signalist_id!=signalist_id or not (r.status is SignalLifecycleStatus.PENDING_DETAILS or r.status is SignalLifecycleStatus.ACTIVE and m and m.stage in OPEN_STAGES):return None
    tps=tuple(x.price for x in (await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal_id).order_by(SignalTakeProfitRecord.position))).all())
-   return self._view(r,m,tps)
- def _view(self,r,m,tps):return ActiveSignalView(r.id,r.canonical_symbol,r.direction,r.entry_price,r.leverage,r.status,tps,r.stop_loss,m.stage if m else None,m.highest_tp_index if m else 0,r.created_at)
+   return self._view(r,m,tps,await s.get(SignalPositionStateRecord,signal_id))
+ def _view(self,r,m,tps,p=None):return ActiveSignalView(r.id,r.canonical_symbol,r.direction,r.entry_price,r.leverage,r.status,tps,r.stop_loss,m.stage if m else None,m.highest_tp_index if m else 0,r.created_at,p.remaining_fraction if p else Decimal("1"),p.risk_free_used if p else False,p.risk_free_active if p else False,p.save_profit_50_used if p else False,p.realized_weighted_roi if p else Decimal("0"))
  async def cancel_signal(self,signal_id:int,signalist_id:int)->CancellationResult:
   now=self.clock()
   async with self.transactions() as tx:

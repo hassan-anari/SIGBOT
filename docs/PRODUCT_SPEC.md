@@ -857,3 +857,32 @@ Durable API health independently monitors exactly six services: `ourbit_prices`,
 Only `down` opens an incident and triggers repeating alerts. `degraded` is durable and visible to Main Admin but does not open an outage incident. The first down transition creates one incident and immediate alert, repeated down observations update the same incident, each due scheduler cycle creates at most one repeat alert and advances the next repeat by 60 seconds, and recovery closes the incident and creates one recovery alert. Sent and delivery-unknown alerts are never resent. There is no catch-up burst after downtime or restart.
 
 Outage handling is safe: one down price source still allows Composite operation with two fresh agreeing sources, two down price sources pause Composite validation/monitoring, and all price sources down produce no Composite confirmation and no TP/SL/Breakeven event. Single Exchange Signals continue only when their selected exchange has usable pricing. Catalog outages are independent from price-service health and do not stop monitoring of already-persisted Signals when valid prices exist. After recovery, monitoring resumes from current data only; historical candles are not queried and missed events are not reconstructed or backdated.
+
+# Phase 4B — Position Actions and Risk Free Lifecycle
+
+A confirmed TP is decided by its owning active Signalist with one durable position
+action. Intermediate targets offer Normal, one-time Risk Free, one-time Save Profit
+50%, and Full Close; the final target offers only Normal and Full Close. Risk Free
+and Save50 are independent and may be selected in either order. Normal leaves an
+intermediate position unchanged, final Normal closes all remaining volume, Save50
+closes exactly half of the then-remaining fraction, and Full Close is terminal at
+any TP.
+
+All closures use the Phase 4A Decimal reducer. For example, Save50 at +20 realizes
++10; a later SL at -10 on the remaining half contributes -5, producing a +5 final
+weighted ROI. A later Risk Free hit contributes zero, preserving the earlier +10.
+Terminal result kind is derived from this weighted total rather than the last event.
+
+Risk Free moves the effective stop to the persisted Entry. Once active, the original
+SL is ignored and a coherent LONG price at or below Entry (or SHORT price at or
+above Entry) closes all remaining volume as `RISK_FREE_HIT`. Without active Risk
+Free, the original SL remains monitored after TP1. The old favorable-move/Entry-zone
+Breakeven prompt generator is retired; historical Breakeven data remains readable.
+A detected final TP waits for Signalist action and cannot be superseded by SL.
+
+Every accepted TP action first publishes the normal `TP_HIT` image. Risk Free,
+Save50, and Full Close text follows only a definitely sent image and replies to its
+Telegram message ID. Failed or delivery-unknown TP images never cause a guessed or
+standalone follow-up. Final Normal, Full Close, SL, Risk Free hit, and cancellation
+release destination trade locks when product state becomes terminal; Telegram
+publication success does not control that release.
