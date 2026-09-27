@@ -75,11 +75,41 @@ class SqlAlchemyPublicationRepository:
                 DestinationPublicationRecord.status == PublicationStatus.RETRY_WAIT,
                 DestinationPublicationRecord.retry_at <= now).values(
                 status=PublicationStatus.PENDING, retry_at=None, updated_at=now))
+            await self.reconcile_trade_locks(now)
             signal_ids=tuple((await self.session.scalars(select(InitialPublicationRequestRecord.signal_id).where(
                 InitialPublicationRequestRecord.status.in_([PublicationRequestStatus.PLANNED,
                     PublicationRequestStatus.PLANNING])))).all())
             for signal_id in signal_ids:await self.complete_request(signal_id,now)
         except SQLAlchemyError as exc: raise PublicationPersistenceError("publication recovery failed") from exc
+
+    async def reconcile_trade_locks(self, now: datetime):
+        """Deterministically admit legacy queued Initials before new work is planned."""
+        queued = (PublicationStatus.PENDING, PublicationStatus.RETRY_WAIT,
+                  PublicationStatus.BLOCKED_TEMPLATE)
+        rows = (await self.session.execute(select(
+            DestinationPublicationRecord, SignalRecord, SignalMonitorStateRecord).join(
+            SignalRecord, SignalRecord.id == DestinationPublicationRecord.signal_id).outerjoin(
+            SignalMonitorStateRecord,
+            SignalMonitorStateRecord.signal_id == SignalRecord.id).where(
+            DestinationPublicationRecord.status.in_(queued)).order_by(
+            DestinationPublicationRecord.created_at,
+            DestinationPublicationRecord.id))).all()
+        for publication, signal, monitor in rows:
+            terminal = (signal.status is SignalLifecycleStatus.CANCELLED or
+                        (monitor is not None and monitor.stage in TERMINAL_MONITOR_STAGES))
+            if terminal:
+                publication.status = PublicationStatus.SUPERSEDED
+                publication.updated_at = now
+                await self.release_capacity(publication.id)
+                await self.release_trade_lock(signal.id, publication.destination_id)
+                continue
+            admitted = await self.acquire_trade_lock(signal.id, publication.destination_id,
+                                                     signal.canonical_symbol, now)
+            if not admitted:
+                publication.status = PublicationStatus.SUPERSEDED
+                publication.last_error_category = TRADE_LOCK_REASON
+                publication.updated_at = now
+                await self.release_capacity(publication.id)
 
     async def pending_request_ids(self, limit=50):
         try:return tuple((await self.session.scalars(select(InitialPublicationRequestRecord.id).where(

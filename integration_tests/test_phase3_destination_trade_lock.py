@@ -7,12 +7,15 @@ from decimal import Decimal
 from sqlalchemy import func, select, text
 
 from chainura.application.active_signals import ActiveSignalService
+from chainura.application.publication import InitialPublicationService
 from chainura.application.signal_service import CreatePendingSignalCommand, SignalService
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import PriceSourceType, SignalMode, TradeDirection
 from chainura.persistence.database import create_session_factory
 from chainura.persistence.models import (DestinationPublicationRecord,
-    DestinationTradeLockRecord)
+    DestinationTradeLockRecord, InitialPublicationNotificationRecord)
+from chainura.domain.publication import PublicationStatus
+from chainura.telegram.presentation import texts
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.domain.signalist import Signalist
@@ -56,6 +59,9 @@ class DestinationTradeLockTests(unittest.IsolatedAsyncioTestCase):
             request=await tx._session.scalar(select(__import__('chainura.persistence.models',fromlist=['InitialPublicationRequestRecord']).InitialPublicationRequestRecord.id).where(__import__('chainura.persistence.models',fromlist=['InitialPublicationRequestRecord']).InitialPublicationRequestRecord.signal_id==signal_id))
             result=await tx.publications.plan(request,self.now);await tx.commit();return result
 
+    async def recover(self):
+        await InitialPublicationService(self.tx,None,None,lambda:self.now).recover()
+
     async def test_symbol_and_destination_admission_is_permanent_and_signal_independent(self):
         first=await self.signal(self.a,"one");second=await self.signal(self.b,"two",direction=TradeDirection.SHORT)
         await self.plan(first.id);await self.plan(second.id)
@@ -77,6 +83,9 @@ class DestinationTradeLockTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(statuses.count(__import__('chainura.domain.publication',fromlist=['PublicationStatus']).PublicationStatus.PENDING),1)
             self.assertEqual(statuses.count(__import__('chainura.domain.publication',fromlist=['PublicationStatus']).PublicationStatus.SUPERSEDED),1)
             self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationTradeLockRecord)),1)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(
+                __import__('chainura.persistence.models',fromlist=['SignalRecord']).SignalRecord).where(
+                __import__('chainura.persistence.models',fromlist=['SignalRecord']).SignalRecord.id.in_((one.id,two.id)))),2)
 
     async def test_owner_cancellation_releases_but_blocked_row_never_backfills(self):
         owner=await self.signal(self.a,"owner");blocked=await self.signal(self.b,"blocked")
@@ -87,3 +96,67 @@ class DestinationTradeLockTests(unittest.IsolatedAsyncioTestCase):
             old=await s.scalar(select(DestinationPublicationRecord).where(DestinationPublicationRecord.signal_id==blocked.id))
             new=await s.scalar(select(DestinationPublicationRecord).where(DestinationPublicationRecord.signal_id==fresh.id))
             self.assertEqual(old.status.value,"superseded");self.assertEqual(new.status.value,"pending")
+
+    async def test_recovery_gives_older_legacy_queue_priority(self):
+        older=await self.signal(self.a,"legacy-old");newer=await self.signal(self.b,"legacy-new")
+        await self.plan(older.id);await self.plan(newer.id)
+        # Recreate pre-Phase-3 queued state: neither row has an admission decision.
+        async with self.sessions() as s,s.begin():
+            await s.execute(__import__('sqlalchemy').delete(DestinationTradeLockRecord))
+            rows=(await s.scalars(select(DestinationPublicationRecord).where(
+                DestinationPublicationRecord.signal_id.in_((older.id,newer.id))))).all()
+            for row in rows:
+                row.status=PublicationStatus.PENDING;row.last_error_category=None
+        await self.recover()
+        async with self.sessions() as s:
+            rows=(await s.scalars(select(DestinationPublicationRecord).where(
+                DestinationPublicationRecord.signal_id.in_((older.id,newer.id))).order_by(
+                DestinationPublicationRecord.id))).all()
+            self.assertEqual([r.status for r in rows],[PublicationStatus.PENDING,PublicationStatus.SUPERSEDED])
+            self.assertEqual(rows[1].last_error_category,"destination_trade_lock_occupied")
+            lock=(await s.scalars(select(DestinationTradeLockRecord))).one()
+            self.assertEqual(lock.signal_id,older.id)
+
+    async def test_recovered_legacy_queue_blocks_newer_planning(self):
+        older=await self.signal(self.a,"queued-owner");await self.plan(older.id)
+        async with self.sessions() as s,s.begin():await s.execute(__import__('sqlalchemy').delete(DestinationTradeLockRecord))
+        await self.recover()
+        newer=await self.signal(self.b,"after-recovery");await self.plan(newer.id)
+        async with self.sessions() as s:
+            row=await s.scalar(select(DestinationPublicationRecord).where(
+                DestinationPublicationRecord.signal_id==newer.id))
+            self.assertIs(row.status,PublicationStatus.SUPERSEDED)
+
+    async def test_visible_legacy_sent_and_unknown_block_but_terminal_does_not(self):
+        for index,status in enumerate((PublicationStatus.SENT,PublicationStatus.DELIVERY_UNKNOWN)):
+            owner=await self.signal(self.a,f"visible-{index}");await self.plan(owner.id)
+            async with self.sessions() as s,s.begin():
+                row=await s.scalar(select(DestinationPublicationRecord).where(
+                    DestinationPublicationRecord.signal_id==owner.id))
+                row.status=status
+                if status is PublicationStatus.SENT:
+                    row.telegram_message_id=100+index;row.sent_at=self.now
+                await s.execute(__import__('sqlalchemy').delete(DestinationTradeLockRecord))
+            candidate=await self.signal(self.b,f"visible-candidate-{index}");await self.plan(candidate.id)
+            async with self.sessions() as s:
+                blocked=await s.scalar(select(DestinationPublicationRecord).where(
+                    DestinationPublicationRecord.signal_id==candidate.id))
+                self.assertIs(blocked.status,PublicationStatus.SUPERSEDED)
+            # Isolate the next visibility state.
+            await ActiveSignalService(self.tx,lambda:self.now).cancel_signal(owner.id,self.a.id)
+            await ActiveSignalService(self.tx,lambda:self.now).cancel_signal(candidate.id,self.b.id)
+
+    async def test_lock_only_completion_uses_same_privacy_neutral_success_copy(self):
+        expected="✅ پردازش مرحله اولیه سیگنال تکمیل شد.\nحالا اطلاعات تکمیلی سیگنال را ثبت کنید."
+        self.assertEqual(texts.SIGNAL_INITIAL_PUBLISHED,expected)
+        trade="TRD-00000001"
+        copies=[]
+        for statuses in ((PublicationStatus.SENT,),
+                         (PublicationStatus.SENT,PublicationStatus.SUPERSEDED),
+                         (PublicationStatus.SUPERSEDED,)):
+            visible=[status for status in statuses if status is not PublicationStatus.SUPERSEDED]
+            outcome="success" if not visible or all(status is PublicationStatus.SENT for status in visible) else "partial"
+            self.assertEqual(outcome,"success")
+            copies.append(texts.signal_initial_published(trade))
+        self.assertEqual(copies,[copies[0]]*3)
+        self.assertIn(trade,copies[0]);self.assertNotIn("مقصد",copies[0])
