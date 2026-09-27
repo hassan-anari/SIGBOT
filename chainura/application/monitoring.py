@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Awaitable, Callable, Protocol
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -52,6 +52,24 @@ class MonitorWork:
     created_at:datetime
 
 
+CURRENT_INTERACTION_VERSION = 2
+LEGACY_TERMINAL_INTERACTION_VERSION = 3
+TERMINAL_MONITOR_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_SL,
+    MonitorStage.COMPLETED_BREAKEVEN, MonitorStage.COMPLETED_FULL_CLOSE,
+    MonitorStage.COMPLETED_RISK_FREE)
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilitySummary:
+    open_position_states_created:int = 0
+    legacy_tp_interactions_refreshed:int = 0
+    missing_tp_notification_intents_repaired:int = 0
+    legacy_breakeven_prompts_superseded:int = 0
+    inactive_owner_final_positions_terminalized:int = 0
+    stale_trade_locks_removed:int = 0
+    disabled_legacy_active_signals:int = 0
+
+
 class BatchMarketProvider(Protocol):
     async def snapshot(self, signals:tuple[MonitorWork,...]) -> dict[int,MarketDecision]:...
 
@@ -61,7 +79,7 @@ class MonitoringService:
                  settings:BreakevenSettings=BreakevenSettings(),clock=lambda:datetime.now(timezone.utc),notification_wake:Callable[[],None]|None=None,update_publication_wake:Callable[[],None]|None=None):
         self.sessions=sessions;self.market=market;self.settings=settings;self.clock=clock;self.notification_wake=notification_wake;self.update_publication_wake=update_publication_wake
 
-    async def reconcile(self)->None:
+    async def reconcile(self)->CompatibilitySummary:
         """Enroll valid legacy signals once without deriving historical events."""
         now=self.clock()
         async with self.sessions() as s, s.begin():
@@ -80,6 +98,7 @@ class MonitoringService:
                 SignalRecord.status==SignalLifecycleStatus.ACTIVE,
                 SignalMonitorStateRecord.stage.in_((MonitorStage.PRE_TP1,MonitorStage.POST_TP1)),
                 ~SignalMonitorStateRecord.signal_id.in_(select(SignalPositionStateRecord.signal_id))))).all()
+            positions_created=len(open_ids)
             if open_ids:
                 signals=(await s.scalars(select(SignalRecord).where(SignalRecord.id.in_(open_ids)))).all()
                 s.add_all([SignalPositionStateRecord(signal_id=row.id,
@@ -97,10 +116,118 @@ class MonitoringService:
                 SignalistNotificationRecord.status.in_((NotificationStatus.PENDING,
                     NotificationStatus.SENDING,NotificationStatus.RETRY_WAIT))).values(
                         status=NotificationStatus.SUPERSEDED,updated_at=now))
-            await s.execute(update(BreakevenPromptRecord).where(
+            retired=(await s.execute(update(BreakevenPromptRecord).where(
                 BreakevenPromptRecord.status.in_((PromptStatus.PENDING_NOTIFICATION,
                     PromptStatus.AWAITING_RESPONSE))).values(status=PromptStatus.SUPERSEDED,
-                        expired_at=now,updated_at=now))
+                        expired_at=now,updated_at=now))).rowcount
+
+            refreshed,repaired=await self._refresh_legacy_tp_interactions(s,now)
+            terminalized=await self._terminalize_inactive_final_positions(s,now)
+            stale=(await s.execute(delete(DestinationTradeLockRecord).where(
+                DestinationTradeLockRecord.signal_id.in_(select(SignalRecord.id).outerjoin(
+                    SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id).where(
+                    (SignalRecord.status==SignalLifecycleStatus.CANCELLED)|
+                    SignalMonitorStateRecord.stage.in_(TERMINAL_MONITOR_STAGES)))))).rowcount
+            disabled=await s.scalar(select(func.count()).select_from(SignalMonitorStateRecord).join(
+                SignalRecord,SignalRecord.id==SignalMonitorStateRecord.signal_id).where(
+                SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+                SignalMonitorStateRecord.stage==MonitorStage.DISABLED_LEGACY)) or 0
+            summary=CompatibilitySummary(positions_created,refreshed,repaired,retired,
+                terminalized,stale,disabled)
+        LOGGER.info("production compatibility reconciliation positions_created=%s tp_interactions_refreshed=%s tp_intents_repaired=%s breakeven_prompts_superseded=%s inactive_finals_terminalized=%s stale_locks_removed=%s disabled_legacy=%s",
+            summary.open_position_states_created,summary.legacy_tp_interactions_refreshed,
+            summary.missing_tp_notification_intents_repaired,
+            summary.legacy_breakeven_prompts_superseded,
+            summary.inactive_owner_final_positions_terminalized,
+            summary.stale_trade_locks_removed,summary.disabled_legacy_active_signals)
+        if (refreshed or repaired) and self.notification_wake:self.notification_wake()
+        return summary
+
+    async def _refresh_legacy_tp_interactions(self,s,now):
+        rows=(await s.execute(select(SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,
+            SignalistRecord,SignalistNotificationRecord).join(SignalEventRecord,
+            SignalEventRecord.id==SignalUpdateCandidateRecord.event_id).join(SignalRecord,
+            SignalRecord.id==SignalUpdateCandidateRecord.signal_id).join(SignalistRecord,
+            SignalistRecord.id==SignalUpdateCandidateRecord.signalist_id).outerjoin(
+            SignalistNotificationRecord,SignalistNotificationRecord.candidate_id==SignalUpdateCandidateRecord.id).where(
+            SignalUpdateCandidateRecord.status.in_((CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION)),
+            SignalUpdateCandidateRecord.superseded_by_event_id.is_(None),
+            SignalEventRecord.kind==SignalEventKind.TP_HIT,
+            SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+            SignalistRecord.status==SignalistStatus.ACTIVE,
+            ~SignalUpdateCandidateRecord.id.in_(select(SignalPositionActionRecord.candidate_id).where(
+                SignalPositionActionRecord.candidate_id.is_not(None)))))).all()
+        refreshed=repaired=0
+        for candidate,event,signal,actor,note in rows:
+            legacy_terminal=await self._is_legacy_terminal_tp(s,candidate,event,signal)
+            target_version=(LEGACY_TERMINAL_INTERACTION_VERSION if legacy_terminal
+                            else CURRENT_INTERACTION_VERSION)
+            if note is None:
+                s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,
+                    signalist_id=candidate.signalist_id,status=NotificationStatus.PENDING,
+                    interaction_version=target_version,created_at=now,updated_at=now))
+                repaired+=1
+            elif ((legacy_terminal and note.interaction_version!=target_version) or
+                    (not legacy_terminal and note.interaction_version<CURRENT_INTERACTION_VERSION)):
+                note.interaction_version=target_version
+                note.status=NotificationStatus.PENDING;note.attempt_count=0;note.retry_at=None
+                note.telegram_message_id=None;note.sent_at=None;note.last_error_category=None;note.updated_at=now
+                refreshed+=1
+        return refreshed,repaired
+
+    async def _is_legacy_terminal_tp(self,s,candidate,event=None,signal=None):
+        event=event or await s.get(SignalEventRecord,candidate.event_id)
+        signal=signal or await s.get(SignalRecord,candidate.signal_id)
+        if not event or event.kind is not SignalEventKind.TP_HIT or not signal:return False
+        monitor=await s.get(SignalMonitorStateRecord,signal.id)
+        position=await s.get(SignalPositionStateRecord,signal.id)
+        tp_count=await s.scalar(select(func.count()).select_from(SignalTakeProfitRecord).where(
+            SignalTakeProfitRecord.signal_id==signal.id))
+        action=await s.scalar(select(SignalPositionActionRecord.id).where(
+            (SignalPositionActionRecord.candidate_id==candidate.id)|
+            (SignalPositionActionRecord.event_id==event.id)))
+        return bool(monitor and monitor.stage is MonitorStage.COMPLETED_TARGETS and
+            position is None and action is None and event.tp_index==tp_count)
+
+    async def reconcile_inactive_final_positions(self)->int:
+        """Run lifecycle-only cleanup without requiring market monitoring."""
+        async with self.sessions() as s,s.begin():
+            return await self._terminalize_inactive_final_positions(s,self.clock())
+
+    async def _terminalize_inactive_final_positions(self,s,now):
+        rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord,
+            SignalistRecord).join(SignalMonitorStateRecord).join(SignalPositionStateRecord).join(
+            SignalistRecord,SignalistRecord.id==SignalRecord.signalist_id).where(
+            SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+            SignalMonitorStateRecord.stage==MonitorStage.AWAITING_FINAL_TP_ACTION,
+            SignalPositionStateRecord.is_closed.is_(False),
+            SignalistRecord.status!=SignalistStatus.ACTIVE))).all()
+        count=0
+        for signal,monitor,position,_ in rows:
+            tp_count=await s.scalar(select(func.count()).select_from(SignalTakeProfitRecord).where(
+                SignalTakeProfitRecord.signal_id==signal.id))
+            event=await s.scalar(select(SignalEventRecord).where(SignalEventRecord.signal_id==signal.id,
+                SignalEventRecord.kind==SignalEventKind.TP_HIT,SignalEventRecord.tp_index==tp_count).order_by(
+                SignalEventRecord.id.desc()).limit(1))
+            if event is None or await s.scalar(select(SignalPositionActionRecord.id).where(
+                SignalPositionActionRecord.event_id==event.id)) is not None:continue
+            candidate=await s.scalar(select(SignalUpdateCandidateRecord).where(
+                SignalUpdateCandidateRecord.event_id==event.id).order_by(SignalUpdateCandidateRecord.id.desc()).limit(1))
+            if candidate and candidate.status not in (CandidateStatus.AWAITING_NOTIFICATION,
+                    CandidateStatus.AWAITING_DECISION):
+                # Pre-4B approved/declined rows are valid history, not missing
+                # Phase-4 actions to reconstruct.
+                continue
+            final_roi=await self._apply_position(s,position,signal,event,candidate.id if candidate else None,
+                PositionActionKind.FINAL_TP_CLOSE,now)
+            if candidate and candidate.status in (CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION):
+                candidate.status=CandidateStatus.INELIGIBLE_INACTIVE;candidate.updated_at=now
+            monitor.stage=MonitorStage.COMPLETED_TARGETS;monitor.current_result_kind=self._result_kind(final_roi)
+            monitor.current_result_price=event.roi_basis_price;monitor.current_leveraged_roi=final_roi
+            monitor.completed_at=now;monitor.updated_at=now;monitor.version+=1
+            await s.execute(delete(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal.id))
+            count+=1
+        return count
 
     async def load_work(self,limit:int)->tuple[MonitorWork,...]:
         async with self.sessions() as s:
@@ -280,6 +407,9 @@ class MonitoringService:
         state.currently_inside_breakeven_zone=inside
 
     async def run_cycle(self,limit:int=100,concurrency:int=8)->int:
+        # No market call is needed to close an already-confirmed final target whose
+        # owner can no longer choose presentation semantics.
+        await self.reconcile_inactive_final_positions()
         if self.market is None:return 0
         work=await self.load_work(limit);snapshots=await self.market.snapshot(work);sem=asyncio.Semaphore(concurrency)
         async def one(item):
@@ -303,10 +433,12 @@ class MonitoringService:
             signal=await s.get(SignalRecord,row.signal_id) if row else None
             event=await s.get(SignalEventRecord,row.event_id) if row else None
             if row is None or signal is None or signal.status is not SignalLifecycleStatus.ACTIVE or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
-            # Phase 4B TP decisions must always pass through the atomic position
-            # action boundary. This server-side guard also rejects forged legacy
-            # EventDecisionCallback payloads.
-            if event is None or event.kind is SignalEventKind.TP_HIT:
+            legacy_terminal=(event is not None and event.kind is SignalEventKind.TP_HIT and
+                row.superseded_by_event_id is None and
+                await self._is_legacy_terminal_tp(s,row,event,signal))
+            # Generic TP decisions remain forbidden except for the narrowly
+            # proven pre-4B terminal publication decision shape.
+            if event is None or (event.kind is SignalEventKind.TP_HIT and not legacy_terminal):
                 raise ValueError("TP candidates require a position action")
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted

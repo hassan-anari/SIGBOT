@@ -1,6 +1,7 @@
 """Durable direct Signalist notification delivery."""
 from __future__ import annotations
 import asyncio
+import logging
 from datetime import datetime,timezone,timedelta
 from html import escape
 from sqlalchemy import select
@@ -10,6 +11,9 @@ from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.models import (SignalistNotificationRecord,SignalistRecord,
  SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,BreakevenPromptRecord)
 from chainura.trade_id import format_trade_id
+from chainura.application.monitoring import LEGACY_TERMINAL_INTERACTION_VERSION
+
+LOGGER=logging.getLogger("chainura.signalist_notification")
 
 FSI="\u2068";PDI="\u2069"
 def iso(value)->str:return f"{FSI}{escape(str(value))}{PDI}"
@@ -35,7 +39,7 @@ def fmt_percent(value: Decimal) -> str:
         display_value = Decimal("0")
     return fmt_decimal(display_value)
 
-def event_text(kind, symbol, price, roi, tp_index=None, signal_id=None):
+def event_text(kind, symbol, price, roi, tp_index=None, signal_id=None,*,position_action=True):
     if signal_id is None:
         raise ValueError("signal_id is required for event notification")
     trade = iso(format_trade_id(signal_id))
@@ -68,7 +72,8 @@ def event_text(kind, symbol, price, roi, tp_index=None, signal_id=None):
     else:
         raise ValueError("unsupported event kind")
     question=("اقدام پوزیشن را برای تارگت تأییدشده انتخاب کنید."
-              if kind is SignalEventKind.TP_HIT else "آیا این آپدیت برای مقصدها منتشر شود؟")
+              if kind is SignalEventKind.TP_HIT and position_action
+              else "آیا این آپدیت برای مقصدها منتشر شود؟")
     return f"شناسه معامله: {trade}\n" + head + "\n\n" + question
 
 def prompt_text(symbol,entry,current,signal_id=None):
@@ -97,7 +102,8 @@ class SignalistNotificationService:
             if row.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,row.candidate_id);event=await s.get(SignalEventRecord,candidate.event_id);signal=await s.get(SignalRecord,event.signal_id)
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
-                text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index,signal.id);source=candidate
+                text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index,signal.id,
+                    position_action=row.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION);source=candidate
             else:
                 prompt=await s.get(BreakevenPromptRecord,row.prompt_id);signal=await s.get(SignalRecord,prompt.signal_id)
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return
@@ -123,13 +129,17 @@ class SignalistNotificationService:
                 if prompt.status is PromptStatus.PENDING_NOTIFICATION:prompt.status=PromptStatus.AWAITING_RESPONSE;prompt.notified_at=self.clock();prompt.telegram_message_id=message_id;prompt.updated_at=self.clock()
 
 class SignalistNotificationWorker:
-    def __init__(self,service,concurrency=3,sweep_seconds=5):self.service=service;self.concurrency=concurrency;self.sweep=sweep_seconds;self._wake=asyncio.Event();self._stop=asyncio.Event();self.task=None
+    def __init__(self,service,concurrency=3,sweep_seconds=5,lifecycle_reconcile=None):self.service=service;self.concurrency=concurrency;self.sweep=sweep_seconds;self.lifecycle_reconcile=lifecycle_reconcile;self._wake=asyncio.Event();self._stop=asyncio.Event();self.task=None
     def wake(self):self._wake.set()
     async def start(self):
         if self.task is None:self.task=asyncio.create_task(self._run())
     async def _run(self):
         sem=asyncio.Semaphore(self.concurrency)
         while not self._stop.is_set():
+            if self.lifecycle_reconcile:
+                try:await self.lifecycle_reconcile()
+                except Exception as exc:
+                    LOGGER.warning("lifecycle reconciliation failed category=%s",type(exc).__name__)
             ids=await self.service.pending()
             async def one(i):
                 async with sem:await self.service.deliver(i)

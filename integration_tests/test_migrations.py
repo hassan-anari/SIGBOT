@@ -5,6 +5,8 @@ import unittest
 from sqlalchemy import text
 
 from integration_tests.support import create_safe_engine, migrate, require_safe_test_database
+from chainura.persistence.sqlite_migration import (SQLiteMigrationIntegrityError,
+    run_with_sqlite_foreign_keys_suspended)
 
 
 class EmptyMigrationTests(unittest.IsolatedAsyncioTestCase):
@@ -44,6 +46,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
                 event=(await connection.execute(text("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(:s,'tp_hit',1,'110','111','110','100','composite',:n,:n) RETURNING id"),{"s":signal,"n":now})).scalar_one()
                 event2=(await connection.execute(text("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(:s,'tp_hit',2,'120','121','120','200','composite',:n,:n) RETURNING id"),{"s":signal,"n":now})).scalar_one()
                 candidate=(await connection.execute(text("INSERT INTO signal_update_candidates(signal_id,event_id,signalist_id,status,created_at,updated_at) VALUES(:s,:e,:a,'awaiting_decision',:n,:n) RETURNING id"),{"s":signal,"e":event,"a":actor,"n":now})).scalar_one()
+                await connection.execute(text("INSERT INTO signalist_notifications(kind,candidate_id,signalist_id,status,attempt_count,created_at,updated_at) VALUES('event',:c,:a,'pending',0,:n,:n)"),{"c":candidate,"a":actor,"n":now})
             await engine.dispose();migrate("20260815_01",safe);engine=create_safe_engine(safe)
             async with engine.begin() as connection:
                 self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE id=:s"),{"s":signal}),1)
@@ -93,9 +96,41 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE id=:s"),{"s":signal}),1)
                 self.assertEqual(await connection.scalar(text("SELECT count(*) FROM destination_trade_locks WHERE signal_id=:s"),{"s":signal}),1)
                 self.assertEqual(await connection.scalar(text("SELECT telegram_message_id FROM destination_publications WHERE signal_id=:s"),{"s":signal}),991)
-            await engine.dispose();migrate("head",safe)
+            await engine.dispose();migrate("head",safe);engine=create_safe_engine(safe)
+            async with engine.connect() as connection:
+                self.assertEqual((await connection.execute(text("PRAGMA foreign_key_check"))).all(),[])
+                self.assertEqual(await connection.scalar(text("PRAGMA foreign_keys")),1)
+                for table in ("signal_monitor_states","signal_events","signal_update_candidates",
+                              "signalist_notifications","destination_publications","destination_trade_locks"):
+                    self.assertGreater(await connection.scalar(text(
+                        f"SELECT count(*) FROM {table}")),0)
+            await engine.dispose()
         finally:
             safe.cleanup()
+
+    async def test_migration_integrity_guard_rejects_orphan_and_restores_enforcement(self) -> None:
+        safe=require_safe_test_database()
+        try:
+            migrate("head",safe);engine=create_safe_engine(safe)
+            async with engine.connect() as connection:
+                def inject_orphan(sync_connection):
+                    def operation():
+                        sync_connection.exec_driver_sql(
+                            "INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) "
+                            "VALUES(999991,'ORPHANUSDT',999992,'2026-08-17T00:00:00+00:00','2026-08-17T00:00:00+00:00')")
+                        sync_connection.commit()
+                    run_with_sqlite_foreign_keys_suspended(sync_connection,operation)
+                with self.assertRaises(SQLiteMigrationIntegrityError) as raised:
+                    await connection.run_sync(inject_orphan)
+                self.assertIn("destination_trade_locks->",str(raised.exception))
+                self.assertNotIn("999991",str(raised.exception))
+                self.assertEqual(await connection.scalar(text("PRAGMA foreign_keys")),1)
+                self.assertTrue((await connection.execute(text("PRAGMA foreign_key_check"))).all())
+                await connection.execute(text("PRAGMA foreign_keys=OFF"));await connection.commit()
+                await connection.execute(text("DELETE FROM destination_trade_locks WHERE canonical_symbol='ORPHANUSDT'"));await connection.commit()
+                await connection.execute(text("PRAGMA foreign_keys=ON"));await connection.commit()
+            await engine.dispose()
+        finally:safe.cleanup()
 
     async def test_phase3_trade_lock_migration_preserves_existing_data(self) -> None:
         migrate("base", self.safe);migrate("20260813_02", self.safe)

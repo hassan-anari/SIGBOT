@@ -15,7 +15,8 @@ from chainura.persistence.models import (BreakevenPromptRecord,DestinationPublic
  UpdatePublicationRequestRecord)
 from chainura.persistence.models import DestinationTradeLockRecord,SignalPositionStateRecord
 
-OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1,MonitorStage.AWAITING_FINAL_TP_ACTION)
+OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1,MonitorStage.AWAITING_FINAL_TP_ACTION,
+ MonitorStage.DISABLED_LEGACY)
 
 @dataclass(frozen=True,slots=True)
 class ActiveSignalView:

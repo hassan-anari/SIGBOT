@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery,InlineKeyboardButton,InlineKeyboardMarku
 from chainura.application.access import Actor,ActorKind
 from chainura.application.pagination import PageRequest
 from chainura.domain.signal import SignalLifecycleStatus,TradeDirection
+from chainura.domain.monitoring import MonitorStage
 from chainura.telegram.middlewares import CallbackAcknowledger
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.formatting import format_decimal,format_leverage,format_symbol
@@ -18,7 +19,9 @@ def _parse(data):
  try:
   parts=data.split(":");return parts[1],tuple(int(x) for x in parts[2:])
  except (ValueError,IndexError,AttributeError):return None,()
-def _label(x):return f"{format_trade_id(x.id)} • {x.symbol} • {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'} • {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"
+def _status(x):return (texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else
+ texts.ACTIVE_SIGNAL_LEGACY_UNAVAILABLE if x.monitor_stage is MonitorStage.DISABLED_LEGACY else texts.ACTIVE_SIGNAL_ACTIVE)
+def _label(x):return f"{format_trade_id(x.id)} • {x.symbol} • {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'} • {_status(x)}"
 def list_keyboard(page):
  rows=[[InlineKeyboardButton(text=_label(x),callback_data=cb("d",x.id,page.page))] for x in page.items];nav=[]
  if page.page>1:nav.append(InlineKeyboardButton(text=texts.BUTTON_PREVIOUS,callback_data=cb("l",page.page-1)))
@@ -26,8 +29,8 @@ def list_keyboard(page):
  if nav:rows.append(nav)
  rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("m"))]);return InlineKeyboardMarkup(inline_keyboard=rows)
 def detail_text(x):
- rows=["<b>📋 سیگنال فعال</b>","",f"شناسه معامله: {bidi_ascii(format_trade_id(x.id))}",f"نماد: {format_symbol(x.symbol)}",f"جهت: {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'}",f"ورود: {format_decimal(x.entry)}",f"اهرم: {format_leverage(x.leverage)}",f"وضعیت: {texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else texts.ACTIVE_SIGNAL_ACTIVE}"]
- if x.status is SignalLifecycleStatus.ACTIVE:
+ rows=["<b>📋 سیگنال فعال</b>","",f"شناسه معامله: {bidi_ascii(format_trade_id(x.id))}",f"نماد: {format_symbol(x.symbol)}",f"جهت: {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'}",f"ورود: {format_decimal(x.entry)}",f"اهرم: {format_leverage(x.leverage)}",f"وضعیت: {_status(x)}"]
+ if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:
   rows.extend([f"تارگت {i}: {format_decimal(v)}" for i,v in enumerate(x.take_profits,1)]);rows.append(f"حد ضرر: {format_decimal(x.stop_loss)}")
   rows.append(f"حجم باقی‌مانده: {format_decimal(x.remaining_fraction*100)}٪")
   rows.append(f"ریسک فری: {'فعال' if x.risk_free_active else 'استفاده‌شده' if x.risk_free_used else 'استفاده‌نشده'}")
@@ -36,11 +39,12 @@ def detail_text(x):
  return "\n".join(rows)
 def detail_keyboard(x,page):
  rows=[]
- if x.status is SignalLifecycleStatus.ACTIVE:
+ if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:
   rows.extend([[InlineKeyboardButton(text=(texts.ACTIVE_SIGNAL_TP_REACHED if i<=x.highest_tp_index else texts.ACTIVE_SIGNAL_TP_WAITING).format(index=i),callback_data=cb("n",x.id))] for i in range(1,len(x.take_profits)+1)]);rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_SL_WAITING,callback_data=cb("n",x.id))])
- else:rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CONTINUE,callback_data=cb("r",x.id))])
+ elif x.status is SignalLifecycleStatus.PENDING_DETAILS:
+  rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CONTINUE,callback_data=cb("r",x.id))])
  actions=[]
- if x.status is SignalLifecycleStatus.ACTIVE:actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_COMMENT,callback_data=cb("o",x.id,page)))
+ if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_COMMENT,callback_data=cb("o",x.id,page)))
  actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL,callback_data=cb("c",x.id,page)));rows.append(actions);rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("l",page))]);return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def comment_choice_keyboard(signal_id,page):
