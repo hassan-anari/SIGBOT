@@ -168,6 +168,12 @@ class ProductionUpgradeCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await service.decide_candidate(candidate_ids[0],self.actor.id,True),CandidateStatus.APPROVED)
         self.assertIs(await service.decide_candidate(candidate_ids[3],self.actor.id,True),CandidateStatus.APPROVED)
         self.assertIs(await service.decide_candidate(candidate_ids[1],self.actor.id,False),CandidateStatus.DECLINED)
+        self.assertIs(await service.decide_candidate(candidate_ids[0],self.actor.id,True),CandidateStatus.APPROVED)
+        self.assertIs(await service.decide_candidate(candidate_ids[1],self.actor.id,False),CandidateStatus.DECLINED)
+        with self.assertRaises(ValueError):
+            await service.decide_candidate(candidate_ids[0],self.actor.id,False)
+        with self.assertRaises(ValueError):
+            await service.decide_candidate(candidate_ids[1],self.actor.id,True)
         async with self.sessions() as s:
             self.assertEqual(await s.scalar(select(func.count()).select_from(UpdatePublicationRequestRecord)),2)
             self.assertEqual(await s.scalar(select(func.count()).select_from(SignalPositionStateRecord).where(

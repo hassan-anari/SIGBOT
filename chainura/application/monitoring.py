@@ -434,7 +434,6 @@ class MonitoringService:
             event=await s.get(SignalEventRecord,row.event_id) if row else None
             if row is None or signal is None or signal.status is not SignalLifecycleStatus.ACTIVE or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
             legacy_terminal=(event is not None and event.kind is SignalEventKind.TP_HIT and
-                row.status in (CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION) and
                 row.superseded_by_event_id is None and
                 await self._is_legacy_terminal_tp(s,row,event,signal))
             # Generic TP decisions remain forbidden except for the narrowly

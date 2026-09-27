@@ -11,6 +11,8 @@ from chainura.environment import load_project_environment
 from chainura.persistence.base import Base
 from chainura.persistence.database import create_database_engine
 from chainura.persistence import models  # noqa: F401 - registers metadata
+from chainura.persistence.sqlite_migration import (run_with_sqlite_foreign_keys_suspended,
+    validate_sqlite_foreign_keys)
 
 load_project_environment()
 config = context.config
@@ -40,17 +42,13 @@ def do_run_migrations(connection: object) -> None:
     # during the temporary DROP can cascade-delete valid child workflow rows.
     # Migrations run with enforcement suspended, then restore and verify it before
     # returning the connection to the application.
-    connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
-    connection.commit()
-    try:
+    def migrate() -> None:
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
             context.run_migrations()
-    finally:
-        connection.commit()
-        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-        if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()!=1:
-            raise RuntimeError("SQLite foreign-key enforcement was not restored")
+            # Validate before Alembic can finalize its migration transaction.
+            validate_sqlite_foreign_keys(connection)
+    run_with_sqlite_foreign_keys_suspended(connection,migrate)
 
 
 async def run_async_migrations() -> None:
