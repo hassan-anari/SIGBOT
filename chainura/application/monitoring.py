@@ -20,6 +20,7 @@ from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
  SignalEventRecord,SignalEventSourcePriceRecord,SignalUpdateCandidateRecord,
  BreakevenPromptRecord,SignalistNotificationRecord,SignalistRecord,UpdatePublicationRequestRecord,
  DestinationTradeLockRecord)
+from chainura.persistence.models import SignalPositionStateRecord
 
 
 @dataclass(frozen=True,slots=True)
@@ -69,6 +70,20 @@ class MonitoringService:
                 prices=(await s.scalars(select(SignalInitialPriceRecord).where(SignalInitialPriceRecord.signal_id==row.id))).all()
                 valid=(row.mode is SignalMode.COMPOSITE and len(maps)==3 and len(prices)>=2) or (row.mode is SignalMode.SINGLE_EXCHANGE and len(maps)==len(prices)==1)
                 s.add(SignalMonitorStateRecord(signal_id=row.id,stage=MonitorStage.PRE_TP1 if valid else MonitorStage.DISABLED_LEGACY,disabled_reason=None if valid else "missing_phase5_snapshot",created_at=now,updated_at=now))
+            # Only genuinely open ACTIVE monitor states receive the new accounting
+            # foundation. Historical terminal rows are deliberately untouched.
+            open_ids=(await s.scalars(select(SignalMonitorStateRecord.signal_id).join(
+                SignalRecord,SignalRecord.id==SignalMonitorStateRecord.signal_id).where(
+                SignalRecord.status==SignalLifecycleStatus.ACTIVE,
+                SignalMonitorStateRecord.stage.in_((MonitorStage.PRE_TP1,MonitorStage.POST_TP1)),
+                ~SignalMonitorStateRecord.signal_id.in_(select(SignalPositionStateRecord.signal_id))))).all()
+            if open_ids:
+                signals=(await s.scalars(select(SignalRecord).where(SignalRecord.id.in_(open_ids)))).all()
+                s.add_all([SignalPositionStateRecord(signal_id=row.id,
+                    remaining_fraction=Decimal("1"),realized_weighted_roi=Decimal("0"),
+                    risk_free_used=False,risk_free_active=False,save_profit_50_used=False,
+                    effective_stop_price=row.stop_loss,is_closed=False,version=1,
+                    created_at=now,updated_at=now) for row in signals])
 
     async def load_work(self,limit:int)->tuple[MonitorWork,...]:
         async with self.sessions() as s:

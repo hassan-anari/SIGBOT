@@ -1,0 +1,99 @@
+"""Atomic persistence boundary for future Phase 4B position decisions."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+
+from chainura.domain.position import (PositionActionKind, PositionState,
+    apply_position_action)
+from chainura.persistence.models import (SignalEventRecord,
+    SignalPositionActionRecord, SignalPositionStateRecord,
+    SignalUpdateCandidateRecord)
+
+
+class StalePositionDecision(RuntimeError):
+    """The decision was already applied or its expected version is stale."""
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyPositionAction:
+    signal_id: int
+    event_id: int
+    candidate_id: int | None
+    expected_version: int
+    action_kind: PositionActionKind
+    execution_price: Decimal
+    leveraged_roi: Decimal
+    occurred_at: datetime
+    entry_price: Decimal | None = None
+
+
+class PositionAccountingService:
+    def __init__(self, sessions) -> None:
+        self._sessions = sessions
+
+    async def apply(self, command: ApplyPositionAction) -> bool:
+        """Apply once; return False when the durable decision key already exists."""
+        async with self._sessions() as session:
+            try:
+                async with session.begin():
+                    duplicate = await session.scalar(select(SignalPositionActionRecord.id).where(
+                        (SignalPositionActionRecord.candidate_id == command.candidate_id)
+                        if command.candidate_id is not None else
+                        ((SignalPositionActionRecord.event_id == command.event_id) &
+                         (SignalPositionActionRecord.action_kind == command.action_kind))))
+                    if duplicate is not None:
+                        return False
+                    event = await session.get(SignalEventRecord, command.event_id)
+                    candidate = (await session.get(SignalUpdateCandidateRecord, command.candidate_id)
+                                 if command.candidate_id is not None else None)
+                    if event is None or event.signal_id != command.signal_id or (
+                            candidate is not None and (candidate.signal_id != command.signal_id
+                                                       or candidate.event_id != command.event_id)):
+                        raise ValueError("event/candidate does not belong to the signal")
+                    row = await session.get(SignalPositionStateRecord, command.signal_id)
+                    if row is None or row.version != command.expected_version:
+                        raise StalePositionDecision("position version is stale")
+                    current = PositionState(row.remaining_fraction,row.realized_weighted_roi,
+                        row.risk_free_used,row.risk_free_active,row.save_profit_50_used,
+                        row.effective_stop_price,row.is_closed,row.closed_at)
+                    transition = apply_position_action(current,command.action_kind,
+                        leveraged_roi=command.leveraged_roi,entry_price=command.entry_price,
+                        occurred_at=command.occurred_at)
+                    changed=(await session.execute(update(SignalPositionStateRecord).where(
+                        SignalPositionStateRecord.signal_id==command.signal_id,
+                        SignalPositionStateRecord.version==command.expected_version).values(
+                        remaining_fraction=transition.state.remaining_fraction,
+                        realized_weighted_roi=transition.state.realized_weighted_roi,
+                        risk_free_used=transition.state.risk_free_used,
+                        risk_free_active=transition.state.risk_free_active,
+                        save_profit_50_used=transition.state.save_profit_50_used,
+                        effective_stop_price=transition.state.effective_stop_price,
+                        is_closed=transition.state.is_closed,closed_at=transition.state.closed_at,
+                        version=command.expected_version+1,updated_at=command.occurred_at))).rowcount
+                    if changed != 1:
+                        raise StalePositionDecision("position version is stale")
+                    session.add(SignalPositionActionRecord(signal_id=command.signal_id,
+                        event_id=command.event_id,candidate_id=command.candidate_id,
+                        action_kind=command.action_kind,
+                        remaining_fraction_before=transition.remaining_fraction_before,
+                        closed_fraction=transition.closed_fraction,
+                        remaining_fraction_after=transition.state.remaining_fraction,
+                        execution_price=command.execution_price,
+                        leveraged_roi=transition.leveraged_roi,
+                        weighted_roi_delta=transition.weighted_roi_delta,
+                        realized_weighted_roi_after=transition.state.realized_weighted_roi,
+                        created_at=command.occurred_at))
+                    await session.flush()
+                return True
+            except IntegrityError as exc:
+                # The candidate/event uniqueness constraints are the final race-safe
+                # idempotency boundary. The entire failed transaction is rolled back.
+                raw = str(exc.orig)
+                if "signal_position_actions" in raw:
+                    return False
+                raise
