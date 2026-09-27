@@ -8,7 +8,8 @@ from chainura.domain.publication import PublicationRequestStatus, PublicationSta
 from chainura.domain.signalist import SignalistStatus
 from chainura.domain.signal import SignalLifecycleStatus
 from chainura.errors import PublicationPersistenceError
-from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalDetailsPublicationRecord,SignalCommentPublicationRecord,SignalCancellationPublicationRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord,SignalPositionActionPublicationRecord)
+from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalDetailsPublicationRecord,SignalCommentPublicationRecord,SignalCancellationPublicationRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord,SignalPositionActionPublicationRecord,SignalPositionActionRecord)
+from chainura.domain.position import PositionActionKind
 UPDATE_TERMINAL=TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.BLOCKED_TEMPLATE}
 class SqlAlchemyUpdatePublicationRepository:
  def __init__(self,session):self.session=session
@@ -128,7 +129,22 @@ class SqlAlchemyUpdatePublicationRepository:
   if row is None or row.status is not expected:return False
   row.status=target;row.updated_at=now;row.last_error_category=error;row.retry_at=retry_at
   if template_sha:row.template_sha256=template_sha
-  if target is PublicationStatus.SENT:row.telegram_message_id=message_id;row.sent_at=now
+  if target is PublicationStatus.SENT:
+   row.telegram_message_id=message_id;row.sent_at=now
+   action=await self.session.scalar(select(SignalPositionActionRecord).where(
+    SignalPositionActionRecord.candidate_id==row.candidate_id,
+    SignalPositionActionRecord.action_kind.in_((PositionActionKind.RISK_FREE,
+     PositionActionKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE))))
+   if action is not None:
+    existing=await self.session.scalar(select(SignalPositionActionPublicationRecord.id).where(
+     SignalPositionActionPublicationRecord.action_id==action.id,
+     SignalPositionActionPublicationRecord.destination_id==row.destination_id))
+    if existing is None:
+     self.session.add(SignalPositionActionPublicationRecord(action_id=action.id,
+      candidate_id=row.candidate_id,signal_id=row.signal_id,destination_id=row.destination_id,
+      tp_publication_id=row.id,status=PublicationStatus.PENDING,
+      reply_to_message_id=message_id,created_at=now,updated_at=now))
+     await self.session.flush()
   return True
  async def last_published_message_id(self,signal_id,destination_id):
   candidates=[]

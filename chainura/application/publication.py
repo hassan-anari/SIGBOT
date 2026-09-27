@@ -318,8 +318,8 @@ class InitialPublicationWorker:
   if self._task is not None:await self._task
 
 class UpdatePublicationService:
- def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
-  self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
+ def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None,position_action_wake=None):
+  self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates;self.position_action_wake=position_action_wake
  async def recover(self):
   async with self.transactions() as tx:await tx.update_publications.recover(self.clock());await tx.commit()
  async def sweep(self):
@@ -373,7 +373,8 @@ class UpdatePublicationService:
    except DeliveryRejected as exc:await self._finish(delivery,PublicationStatus.FAILED,str(exc),PublicationStatus.SENDING);return
    except DeliveryAmbiguous as exc:await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,str(exc),PublicationStatus.SENDING);return
    try:
-    async with self.transactions() as tx:await tx.update_publications.transition(delivery.id,PublicationStatus.SENDING,PublicationStatus.SENT,self.clock(),message_id=message_id);await tx.update_publications.complete_request(delivery.request_id,self.clock());await tx.commit()
+    async with self.transactions() as tx:created=await tx.update_publications.transition(delivery.id,PublicationStatus.SENDING,PublicationStatus.SENT,self.clock(),message_id=message_id);await tx.update_publications.complete_request(delivery.request_id,self.clock());await tx.commit()
+    if created and self.position_action_wake:self.position_action_wake()
    except Exception:
     await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,'sent_commit_failed',PublicationStatus.SENDING)
   except asyncio.CancelledError:raise
@@ -433,16 +434,27 @@ class PositionActionPublicationService:
    ids=tuple((await tx._session.scalars(select(R.id).where((R.status==PublicationStatus.PENDING)|((R.status==PublicationStatus.RETRY_WAIT)&(R.retry_at<=now))).order_by(R.created_at).limit(100))).all());await tx.commit();return ids
  async def process(self,item_id):
   from chainura.domain.position import PositionActionKind
-  from chainura.persistence.models import SignalPositionActionPublicationRecord as R,SignalPositionActionRecord,SignalEventRecord,SignalRecord,DestinationRecord,DestinationUpdatePublicationRecord
+  from sqlalchemy import exists
+  from chainura.persistence.models import SignalPositionActionPublicationRecord as R,SignalPositionActionRecord,SignalEventRecord,SignalRecord,DestinationRecord,DestinationUpdatePublicationRecord,DestinationPublicationRecord,DestinationSignalistRecord
   from chainura.application.message_templates import position_action_context
   now=self.clock()
   async with self.transactions() as tx:
    s=tx._session;row=await s.get(R,item_id)
    if not row or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return
    tp=await s.get(DestinationUpdatePublicationRecord,row.tp_publication_id)
-   if not tp or tp.status is not PublicationStatus.SENT or tp.telegram_message_id!=row.reply_to_message_id:return
+   action=await s.get(SignalPositionActionRecord,row.action_id);event=await s.get(SignalEventRecord,action.event_id);signal=await s.get(SignalRecord,row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
+   initial=await s.scalar(select(exists().where(DestinationPublicationRecord.signal_id==row.signal_id,DestinationPublicationRecord.destination_id==row.destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0)))
+   assigned=bool(signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id))))
+   if not tp or tp.status is not PublicationStatus.SENT or tp.telegram_message_id!=row.reply_to_message_id:
+    row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;await tx.commit();return
+   if dest is None or dest.status is not DestinationStatus.ACTIVE:
+    row.status=PublicationStatus.SKIPPED_DESTINATION_INACTIVE;row.updated_at=now;await tx.commit();return
+   if not assigned:
+    row.status=PublicationStatus.SKIPPED_UNASSIGNED;row.updated_at=now;await tx.commit();return
+   if not initial:
+    row.status=PublicationStatus.SKIPPED_NO_INITIAL_MESSAGE;row.updated_at=now;await tx.commit();return
    row.status=PublicationStatus.SENDING;row.attempt_count+=1;row.first_attempt_at=row.first_attempt_at or now;row.retry_at=None;row.updated_at=now
-   action=await s.get(SignalPositionActionRecord,row.action_id);event=await s.get(SignalEventRecord,action.event_id);signal=await s.get(SignalRecord,row.signal_id);dest=await s.get(DestinationRecord,row.destination_id);attempt=row.attempt_count;chat=dest.telegram_chat_id;parent=row.reply_to_message_id
+   attempt=row.attempt_count;chat=dest.telegram_chat_id;parent=row.reply_to_message_id
    await tx.commit()
   kinds={PositionActionKind.RISK_FREE:DestinationMessageKind.RISK_FREE_ACTIVATED,PositionActionKind.SAVE_PROFIT_50:DestinationMessageKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE:DestinationMessageKind.FULL_CLOSE}
   try:
@@ -467,7 +479,9 @@ class PositionActionPublicationWorker(InitialPublicationWorker):
   while not self._stop.is_set():
    self._wake.clear()
    try:
-    await self.service.plan();ids=await self.service.pending_ids();await asyncio.gather(*(self.service.process(i) for i in ids),return_exceptions=True)
+    await self.service.plan();ids=await self.service.pending_ids()
+    for offset in range(0,len(ids),self.concurrency):
+     await asyncio.gather(*(self.service.process(i) for i in ids[offset:offset+self.concurrency]),return_exceptions=True)
    except asyncio.CancelledError:raise
    except Exception as exc:LOGGER.error('position action publication sweep failed category=%s',type(exc).__name__)
    if self._stop.is_set():break

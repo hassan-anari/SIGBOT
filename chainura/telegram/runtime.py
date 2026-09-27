@@ -365,6 +365,7 @@ class Runtime:
                     retry_base_seconds=self.settings.update_send_retry_base_seconds)
                 self.position_action_publication_worker=PositionActionPublicationWorker(action_delivery,
                     self.settings.update_publication_concurrency,self.settings.update_publication_sweep_seconds)
+                update_publication_service.position_action_wake=self.position_action_publication_worker.wake
                 details_service=SignalDetailsPublicationService(transactions,photo_publisher,
                     max_attempts=self.settings.send_max_attempts,
                     retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
@@ -485,6 +486,7 @@ class Runtime:
         if self.market_task is not None:watched.add(self.market_task)
         if self.notification_task is not None:watched.add(self.notification_task)
         if self.update_publication_task is not None:watched.add(self.update_publication_task)
+        if self.position_action_publication_task is not None:watched.add(self.position_action_publication_task)
         if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
         if self.comment_publication_task is not None:watched.add(self.comment_publication_task)
         if self.warmup_publication_task is not None:watched.add(self.warmup_publication_task)
@@ -526,6 +528,10 @@ class Runtime:
             self._observe_task_failure(self.update_publication_task,"update publication worker")
             if self.state is RuntimeState.RUNNING:
                 fatal_reason=fatal_reason or "update publication worker stopped unexpectedly"
+        if self.position_action_publication_task is not None and self.position_action_publication_task in done:
+            self._observe_task_failure(self.position_action_publication_task,"position action publication worker")
+            if self.state is RuntimeState.RUNNING:
+                fatal_reason=fatal_reason or "position action publication worker stopped unexpectedly"
         if self.comment_publication_task is not None and self.comment_publication_task in done:
             self._observe_task_failure(self.comment_publication_task,"signal comment publication worker")
             if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or "signal comment publication worker stopped unexpectedly"

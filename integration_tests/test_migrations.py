@@ -261,7 +261,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
         async with engine.begin() as connection:
             await connection.execute(text("INSERT INTO destinations (internal_name,telegram_chat_id,destination_type,access_level,daily_limit) VALUES ('d',-1,'channel','private',1)"))
         await engine.dispose()
-        migrate("-15", self.safe)
+        migrate("20260731_01", self.safe, downgrade=True)
         engine = create_safe_engine(self.safe)
         async with engine.connect() as connection:
             self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signalists WHERE telegram_user_id=123")),1)

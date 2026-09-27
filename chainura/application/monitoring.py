@@ -301,7 +301,13 @@ class MonitoringService:
         async with self.sessions() as s,s.begin():
             row=await s.get(SignalUpdateCandidateRecord,candidate_id);actor=await s.get(SignalistRecord,signalist_id)
             signal=await s.get(SignalRecord,row.signal_id) if row else None
+            event=await s.get(SignalEventRecord,row.event_id) if row else None
             if row is None or signal is None or signal.status is not SignalLifecycleStatus.ACTIVE or row.signalist_id!=signalist_id or actor is None or actor.status is not SignalistStatus.ACTIVE:raise ValueError("candidate is not actionable")
+            # Phase 4B TP decisions must always pass through the atomic position
+            # action boundary. This server-side guard also rejects forged legacy
+            # EventDecisionCallback payloads.
+            if event is None or event.kind is SignalEventKind.TP_HIT:
+                raise ValueError("TP candidates require a position action")
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted
             if row.status is not CandidateStatus.AWAITING_DECISION:raise ValueError("candidate is not actionable")
