@@ -18,6 +18,7 @@ from chainura.domain.destination import DestinationAccessLevel, DestinationStatu
 from chainura.domain.health import AdminAlertKind, AdminAlertStatus, ApiOperation, HealthObservation, ServiceHealthStatus
 from chainura.domain.monitoring import MonitorStage, ResultKind
 from chainura.domain.publication import PublicationStatus
+from chainura.domain.position import PositionActionKind
 from chainura.domain.signal import PriceSourceType, SignalLifecycleStatus, SignalMode, TradeDirection
 from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.base import Base
@@ -131,7 +132,8 @@ class Phase6FinalAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await notify.deliver(note.id)
         async with self.sessions() as s:
             cand=(await s.scalars(select(SignalUpdateCandidateRecord).where(SignalUpdateCandidateRecord.status==CandidateStatus.AWAITING_DECISION))).one()
-        await monitoring.decide_candidate(cand.id,sl.id,True)
+        self.assertIs(await monitoring.decide_tp_action(cand.id,sl.id,PositionActionKind.NORMAL_TP),
+                      PositionActionKind.NORMAL_TP)
         updates=UpdatePublicationService(factory,image,photos,lambda:self.now)
         await updates.sweep(); update_ids=await updates.pending_ids(); self.assertEqual(len(update_ids),1); await updates.process(update_ids[0])
         self.assertEqual(photos.updates[0][3], photos.initial[0][3])
@@ -142,7 +144,8 @@ class Phase6FinalAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await notify.deliver(note2.id)
         async with self.sessions() as s:
             cand2=(await s.get(SignalUpdateCandidateRecord,cand2.id))
-        await monitoring.decide_candidate(cand2.id,sl.id,True)
+        self.assertIs(await monitoring.decide_tp_action(cand2.id,sl.id,PositionActionKind.NORMAL_TP),
+                      PositionActionKind.FINAL_TP_CLOSE)
         await updates.sweep(); update_ids=await updates.pending_ids(); self.assertEqual(len(update_ids),1); await updates.process(update_ids[0])
         self.assertEqual(photos.updates[1][3], photos.updates[0][4])
         await InitialPublicationService(factory,image,photos,lambda:self.now).recover()
@@ -154,6 +157,16 @@ class Phase6FinalAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await s.scalar(select(func.count()).select_from(SignalistNotificationRecord)),2)
             self.assertEqual(await s.scalar(select(func.count()).select_from(UpdatePublicationRequestRecord)),2)
             self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.SENT)),2)
+            position=await s.get(SignalPositionStateRecord,sig.id)
+            monitor=await s.get(SignalMonitorStateRecord,sig.id)
+            actions=(await s.scalars(select(SignalPositionActionRecord).order_by(SignalPositionActionRecord.id))).all()
+            self.assertEqual([action.action_kind for action in actions],
+                             [PositionActionKind.NORMAL_TP,PositionActionKind.FINAL_TP_CLOSE])
+            self.assertEqual((position.is_closed,position.remaining_fraction,
+                              position.realized_weighted_roi),(True,Decimal('0'),Decimal('200')))
+            self.assertEqual((monitor.stage,monitor.current_result_kind,
+                              monitor.current_leveraged_roi),(MonitorStage.COMPLETED_TARGETS,
+                              ResultKind.WIN,Decimal('200')))
         summary=await self.reporting.summary(period_filter('today',self.now,sl.id))
         self.assertEqual((summary.wins,summary.tp2_count,summary.total_roi,summary.composite_count,summary.confirmed_published_count),(1,1,Decimal('200'),1,1))
 
