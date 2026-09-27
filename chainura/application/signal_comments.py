@@ -17,9 +17,9 @@ from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,
  DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,SignalCancellationPublicationRecord,
  SignalCommentPublicationRecord,SignalCommentRequestRecord,SignalDetailsPublicationRecord,SignalMonitorStateRecord,
- SignalRecord,SignalistRecord)
+ SignalRecord,SignalistRecord,SignalPositionActionPublicationRecord)
 
-OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1)
+OPEN_STAGES=(MonitorStage.PRE_TP1,MonitorStage.POST_TP1,MonitorStage.AWAITING_FINAL_TP_ACTION)
 @dataclass(frozen=True,slots=True)
 class CommentCreationResult:
  created:bool;publication_count:int=0;reason:str|None=None;request_id:int|None=None
@@ -95,7 +95,8 @@ class SignalCommentPublicationService:
    details_barrier=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
    older_update=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.created_at<=row.created_at,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
    cancellation_barrier=await s.scalar(select(exists().where(SignalCancellationPublicationRecord.signal_id==row.signal_id,SignalCancellationPublicationRecord.destination_id==row.destination_id,SignalCancellationPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
-   foreign=details_barrier or older_update or cancellation_barrier
+   action_barrier=await s.scalar(select(exists().where(SignalPositionActionPublicationRecord.signal_id==row.signal_id,SignalPositionActionPublicationRecord.destination_id==row.destination_id,SignalPositionActionPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+   foreign=details_barrier or older_update or cancellation_barrier or action_barrier
    req=await s.get(SignalCommentRequestRecord,row.comment_request_id);signal=await tx.signals.get_by_id(row.signal_id);dest=await s.get(DestinationRecord,row.destination_id);actor=await s.get(SignalistRecord,signal.signalist_id) if signal else None;state=await s.get(SignalMonitorStateRecord,row.signal_id)
    assigned=signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id)))
    valid=signal and signal.status is SignalLifecycleStatus.ACTIVE and state and state.stage in OPEN_STAGES and actor and actor.status is SignalistStatus.ACTIVE and dest and dest.status is DestinationStatus.ACTIVE and assigned
@@ -145,7 +146,8 @@ class SignalCommentPublicationService:
    details=await s.scalar(select(exists().where(SignalDetailsPublicationRecord.signal_id==row.signal_id,SignalDetailsPublicationRecord.destination_id==row.destination_id,SignalDetailsPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
    older_update=await s.scalar(select(exists().where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.created_at<=row.created_at,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN,PublicationStatus.BLOCKED_TEMPLATE)))))
    cancellation=await s.scalar(select(exists().where(SignalCancellationPublicationRecord.signal_id==row.signal_id,SignalCancellationPublicationRecord.destination_id==row.destination_id,SignalCancellationPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
-   if earlier or details or older_update or cancellation:
+   action_barrier=await s.scalar(select(exists().where(SignalPositionActionPublicationRecord.signal_id==row.signal_id,SignalPositionActionPublicationRecord.destination_id==row.destination_id,SignalPositionActionPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.DELIVERY_UNKNOWN)))))
+   if earlier or details or older_update or cancellation or action_barrier:
     row.status=PublicationStatus.PENDING;row.updated_at=now;await tx.commit();return None
    parent=await tx.update_publications.last_published_message_id(row.signal_id,row.destination_id)
    if not parent:

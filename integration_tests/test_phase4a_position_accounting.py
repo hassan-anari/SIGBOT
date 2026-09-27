@@ -17,7 +17,7 @@ from chainura.domain.signalist import Signalist
 from chainura.persistence.database import create_session_factory
 from chainura.persistence.models import (SignalEventRecord, SignalMonitorStateRecord,
     SignalPositionActionRecord, SignalPositionStateRecord, SignalRecord,
-    SignalUpdateCandidateRecord)
+    SignalUpdateCandidateRecord,UpdatePublicationRequestRecord)
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
 from integration_tests.support import create_safe_engine, migrate, require_safe_test_database
@@ -38,7 +38,7 @@ class PositionAccountingIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.actor=await SqlAlchemySignalistRepository(session).add(Signalist.create(880015,'Position'))
         self.signal=await SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),Prices(),lambda:NOW).create(
             CreateSignalCommand(self.actor.id,'position-token',SignalMode.COMPOSITE,'BTCUSDT','BTC','USDT',None,None,
-                TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),),Decimal('90')))
+                TradeDirection.LONG,Decimal('100'),10,(Decimal('110'),Decimal('120')),Decimal('90')))
     async def asyncTearDown(self):
         await self.engine.dispose();self.safe.cleanup()
 
@@ -85,6 +85,58 @@ class PositionAccountingIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.effective_stop_price,Decimal('100'))
             self.assertEqual((action.execution_price,action.leveraged_roi,
                 action.weighted_roi_delta),(Decimal('111'),Decimal('37.125'),Decimal('0')))
+
+    async def test_tp_generic_decisions_are_rejected_without_side_effects(self):
+        async with self.sessions() as session,session.begin():
+            event=SignalEventRecord(signal_id=self.signal.id,kind=SignalEventKind.TP_HIT,tp_index=1,
+                threshold_price=Decimal('110'),observed_reference_price=Decimal('110'),roi_basis_price=Decimal('110'),
+                leveraged_roi=Decimal('100'),price_source_type=PriceSourceType.COMPOSITE,occurred_at=NOW,created_at=NOW)
+            session.add(event);await session.flush()
+            candidate=SignalUpdateCandidateRecord(signal_id=self.signal.id,event_id=event.id,signalist_id=self.actor.id,
+                status=CandidateStatus.AWAITING_DECISION,created_at=NOW,updated_at=NOW)
+            session.add(candidate);await session.flush();candidate_id=candidate.id
+        service=MonitoringService(self.sessions,clock=lambda:NOW)
+        for approve in (True,False):
+            with self.assertRaises(ValueError):await service.decide_candidate(candidate_id,self.actor.id,approve)
+        async with self.sessions() as session:
+            candidate=await session.get(SignalUpdateCandidateRecord,candidate_id)
+            state=await session.get(SignalPositionStateRecord,self.signal.id)
+            self.assertIs(candidate.status,CandidateStatus.AWAITING_DECISION)
+            self.assertEqual((state.remaining_fraction,state.version),(Decimal('1'),1))
+            self.assertIsNone(await session.scalar(select(UpdatePublicationRequestRecord.id)))
+            self.assertIsNone(await session.scalar(select(SignalPositionActionRecord.id)))
+        self.assertIs(await service.decide_tp_action(candidate_id,self.actor.id,PositionActionKind.NORMAL_TP),PositionActionKind.NORMAL_TP)
+        async with self.sessions() as session:
+            self.assertIsNotNone(await session.scalar(select(UpdatePublicationRequestRecord.id)))
+            self.assertIsNotNone(await session.scalar(select(SignalPositionActionRecord.id)))
+
+    async def test_sl_and_risk_free_hit_keep_generic_decisions(self):
+        ids=[]
+        async with self.sessions() as session,session.begin():
+            for kind,price,roi in ((SignalEventKind.SL_HIT,Decimal('90'),Decimal('-100')),
+                                   (SignalEventKind.RISK_FREE_HIT,Decimal('100'),Decimal('0'))):
+                event=SignalEventRecord(signal_id=self.signal.id,kind=kind,tp_index=None,
+                    threshold_price=price,observed_reference_price=price,roi_basis_price=price,
+                    leveraged_roi=roi,price_source_type=PriceSourceType.COMPOSITE,occurred_at=NOW,created_at=NOW)
+                session.add(event);await session.flush()
+                candidate=SignalUpdateCandidateRecord(signal_id=self.signal.id,event_id=event.id,signalist_id=self.actor.id,
+                    status=CandidateStatus.AWAITING_DECISION,created_at=NOW,updated_at=NOW)
+                session.add(candidate);await session.flush();ids.append(candidate.id)
+        service=MonitoringService(self.sessions,clock=lambda:NOW)
+        self.assertIs(await service.decide_candidate(ids[0],self.actor.id,True),CandidateStatus.APPROVED)
+        self.assertIs(await service.decide_candidate(ids[1],self.actor.id,False),CandidateStatus.DECLINED)
+
+    async def test_competing_phase4b_actions_have_one_winner(self):
+        async with self.sessions() as session,session.begin():
+            event=SignalEventRecord(signal_id=self.signal.id,kind=SignalEventKind.TP_HIT,tp_index=1,
+                threshold_price=Decimal('110'),observed_reference_price=Decimal('110'),roi_basis_price=Decimal('110'),leveraged_roi=Decimal('100'),price_source_type=PriceSourceType.COMPOSITE,occurred_at=NOW,created_at=NOW)
+            session.add(event);await session.flush();candidate=SignalUpdateCandidateRecord(signal_id=self.signal.id,event_id=event.id,signalist_id=self.actor.id,status=CandidateStatus.AWAITING_DECISION,created_at=NOW,updated_at=NOW);session.add(candidate);await session.flush();candidate_id=candidate.id
+        service=MonitoringService(self.sessions,clock=lambda:NOW)
+        results=await asyncio.gather(service.decide_tp_action(candidate_id,self.actor.id,PositionActionKind.RISK_FREE),service.decide_tp_action(candidate_id,self.actor.id,PositionActionKind.SAVE_PROFIT_50),return_exceptions=True)
+        self.assertEqual(sum(isinstance(result,PositionActionKind) for result in results),1)
+        async with self.sessions() as session:
+            self.assertEqual(await session.scalar(select(__import__('sqlalchemy').func.count()).select_from(SignalPositionActionRecord)),1)
+            self.assertEqual(await session.scalar(select(__import__('sqlalchemy').func.count()).select_from(UpdatePublicationRequestRecord)),1)
 
     async def test_reconcile_only_open_active_signals_idempotently(self):
         async with self.sessions() as session,session.begin():

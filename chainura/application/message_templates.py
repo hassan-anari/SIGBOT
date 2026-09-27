@@ -23,6 +23,10 @@ BUILTIN_TEMPLATES = {
     DestinationMessageKind.BREAKEVEN: "⚖️ <b>سیگنال {symbol} در بریک‌ایون بسته شد</b>",
     DestinationMessageKind.SIGNAL_CANCELLED: "❌ <b>سیگنال {symbol} کنسل شد</b>",
     DestinationMessageKind.WARMUP: "🔥 <b>آماده باشید</b>\n\nبه‌زودی سیگنال جدید منتشر می‌شود.",
+    DestinationMessageKind.RISK_FREE_ACTIVATED: "⚖️ <b>ریسک فری فعال شد</b>\nحد ضرر به نقطه ورود منتقل شد.",
+    DestinationMessageKind.SAVE_PROFIT_50: "💰 <b>سیو سود</b>\n۵۰٪ از حجم باقی‌مانده پوزیشن بسته شد.",
+    DestinationMessageKind.FULL_CLOSE: "⛔ <b>پوزیشن به‌طور کامل بسته شد.</b>",
+    DestinationMessageKind.RISK_FREE_HIT: "⚖️ <b>ریسک فری فعال شد و باقی‌مانده پوزیشن در نقطه ورود بسته شد.</b>",
 }
 
 PLACEHOLDERS = {
@@ -34,6 +38,11 @@ PLACEHOLDERS = {
     DestinationMessageKind.SIGNAL_CANCELLED: frozenset(("symbol", "direction", "entry", "leverage", "private_tag")),
     DestinationMessageKind.WARMUP: frozenset(),
 }
+_ACTION_FIELDS=frozenset(("symbol","direction","entry","leverage","tp_index",
+    "execution_price","remaining_fraction","realized_weighted_roi","private_tag"))
+PLACEHOLDERS.update({kind:_ACTION_FIELDS for kind in (
+    DestinationMessageKind.RISK_FREE_ACTIVATED,DestinationMessageKind.SAVE_PROFIT_50,
+    DestinationMessageKind.FULL_CLOSE,DestinationMessageKind.RISK_FREE_HIT)})
 
 PHOTO_KINDS = frozenset((DestinationMessageKind.INITIAL_PHOTO_CAPTION, DestinationMessageKind.TP_HIT, DestinationMessageKind.BREAKEVEN))
 
@@ -160,6 +169,15 @@ def cancellation_context(signal, *, private):
         "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
         "private_tag":_private(private)}
 
+def position_action_context(signal,event,action,*,private):
+    return {"symbol":_safe(format_symbol(signal.canonical_symbol)),"direction":_direction(signal),
+        "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
+        "tp_index":_safe(format_symbol(str(event.tp_index or "—"))),
+        "execution_price":_safe(format_decimal(action.execution_price)),
+        "remaining_fraction":_safe(format_percentage(action.remaining_fraction_after*100)),
+        "realized_weighted_roi":_safe(format_percentage(action.realized_weighted_roi_after)),
+        "private_tag":_private(private)}
+
 
 SAMPLE_CONTEXT = {name: value for name, value in (
     ("symbol", "⁦BTCUSDT⁩"), ("direction", "لانگ"), ("entry", "⁦64137⁩"),
@@ -168,6 +186,7 @@ SAMPLE_CONTEXT = {name: value for name, value in (
     ("targets", "1️⃣ ⁦65000⁩\n2️⃣ ⁦66000⁩\n3️⃣ ⁦67000⁩"),
     ("stop_loss", "⁦63000⁩"), ("tp_index", "⁦2⁩"), ("tp_price", "⁦66000⁩"),
     ("execution_price", "⁦66000⁩"), ("roi", "⁦28.10%⁩"),
+    ("remaining_fraction", "⁦50%⁩"), ("realized_weighted_roi", "⁦10%⁩"),
 )}
 
 

@@ -16,6 +16,9 @@ class MonitorStage(str, Enum):
     COMPLETED_SL = "completed_sl"
     COMPLETED_BREAKEVEN = "completed_breakeven"
     COMPLETED_TARGETS = "completed_targets"
+    AWAITING_FINAL_TP_ACTION = "awaiting_final_tp_action"
+    COMPLETED_FULL_CLOSE = "completed_full_close"
+    COMPLETED_RISK_FREE = "completed_risk_free"
     DISABLED_LEGACY = "disabled_legacy"
 
 
@@ -23,6 +26,7 @@ class SignalEventKind(str, Enum):
     TP_HIT = "tp_hit"
     SL_HIT = "sl_hit"
     BREAKEVEN = "breakeven"
+    RISK_FREE_HIT = "risk_free_hit"
 
 
 class ResultKind(str, Enum):
@@ -100,7 +104,8 @@ def reached(direction: TradeDirection, current: Decimal, threshold: Decimal,
 def evaluate_price(*, direction: TradeDirection, entry: Decimal, leverage: int,
                    take_profits: tuple[Decimal, ...], stop_loss: Decimal,
                    next_tp_index: int, stage: MonitorStage,
-                   market: MarketDecision) -> tuple[EventDecision, ...]:
+                   market: MarketDecision, risk_free_active: bool = False,
+                   effective_stop_price: Decimal | None = None) -> tuple[EventDecision, ...]:
     """Return sequential newly traversed events for one coherent market snapshot."""
     if stage not in (MonitorStage.PRE_TP1, MonitorStage.POST_TP1):
         return ()
@@ -115,8 +120,12 @@ def evaluate_price(*, direction: TradeDirection, entry: Decimal, leverage: int,
         index += 1
     if events:
         return tuple(events)
-    if stage is MonitorStage.PRE_TP1 and reached(
-            direction, market.reference_price, stop_loss, target=False):
+    if risk_free_active:
+        threshold = effective_stop_price if effective_stop_price is not None else entry
+        if reached(direction, market.reference_price, threshold, target=False):
+            return (EventDecision(SignalEventKind.RISK_FREE_HIT, None, entry,
+                                  market.reference_price, entry, Decimal("0")),)
+    elif reached(direction, market.reference_price, stop_loss, target=False):
         return (EventDecision(SignalEventKind.SL_HIT, None, stop_loss,
                               market.reference_price, stop_loss,
                               leveraged_roi(direction, entry, stop_loss, leverage)),)

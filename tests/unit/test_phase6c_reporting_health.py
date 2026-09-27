@@ -34,6 +34,24 @@ class Phase6CReportingHealthTests(unittest.IsolatedAsyncioTestCase):
         now,sid=await self._seed(); svc=ReportingService(ReportingRepository(self.sessions)); flt=period_filter('today',now,sid)
         summary=await svc.summary(flt); self.assertEqual(summary.wins,1); self.assertEqual(summary.win_rate,Decimal('100')); self.assertEqual(summary.tp2_count,1); self.assertEqual(summary.confirmed_published_count,1); self.assertEqual(summary.total_roi,Decimal('200'))
         page=await svc.history(flt); self.assertEqual(page.items[0].highest_tp,2); self.assertTrue(page.items[0].confirmed_published)
+    async def test_final_tp_awaiting_action_is_reported_open_not_completed(self):
+        now,sid=await self._seed()
+        async with self.sessions() as s,s.begin():
+            state=(await s.scalars(select(SignalMonitorStateRecord))).one()
+            state.stage=MonitorStage.AWAITING_FINAL_TP_ACTION
+        svc=ReportingService(ReportingRepository(self.sessions));flt=period_filter('today',now,sid)
+        summary=await svc.summary(flt);page=await svc.history(flt)
+        self.assertEqual(summary.open_signals,1)
+        self.assertEqual(page.items[0].state,'Awaiting Final TP Action at TP2')
+        self.assertNotIn('Completed',page.items[0].state)
+        async with self.sessions() as s,s.begin():
+            state=(await s.scalars(select(SignalMonitorStateRecord))).one()
+            state.stage=MonitorStage.COMPLETED_TARGETS;state.completed_at=now
+        self.assertEqual((await svc.summary(flt)).open_signals,0)
+        async with self.sessions() as s,s.begin():
+            state=(await s.scalars(select(SignalMonitorStateRecord))).one()
+            state.stage=MonitorStage.COMPLETED_FULL_CLOSE
+        self.assertEqual((await svc.summary(flt)).open_signals,0)
     async def test_health_down_repeat_recovery_deduplicates(self):
         repo=HealthRepository(self.sessions); now=datetime(2026,8,4,0,tzinfo=timezone.utc)
         await repo.observe(HealthObservation('ourbit_prices',Exchange.OURBIT,ApiOperation.PRICES,ServiceHealthStatus.DOWN,now,'network'))

@@ -21,7 +21,9 @@ TRADE_LOCK_REASON = "destination_trade_lock_occupied"
 VISIBLE_INITIAL_STATUSES = (PublicationStatus.SENT, PublicationStatus.DELIVERY_UNKNOWN,
                             PublicationStatus.SENDING)
 TERMINAL_MONITOR_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_SL,
-                           MonitorStage.COMPLETED_BREAKEVEN)
+                           MonitorStage.COMPLETED_BREAKEVEN,
+                           MonitorStage.COMPLETED_FULL_CLOSE,
+                           MonitorStage.COMPLETED_RISK_FREE)
 
 
 class SqlAlchemyPublicationRepository:

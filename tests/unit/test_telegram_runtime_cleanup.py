@@ -253,6 +253,22 @@ class RuntimePhase6BCompositionTests(unittest.IsolatedAsyncioTestCase):
         for task in (runtime.renewal_task,runtime.polling_task):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):await task
+    async def test_position_action_worker_is_supervised_and_closed(self):
+        runtime=Runtime(settings());runtime.state=RuntimeState.RUNNING
+        runtime.renewal_task=asyncio.create_task(asyncio.sleep(30));runtime.polling_task=asyncio.create_task(asyncio.sleep(30))
+        async def fail():raise RuntimeError('boom')
+        runtime.position_action_publication_task=asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        with self.assertRaises(TelegramRuntimeError):await runtime._supervise()
+        self.assertTrue(runtime.shutdown_requested.is_set())
+        for task in (runtime.renewal_task,runtime.polling_task):
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):await task
+        class Worker:
+            def __init__(self):self.closed=False
+            async def close(self):self.closed=True
+        cleanup_runtime=Runtime(settings());worker=Worker();cleanup_runtime.position_action_publication_worker=worker
+        await cleanup_runtime.cleanup();self.assertTrue(worker.closed)
     def test_notification_wiring_is_not_nested_under_update_worker_condition(self):
         import inspect
         source=inspect.getsource(Runtime.start)

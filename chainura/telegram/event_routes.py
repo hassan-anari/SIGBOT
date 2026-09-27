@@ -2,10 +2,25 @@ from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from chainura.domain.monitoring import CandidateStatus
+from chainura.domain.position import PositionActionKind
 from chainura.telegram.presentation import texts
 from chainura.telegram.middlewares import CallbackAcknowledger
 
-def event_decision_keyboard(candidate_id:int)->InlineKeyboardMarkup:
+class TpActionCallback(CallbackData,prefix="p4b"):
+    action:str
+    candidate_id:int
+
+def tp_action_keyboard(candidate_id:int,actions)->InlineKeyboardMarkup:
+    labels={PositionActionKind.NORMAL_TP:texts.TP_ACTION_NORMAL_BUTTON,
+        PositionActionKind.RISK_FREE:texts.TP_ACTION_RISK_FREE_BUTTON,
+        PositionActionKind.SAVE_PROFIT_50:texts.TP_ACTION_SAVE50_BUTTON,
+        PositionActionKind.FULL_CLOSE:texts.TP_ACTION_FULL_CLOSE_BUTTON}
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=labels[action],
+        callback_data=TpActionCallback(action=action.value,candidate_id=candidate_id).pack())]
+        for action in actions])
+
+def event_decision_keyboard(candidate_id:int,actions=None)->InlineKeyboardMarkup:
+    if actions:return tp_action_keyboard(candidate_id,actions)
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=texts.EVENT_PUBLISH_BUTTON,callback_data=EventDecisionCallback(action="a",candidate_id=candidate_id).pack()),
         InlineKeyboardButton(text=texts.EVENT_DECLINE_BUTTON,callback_data=EventDecisionCallback(action="d",candidate_id=candidate_id).pack())]])
@@ -24,6 +39,17 @@ class BreakevenPromptCallback(CallbackData,prefix="b6"):
     action:str
     prompt_id:int
     cycle:int=0
+
+@router.callback_query(TpActionCallback.filter())
+async def tp_action_decision(callback:CallbackQuery,callback_data:TpActionCallback,actor,monitoring_service,callback_ack:CallbackAcknowledger):
+    await callback_ack.answer_once()
+    if actor.signalist is None:return
+    try:
+        await monitoring_service.decide_tp_action(callback_data.candidate_id,actor.signalist.id,
+            PositionActionKind(callback_data.action))
+        text=texts.TP_ACTION_APPLIED
+    except (ValueError,TypeError):text=texts.EVENT_DECISION_STALE
+    if callback.message is not None:await callback.message.answer(text)
 
 @router.callback_query(EventDecisionCallback.filter())
 async def event_decision(callback:CallbackQuery,callback_data:EventDecisionCallback,actor,monitoring_service,callback_ack:CallbackAcknowledger):

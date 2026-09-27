@@ -62,9 +62,14 @@ def event_text(kind, symbol, price, roi, tp_index=None, signal_id=None):
             f"\n\nقیمت خروج: {price_text}"
             f"\nنتیجه: {fmt_percent(Decimal('0'))}٪"
         )
+    elif kind is SignalEventKind.RISK_FREE_HIT:
+        head = (f"⚖️ <b>باقی‌مانده پوزیشن {symbol_text} در نقطه ورود بسته شد</b>"
+                f"\n\nقیمت خروج: {price_text}\nنتیجه رویداد: {fmt_percent(Decimal('0'))}٪")
     else:
         raise ValueError("unsupported event kind")
-    return f"شناسه معامله: {trade}\n" + head + "\n\nآیا این آپدیت برای مقصدها منتشر شود؟"
+    question=("اقدام پوزیشن را برای تارگت تأییدشده انتخاب کنید."
+              if kind is SignalEventKind.TP_HIT else "آیا این آپدیت برای مقصدها منتشر شود؟")
+    return f"شناسه معامله: {trade}\n" + head + "\n\n" + question
 
 def prompt_text(symbol,entry,current,signal_id=None):
     if signal_id is None:

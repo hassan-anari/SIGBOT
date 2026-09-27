@@ -63,7 +63,8 @@ class ReportingRepository:
                     cancelled+=1;continue
                 if sig.status is not SignalLifecycleStatus.ACTIVE:
                     continue
-                if st and st.stage in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1): open_count+=1
+                if st and st.stage in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1,
+                                       MonitorStage.AWAITING_FINAL_TP_ACTION): open_count+=1
                 if st and st.current_result_kind is ResultKind.WIN:
                     wins+=1; roi=Decimal(st.current_leveraged_roi); rois.append(roi); pos.append(roi)
                     if st.highest_tp_index==1: tp1+=1
@@ -99,7 +100,10 @@ class ReportingRepository:
                 elif sig.status is SignalLifecycleStatus.CANCELLED:
                     state="Cancelled"+(f" after TP{highest}" if highest else "");roi=None
                 elif not st or st.current_result_kind is None: state="Active without result"
-                elif st.current_result_kind is ResultKind.WIN: state=("Active Win" if st.stage is MonitorStage.POST_TP1 else "Completed Win")+f" at TP{highest}"
+                elif st.current_result_kind is ResultKind.WIN:
+                    state=("Awaiting Final TP Action" if st.stage is MonitorStage.AWAITING_FINAL_TP_ACTION
+                           else "Active Win" if st.stage is MonitorStage.POST_TP1
+                           else "Completed Win")+f" at TP{highest}"
                 elif st.current_result_kind is ResultKind.LOSS: state="Loss"
                 else: state="Breakeven"
                 items.append(TradeHistoryItem(sig.id,sl.display_name,sig.canonical_symbol,sig.direction.value,_aware_utc(sig.created_at).astimezone(TEHRAN),"Composite" if sig.mode is SignalMode.COMPOSITE else "Single Exchange",state,highest,roi,sig.id in published))
