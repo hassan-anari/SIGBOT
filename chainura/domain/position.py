@@ -42,10 +42,12 @@ class PositionState:
             raise InvalidPositionTransition("position values must be finite Decimals")
         if not ZERO <= self.remaining_fraction <= ONE:
             raise InvalidPositionTransition("remaining fraction must be between zero and one")
-        if self.is_closed != (self.remaining_fraction == ZERO and self.closed_at is not None):
+        valid_open = (not self.is_closed and self.remaining_fraction > ZERO
+                      and self.closed_at is None)
+        valid_closed = (self.is_closed and self.remaining_fraction == ZERO
+                        and self.closed_at is not None)
+        if not (valid_open or valid_closed):
             raise InvalidPositionTransition("open/closed position shape is inconsistent")
-        if not self.is_closed and self.remaining_fraction == ZERO:
-            raise InvalidPositionTransition("an open position must have a remaining fraction")
         if self.risk_free_active and (not self.risk_free_used or self.effective_stop_price is None or self.is_closed):
             raise InvalidPositionTransition("active Risk Free state is inconsistent")
 

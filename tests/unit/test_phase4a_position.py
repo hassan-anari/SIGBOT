@@ -3,7 +3,8 @@ from decimal import Decimal
 import unittest
 
 from chainura.domain.position import (InvalidPositionTransition,
-    PositionActionKind as Kind, apply_position_action, initial_position)
+    PositionActionKind as Kind, PositionState, apply_position_action,
+    initial_position)
 
 NOW=datetime(2026,8,15,tzinfo=timezone.utc)
 
@@ -61,3 +62,15 @@ class PositionReducerTests(unittest.TestCase):
         closed=self.apply(rf,Kind.RISK_FREE_HIT_CLOSE).state
         with self.assertRaises(InvalidPositionTransition):self.apply(closed,Kind.NORMAL_TP,"20")
 
+    def test_open_and_closed_shapes_are_exhaustive(self):
+        base=(Decimal("0"),False,False,False,Decimal("90"))
+        invalid=(
+            (Decimal("1"),False,NOW),  # open with closed_at
+            (Decimal("0"),True,None),  # closed without closed_at
+            (Decimal(".5"),True,NOW),  # closed with remaining volume
+            (Decimal("0"),False,None), # open without remaining volume
+        )
+        for remaining,is_closed,closed_at in invalid:
+            with self.subTest(remaining=remaining,is_closed=is_closed,closed_at=closed_at):
+                with self.assertRaises(InvalidPositionTransition):
+                    PositionState(remaining,*base,is_closed=is_closed,closed_at=closed_at)

@@ -6,7 +6,8 @@ from decimal import Decimal
 from sqlalchemy import select, text
 
 from chainura.application.monitoring import MonitoringService
-from chainura.application.position_accounting import ApplyPositionAction, PositionAccountingService
+from chainura.application.position_accounting import (ApplyPositionAction,
+    PositionAccountingService, StalePositionDecision)
 from chainura.application.signal_service import CreateSignalCommand, ReferencePriceResult, SignalService
 from chainura.domain.destination import Exchange
 from chainura.domain.monitoring import CandidateStatus, MonitorStage, SignalEventKind
@@ -52,15 +53,38 @@ class PositionAccountingIntegrationTests(unittest.IsolatedAsyncioTestCase):
             candidate=SignalUpdateCandidateRecord(signal_id=self.signal.id,event_id=event.id,signalist_id=self.actor.id,
                 status=CandidateStatus.AWAITING_DECISION,created_at=NOW,updated_at=NOW)
             session.add(candidate);await session.flush();event_id=event.id;candidate_id=candidate.id
-        command=ApplyPositionAction(self.signal.id,event_id,candidate_id,1,PositionActionKind.SAVE_PROFIT_50,
-            Decimal('110'),Decimal('20'),NOW)
+        command=ApplyPositionAction(self.signal.id,event_id,candidate_id,1,
+            PositionActionKind.SAVE_PROFIT_50,NOW)
         results=await asyncio.gather(PositionAccountingService(self.sessions).apply(command),
-            PositionAccountingService(self.sessions).apply(command))
-        self.assertEqual(sorted(results),[False,True])
+            PositionAccountingService(self.sessions).apply(command),return_exceptions=True)
+        self.assertEqual(sum(result is True for result in results),1)
+        self.assertTrue(any(result is False or isinstance(result,StalePositionDecision)
+                            for result in results))
         async with self.sessions() as session:
             state=await session.get(SignalPositionStateRecord,self.signal.id)
             self.assertEqual((state.remaining_fraction,state.realized_weighted_roi,state.version),(Decimal('.5'),Decimal('10'),2))
-            self.assertEqual(len((await session.scalars(select(SignalPositionActionRecord))).all()),1)
+            actions=(await session.scalars(select(SignalPositionActionRecord))).all()
+            self.assertEqual(len(actions),1)
+            self.assertEqual((actions[0].execution_price,actions[0].leveraged_roi),
+                (Decimal('110'),Decimal('20')))
+
+    async def test_risk_free_uses_persisted_signal_entry(self):
+        async with self.sessions() as session,session.begin():
+            event=SignalEventRecord(signal_id=self.signal.id,kind=SignalEventKind.TP_HIT,tp_index=1,
+                threshold_price=Decimal('111'),observed_reference_price=Decimal('112'),
+                roi_basis_price=Decimal('111'),leveraged_roi=Decimal('37.125'),
+                price_source_type=PriceSourceType.COMPOSITE,occurred_at=NOW,created_at=NOW)
+            session.add(event);await session.flush();event_id=event.id
+        # The command intentionally has no caller-supplied price, ROI, or stop.
+        applied=await PositionAccountingService(self.sessions).apply(ApplyPositionAction(
+            self.signal.id,event_id,None,1,PositionActionKind.RISK_FREE,NOW))
+        self.assertTrue(applied)
+        async with self.sessions() as session:
+            state=await session.get(SignalPositionStateRecord,self.signal.id)
+            action=(await session.scalars(select(SignalPositionActionRecord))).one()
+            self.assertEqual(state.effective_stop_price,Decimal('100'))
+            self.assertEqual((action.execution_price,action.leveraged_roi,
+                action.weighted_roi_delta),(Decimal('111'),Decimal('37.125'),Decimal('0')))
 
     async def test_reconcile_only_open_active_signals_idempotently(self):
         async with self.sessions() as session,session.begin():

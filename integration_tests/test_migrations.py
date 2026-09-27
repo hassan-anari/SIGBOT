@@ -7,7 +7,7 @@ from sqlalchemy import text
 from integration_tests.support import create_safe_engine, migrate, require_safe_test_database
 
 
-class MigrationTests(unittest.IsolatedAsyncioTestCase):
+class EmptyMigrationTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.safe = require_safe_test_database()
@@ -18,6 +18,84 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_upgrade_downgrade_and_reupgrade(self) -> None:
         migrate("head", self.safe)
+
+
+class MigrationTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.safe = require_safe_test_database()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.safe.cleanup()
+
+    async def test_phase4a_upgrade_constraints_downgrade_and_reupgrade(self) -> None:
+        safe=require_safe_test_database()
+        try:
+            migrate("20260814_01",safe)
+            engine=create_safe_engine(safe);now="2026-08-15T00:00:00+00:00"
+            async with engine.begin() as connection:
+                actor=(await connection.execute(text("INSERT INTO signalists(telegram_user_id,display_name,status,created_at,updated_at) VALUES(99001,'phase4a','active',:n,:n) RETURNING id"),{"n":now})).scalar_one()
+                destination=(await connection.execute(text("INSERT INTO destinations(internal_name,telegram_chat_id,destination_type,access_level,status,daily_limit,created_at,updated_at) VALUES('phase4a destination',-99001,'channel','private','active',5,:n,:n) RETURNING id"),{"n":now})).scalar_one()
+                signal=(await connection.execute(text("INSERT INTO signals(signalist_id,creation_token,mode,canonical_symbol,base_asset,quote_asset,direction,entry_price,leverage,stop_loss,reference_price,price_source_type,status,created_at,updated_at) VALUES(:a,'phase4a-migration','composite','BTCUSDT','BTC','USDT','long','100',10,'90','100','composite','active',:n,:n) RETURNING id"),{"a":actor,"n":now})).scalar_one()
+                await connection.execute(text("INSERT INTO signal_monitor_states(signal_id,stage,created_at,updated_at) VALUES(:s,'pre_tp1',:n,:n)"),{"s":signal,"n":now})
+                await connection.execute(text("INSERT INTO destination_publications(signal_id,destination_id,event_kind,selected_exchange,status,telegram_message_id,attempt_count,created_at,updated_at,sent_at) VALUES(:s,:d,'initial','ourbit','sent',991,1,:n,:n,:n)"),{"s":signal,"d":destination,"n":now})
+                await connection.execute(text("INSERT INTO destination_trade_locks(destination_id,canonical_symbol,signal_id,acquired_at,updated_at) VALUES(:d,'BTCUSDT',:s,:n,:n)"),{"d":destination,"s":signal,"n":now})
+                event=(await connection.execute(text("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(:s,'tp_hit',1,'110','111','110','100','composite',:n,:n) RETURNING id"),{"s":signal,"n":now})).scalar_one()
+                event2=(await connection.execute(text("INSERT INTO signal_events(signal_id,kind,tp_index,threshold_price,observed_reference_price,roi_basis_price,leveraged_roi,price_source_type,occurred_at,created_at) VALUES(:s,'tp_hit',2,'120','121','120','200','composite',:n,:n) RETURNING id"),{"s":signal,"n":now})).scalar_one()
+                candidate=(await connection.execute(text("INSERT INTO signal_update_candidates(signal_id,event_id,signalist_id,status,created_at,updated_at) VALUES(:s,:e,:a,'awaiting_decision',:n,:n) RETURNING id"),{"s":signal,"e":event,"a":actor,"n":now})).scalar_one()
+            await engine.dispose();migrate("20260815_01",safe);engine=create_safe_engine(safe)
+            async with engine.begin() as connection:
+                self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE id=:s"),{"s":signal}),1)
+                self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signal_monitor_states WHERE signal_id=:s"),{"s":signal}),1)
+                self.assertEqual(await connection.scalar(text("SELECT telegram_message_id FROM destination_publications WHERE signal_id=:s"),{"s":signal}),991)
+                self.assertEqual(await connection.scalar(text("SELECT count(*) FROM destination_trade_locks WHERE signal_id=:s"),{"s":signal}),1)
+                tables=set((await connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))).scalars())
+                self.assertTrue({"signal_position_states","signal_position_actions"} <= tables)
+                indexes=set((await connection.execute(text("SELECT name FROM sqlite_master WHERE type='index'"))).scalars())
+                self.assertTrue({"ix_signal_position_states_open","ix_signal_position_actions_signal_created"} <= indexes)
+                await connection.execute(text("INSERT INTO signal_position_states(signal_id,remaining_fraction,realized_weighted_roi,risk_free_used,risk_free_active,save_profit_50_used,effective_stop_price,is_closed,version,created_at,updated_at) VALUES(:s,'1','0',0,0,0,'90',0,1,:n,:n)"),{"s":signal,"n":now})
+                await connection.execute(text("INSERT INTO signal_position_actions(signal_id,event_id,candidate_id,action_kind,remaining_fraction_before,closed_fraction,remaining_fraction_after,execution_price,leveraged_roi,weighted_roi_delta,realized_weighted_roi_after,created_at) VALUES(:s,:e,:c,'normal_tp','1','0','1','110','100','0','0',:n)"),{"s":signal,"e":event,"c":candidate,"n":now})
+
+            state_base="INSERT INTO signal_position_states(signal_id,remaining_fraction,realized_weighted_roi,risk_free_used,risk_free_active,save_profit_50_used,effective_stop_price,is_closed,closed_at,version,created_at,updated_at) VALUES(:s,:r,'0',0,0,0,'90',:closed,:closed_at,:version,:n,:n)"
+            invalid_states=(
+                {"s":signal,"r":"1","closed":0,"closed_at":None,"version":1},
+                {"s":999999,"r":"1","closed":0,"closed_at":None,"version":1},
+                {"s":signal,"r":"-0.1","closed":0,"closed_at":None,"version":1},
+                {"s":signal,"r":"1.1","closed":0,"closed_at":None,"version":1},
+                {"s":signal,"r":"1","closed":0,"closed_at":now,"version":1},
+                {"s":signal,"r":"0.5","closed":1,"closed_at":now,"version":1},
+                {"s":signal,"r":"0","closed":1,"closed_at":None,"version":1},
+                {"s":signal,"r":"1","closed":0,"closed_at":None,"version":0},)
+            for params in invalid_states:
+                async with engine.connect() as connection:
+                    transaction=await connection.begin()
+                    with self.assertRaises(Exception):await connection.execute(text(state_base),dict(params,n=now))
+                    await transaction.rollback()
+
+            action_base="INSERT INTO signal_position_actions(signal_id,event_id,candidate_id,action_kind,remaining_fraction_before,closed_fraction,remaining_fraction_after,execution_price,leveraged_roi,weighted_roi_delta,realized_weighted_roi_after,created_at) VALUES(:s,:e,:c,:kind,:before,:closed,:after,'120','200',:delta,:realized,:n)"
+            invalid_actions=(
+                {"s":999999,"e":event2,"c":None,"kind":"full_close","before":"1","closed":"1","after":"0","delta":"200","realized":"200"},
+                {"s":signal,"e":999999,"c":None,"kind":"full_close","before":"1","closed":"1","after":"0","delta":"200","realized":"200"},
+                {"s":signal,"e":event2,"c":999999,"kind":"full_close","before":"1","closed":"1","after":"0","delta":"200","realized":"200"},
+                {"s":signal,"e":event2,"c":candidate,"kind":"full_close","before":"1","closed":"1","after":"0","delta":"200","realized":"200"},
+                {"s":signal,"e":event,"c":None,"kind":"normal_tp","before":"1","closed":"0","after":"1","delta":"0","realized":"0"},
+                {"s":signal,"e":event2,"c":None,"kind":"save_profit_50","before":"1","closed":"0.5","after":"0.6","delta":"100","realized":"100"},)
+            for params in invalid_actions:
+                async with engine.connect() as connection:
+                    transaction=await connection.begin()
+                    with self.assertRaises(Exception):await connection.execute(text(action_base),dict(params,n=now))
+                    await transaction.rollback()
+            await engine.dispose();migrate("-1",safe);engine=create_safe_engine(safe)
+            async with engine.connect() as connection:
+                tables=set((await connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))).scalars())
+                self.assertNotIn("signal_position_states",tables);self.assertNotIn("signal_position_actions",tables)
+                self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signals WHERE id=:s"),{"s":signal}),1)
+                self.assertEqual(await connection.scalar(text("SELECT count(*) FROM destination_trade_locks WHERE signal_id=:s"),{"s":signal}),1)
+                self.assertEqual(await connection.scalar(text("SELECT telegram_message_id FROM destination_publications WHERE signal_id=:s"),{"s":signal}),991)
+            await engine.dispose();migrate("head",safe)
+        finally:
+            safe.cleanup()
 
     async def test_phase3_trade_lock_migration_preserves_existing_data(self) -> None:
         migrate("base", self.safe);migrate("20260813_02", self.safe)

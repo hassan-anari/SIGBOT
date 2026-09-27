@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
-
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -12,7 +10,7 @@ from chainura.domain.position import (PositionActionKind, PositionState,
     apply_position_action)
 from chainura.persistence.models import (SignalEventRecord,
     SignalPositionActionRecord, SignalPositionStateRecord,
-    SignalUpdateCandidateRecord)
+    SignalRecord, SignalUpdateCandidateRecord)
 
 
 class StalePositionDecision(RuntimeError):
@@ -26,10 +24,7 @@ class ApplyPositionAction:
     candidate_id: int | None
     expected_version: int
     action_kind: PositionActionKind
-    execution_price: Decimal
-    leveraged_roi: Decimal
     occurred_at: datetime
-    entry_price: Decimal | None = None
 
 
 class PositionAccountingService:
@@ -49,9 +44,10 @@ class PositionAccountingService:
                     if duplicate is not None:
                         return False
                     event = await session.get(SignalEventRecord, command.event_id)
+                    signal = await session.get(SignalRecord, command.signal_id)
                     candidate = (await session.get(SignalUpdateCandidateRecord, command.candidate_id)
                                  if command.candidate_id is not None else None)
-                    if event is None or event.signal_id != command.signal_id or (
+                    if signal is None or event is None or event.signal_id != command.signal_id or (
                             candidate is not None and (candidate.signal_id != command.signal_id
                                                        or candidate.event_id != command.event_id)):
                         raise ValueError("event/candidate does not belong to the signal")
@@ -62,7 +58,7 @@ class PositionAccountingService:
                         row.risk_free_used,row.risk_free_active,row.save_profit_50_used,
                         row.effective_stop_price,row.is_closed,row.closed_at)
                     transition = apply_position_action(current,command.action_kind,
-                        leveraged_roi=command.leveraged_roi,entry_price=command.entry_price,
+                        leveraged_roi=event.leveraged_roi,entry_price=signal.entry_price,
                         occurred_at=command.occurred_at)
                     changed=(await session.execute(update(SignalPositionStateRecord).where(
                         SignalPositionStateRecord.signal_id==command.signal_id,
@@ -83,7 +79,7 @@ class PositionAccountingService:
                         remaining_fraction_before=transition.remaining_fraction_before,
                         closed_fraction=transition.closed_fraction,
                         remaining_fraction_after=transition.state.remaining_fraction,
-                        execution_price=command.execution_price,
+                        execution_price=event.roi_basis_price,
                         leveraged_roi=transition.leveraged_roi,
                         weighted_roi_delta=transition.weighted_roi_delta,
                         realized_weighted_roi_after=transition.state.realized_weighted_roi,
