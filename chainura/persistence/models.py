@@ -469,7 +469,7 @@ class SignalTemplateRecord(Base):
       ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE",name="fk_signal_templates_destination_id_destinations"),
       CheckConstraint("trim(storage_key) <> '' AND substr(storage_key,1,1) <> '/' AND instr(storage_key,'..') = 0",name="ck_signal_templates_storage_key_safe"),
       CheckConstraint("width > 0 AND height > 0",name="ck_signal_templates_dimensions_positive"),
-      CheckConstraint("(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005)",name="ck_signal_templates_exchange_dimensions"),
+      CheckConstraint("(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005) OR (exchange='weex' AND width=1000 AND height=1000)",name="ck_signal_templates_exchange_dimensions"),
       CheckConstraint("content_type = 'image/png'",name="ck_signal_templates_content_type_png"),
       Index("uq_signal_templates_default_exchange","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NULL")),
       Index("uq_signal_templates_destination_exchange","destination_id","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NOT NULL")),)
@@ -523,7 +523,7 @@ class DestinationPublicationRecord(Base):
         ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_destination_publications_destination_id_destinations"),
         UniqueConstraint("signal_id", "destination_id", "event_kind", name="uq_destination_publications_signal_destination_event"),
         CheckConstraint("event_kind = 'initial'", name="ck_destination_publications_event_initial"),
-        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')", name="ck_destination_publications_exchange"),
+        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank','weex')", name="ck_destination_publications_exchange"),
         CheckConstraint("attempt_count >= 0", name="ck_destination_publications_attempt_nonnegative"),
         CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_destination_publications_message_positive"),
         CheckConstraint("(origin = 'market' AND reply_to_message_id IS NULL) OR "
@@ -761,7 +761,7 @@ class DestinationUpdatePublicationRecord(Base):
         ForeignKeyConstraint(["event_id","selected_exchange"], ["signal_event_source_prices.event_id","signal_event_source_prices.exchange"], ondelete="CASCADE", name="fk_destination_update_publications_event_source_price"),
         UniqueConstraint("candidate_id", "destination_id", name="uq_destination_update_publications_candidate_destination"),
         UniqueConstraint("event_id", "destination_id", name="uq_destination_update_publications_event_destination"),
-        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank')", name="ck_destination_update_publications_exchange"),
+        CheckConstraint("selected_exchange IN ('ourbit','toobit','lbank','weex')", name="ck_destination_update_publications_exchange"),
         CheckConstraint("attempt_count >= 0", name="ck_destination_update_publications_attempt_nonnegative"),
         CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_destination_update_publications_message_positive"),
         CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0", name="ck_destination_update_publications_reply_positive"),
@@ -808,7 +808,7 @@ ADMIN_ALERT_STATUS_ENUM=_enum(AdminAlertStatus,"admin_alert_status")
 
 class ServiceHealthRecord(Base):
     __tablename__="service_health_states"
-    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_service_health_key"),CheckConstraint("consecutive_successes >= 0 AND consecutive_failures >= 0",name="ck_service_health_counters"),ForeignKeyConstraint(["current_incident_id"],["outage_incidents.id"],name="fk_service_health_states_current_incident_id_incidents"),CheckConstraint("(status='down' AND current_incident_id IS NOT NULL AND unhealthy_since IS NOT NULL) OR (status<>'down' AND current_incident_id IS NULL)",name="ck_service_health_current_incident"),Index("ix_service_health_status_repeat","status","next_repeat_at"))
+    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog','weex_prices','weex_catalog')",name="ck_service_health_key"),CheckConstraint("consecutive_successes >= 0 AND consecutive_failures >= 0",name="ck_service_health_counters"),ForeignKeyConstraint(["current_incident_id"],["outage_incidents.id"],name="fk_service_health_states_current_incident_id_incidents"),CheckConstraint("(status='down' AND current_incident_id IS NOT NULL AND unhealthy_since IS NOT NULL) OR (status<>'down' AND current_incident_id IS NULL)",name="ck_service_health_current_incident"),Index("ix_service_health_status_repeat","status","next_repeat_at"))
     service_key:Mapped[str]=mapped_column(Text,primary_key=True)
     exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False)
     operation:Mapped[ApiOperation]=mapped_column(API_OPERATION_ENUM,nullable=False)
@@ -821,7 +821,7 @@ class ServiceHealthRecord(Base):
 
 class OutageIncidentRecord(Base):
     __tablename__="outage_incidents"
-    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog')",name="ck_outage_incidents_key"),Index("uq_outage_incidents_one_open","service_key",unique=True,sqlite_where=__import__('sqlalchemy').text("recovered_at IS NULL")),Index("ix_outage_incidents_service_started","service_key","started_at"))
+    __table_args__=(CheckConstraint("service_key IN ('ourbit_prices','ourbit_catalog','toobit_prices','toobit_catalog','lbank_prices','lbank_catalog','weex_prices','weex_catalog')",name="ck_outage_incidents_key"),Index("uq_outage_incidents_one_open","service_key",unique=True,sqlite_where=__import__('sqlalchemy').text("recovered_at IS NULL")),Index("ix_outage_incidents_service_started","service_key","started_at"))
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);service_key:Mapped[str]=mapped_column(Text,nullable=False)
     exchange:Mapped[Exchange]=mapped_column(DESTINATION_EXCHANGE_ENUM,nullable=False);operation:Mapped[ApiOperation]=mapped_column(API_OPERATION_ENUM,nullable=False)
     started_at:Mapped[datetime]=mapped_column(UTCDateTime(),nullable=False);recovered_at:Mapped[datetime|None]=mapped_column(UTCDateTime())

@@ -208,9 +208,9 @@ class Phase6CHealthSeedTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as c: await c.run_sync(Base.metadata.create_all)
         self.sessions=async_sessionmaker(self.engine,expire_on_commit=False)
     async def asyncTearDown(self): await self.engine.dispose()
-    async def test_seed_materializes_all_six_unknown_services(self):
+    async def test_seed_materializes_all_eight_unknown_services(self):
         repo=HealthRepository(self.sessions); await repo.seed_unknown_services(datetime(2026,8,4,tzinfo=timezone.utc))
-        rows=await repo.list_health(); self.assertEqual(len(rows),6); self.assertEqual({r.status for r in rows},{ServiceHealthStatus.UNKNOWN})
+        rows=await repo.list_health(); self.assertEqual(len(rows),8); self.assertEqual({r.status for r in rows},{ServiceHealthStatus.UNKNOWN})
 
 class Phase6CCustomReportStateTests(unittest.TestCase):
     def test_custom_refresh_reuses_all_scope_range(self):

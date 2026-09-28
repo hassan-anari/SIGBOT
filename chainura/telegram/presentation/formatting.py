@@ -81,7 +81,7 @@ def format_datetime(value: datetime | None, template: str) -> str | None:
     )
 
 
-EXCHANGE_NAMES = {"ourbit": "Ourbit", "toobit": "Toobit", "lbank": "LBank"}
+EXCHANGE_NAMES = {"ourbit": "Ourbit", "toobit": "Toobit", "lbank": "LBank", "weex": "WEEX"}
 
 
 def format_priority(values, heading: str, empty_placeholder: str) -> str:

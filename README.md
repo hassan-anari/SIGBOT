@@ -1,5 +1,22 @@
 # Haz Market Data — REST Probe + File Logging
 
+## WEEX futures support
+
+WEEX is the fourth futures market. Chainura uses only Contract API V3 at
+`api-contract.weex.com`: catalog discovery intersects
+`/capi/v3/market/exchangeInfo` and `/capi/v3/market/apiTradingSymbols`, and each
+normal poll makes one bulk `/capi/v3/market/premiumIndex` request using
+`markPrice`. There is no per-Signal market request.
+
+Shared eligibility remains the Ourbit/Toobit/LBank core intersection. WEEX may
+enrich newly created Composite Signals with a fourth durable mapping and price;
+historical three-source mappings are unchanged. WEEX is also supported for
+single-exchange Market and Limit Signals, destination priorities, publication,
+monitoring, templates, rendering, diagnostics, and durable health status.
+
+The centralized 1000×1000 WEEX renderer is a deterministic functional first
+pass. Final visual positioning is intentionally tuned through Renderer Lab.
+
 ## Production Upgrade Compatibility
 
 The Phase 1–4 deployment gate preserves open `PRE_TP1` and `POST_TP1` trades

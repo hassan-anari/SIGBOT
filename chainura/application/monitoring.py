@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from chainura.domain.monitoring import *
 from chainura.domain.signal import SignalMode, SignalLifecycleStatus
+from chainura.domain.destination import Exchange
 from chainura.domain.signalist import SignalistStatus
 LOGGER=logging.getLogger("chainura.monitoring")
 
@@ -89,7 +90,8 @@ class MonitoringService:
             for row in rows:
                 maps=(await s.scalars(select(SignalExchangeSymbolRecord).where(SignalExchangeSymbolRecord.signal_id==row.id))).all()
                 prices=(await s.scalars(select(SignalInitialPriceRecord).where(SignalInitialPriceRecord.signal_id==row.id))).all()
-                valid=(row.mode is SignalMode.COMPOSITE and len(maps)==3 and len(prices)>=2) or (row.mode is SignalMode.SINGLE_EXCHANGE and len(maps)==len(prices)==1)
+                mapped={item.exchange for item in maps}
+                valid=(row.mode is SignalMode.COMPOSITE and {Exchange.OURBIT,Exchange.TOOBIT,Exchange.LBANK}.issubset(mapped) and len(prices)>=2) or (row.mode is SignalMode.SINGLE_EXCHANGE and len(maps)==len(prices)==1)
                 s.add(SignalMonitorStateRecord(signal_id=row.id,stage=MonitorStage.PRE_TP1 if valid else MonitorStage.DISABLED_LEGACY,disabled_reason=None if valid else "missing_phase5_snapshot",created_at=now,updated_at=now))
             # Only genuinely open ACTIVE monitor states receive the new accounting
             # foundation. Historical terminal rows are deliberately untouched.

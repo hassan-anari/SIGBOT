@@ -207,9 +207,9 @@ class Phase6FinalAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await s.scalar(select(func.count()).select_from(AdminAlertRecord).where(AdminAlertRecord.kind==AdminAlertKind.RECOVERY)),1)
     async def test_E_total_outage_restart_no_duplicate_initial_or_burst(self):
         for ex in Exchange: await self.health.observe(HealthObservation(f'{ex.value}_prices',ex,ApiOperation.PRICES,ServiceHealthStatus.DOWN,self.now,'network'))
-        self.assertEqual(await self.health.enqueue_due_repeats(self.now+timedelta(minutes=5)),3)
+        self.assertEqual(await self.health.enqueue_due_repeats(self.now+timedelta(minutes=5)),4)
         self.assertEqual(await self.health.enqueue_due_repeats(self.now+timedelta(minutes=5,seconds=1)),0)
-        async with self.sessions() as s: self.assertEqual(await s.scalar(select(func.count()).select_from(OutageIncidentRecord)),3)
+        async with self.sessions() as s: self.assertEqual(await s.scalar(select(func.count()).select_from(OutageIncidentRecord)),4)
     async def test_F_catalog_outage_independent_and_recovery(self):
         await self.health.observe(HealthObservation('toobit_catalog',Exchange.TOOBIT,ApiOperation.CATALOG,ServiceHealthStatus.DOWN,self.now,'network'))
         await self.health.observe(HealthObservation('toobit_prices',Exchange.TOOBIT,ApiOperation.PRICES,ServiceHealthStatus.HEALTHY,self.now,None))

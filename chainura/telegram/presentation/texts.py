@@ -160,6 +160,7 @@ PRICE_SOURCE_LABELS={
     "ourbit_only":"فقط Ourbit",
     "toobit_only":"فقط Toobit",
     "lbank_only":"فقط LBank",
+    "weex_only":"فقط WEEX",
 }
 
 def signal_search_title(page, pages):
@@ -295,7 +296,7 @@ REPORT_ASK_END="تاریخ پایان را به میلادی و با قالب YY
 REPORT_INVALID_RANGE="بازه تاریخ معتبر نیست؛ تاریخ‌ها را با قالب YYYY-MM-DD و به‌ترتیب درست وارد کنید."
 REPORT_HISTORY="تاریخچه معاملات"; REPORT_REFRESH="تازه‌سازی"; REPORT_YES="بله"; REPORT_NO="خیر"; REPORT_DASH="—"
 HEALTH_STATUS_TITLE="<b>🛡 وضعیت APIها</b>"
-HEALTH_LABELS={"ourbit_prices":"قیمت Ourbit","ourbit_catalog":"فهرست قراردادهای Ourbit","toobit_prices":"قیمت Toobit","toobit_catalog":"فهرست قراردادهای Toobit","lbank_prices":"قیمت LBank","lbank_catalog":"فهرست قراردادهای LBank"}
+HEALTH_LABELS={"ourbit_prices":"قیمت Ourbit","ourbit_catalog":"فهرست قراردادهای Ourbit","toobit_prices":"قیمت Toobit","toobit_catalog":"فهرست قراردادهای Toobit","lbank_prices":"قیمت LBank","lbank_catalog":"فهرست قراردادهای LBank","weex_prices":"قیمت WEEX","weex_catalog":"فهرست قراردادهای WEEX"}
 HEALTH_STATUS_LABELS={"unknown":"نامشخص","healthy":"سالم","degraded":"محدود","down":"قطع"}
 VALID_PRICE_UNAVAILABLE="در حال حاضر دریافت قیمت معتبر امکان‌پذیر نیست.\nکمی بعد دوباره تلاش کنید."
 def _pct(value): return REPORT_DASH if value is None else persian_digits(f"{value.quantize(__import__('decimal').Decimal('0.01'))}%")

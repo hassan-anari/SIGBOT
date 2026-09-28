@@ -20,7 +20,7 @@ def parse_callback(value: str | None) -> CallbackAction | None:
 
 
 FILTER_CODES = frozenset({"a", "v", "i", "r"})
-EXCHANGE_CODES = frozenset({"o", "t", "l"})
+EXCHANGE_CODES = frozenset({"o", "t", "l", "w"})
 FLOW_CODES = frozenset({"slc", "dsc", "dse", "dsp"})
 
 

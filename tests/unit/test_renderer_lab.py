@@ -167,6 +167,7 @@ class RendererLabTests(unittest.TestCase):
             Exchange.OURBIT: TimeDisplayStrategy.ELAPSED,
             Exchange.TOOBIT: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
             Exchange.LBANK: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
+            Exchange.WEEX: TimeDisplayStrategy.TEHRAN_WALL_CLOCK,
         })
         values = {exchange: _values(fixture("composite-long", exchange))["time"] for exchange in Exchange}
         self.assertEqual(values[Exchange.OURBIT], "00H 00M")
@@ -197,7 +198,7 @@ class RendererLabTests(unittest.TestCase):
 
     def test_fixture_and_layout_immutability(self):
         self.assertEqual(fixture("small-price",Exchange.OURBIT),fixture("small-price",Exchange.OURBIT))
-        self.assertEqual(len(FIXTURES),25)
+        self.assertEqual(len(FIXTURES),31)
         with self.assertRaises(FrozenInstanceError): LAYOUT.exchange="changed"
 
     def test_no_clock_or_production_registration(self):

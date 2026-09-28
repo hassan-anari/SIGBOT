@@ -43,6 +43,14 @@ class PriceSourceType(str, Enum):
     OURBIT_ONLY = "ourbit_only"
     TOOBIT_ONLY = "toobit_only"
     LBANK_ONLY = "lbank_only"
+    WEEX_ONLY = "weex_only"
+
+
+def price_source_for_exchange(exchange: Exchange) -> PriceSourceType:
+    """Return the stable persisted single-exchange source for an exchange."""
+    if not isinstance(exchange, Exchange):
+        raise InvalidSignalInputError("exchange is invalid")
+    return PriceSourceType(f"{exchange.value}_only")
 
 
 def parse_price(value: object) -> Decimal:
@@ -213,8 +221,7 @@ class Signal:
             if self.selected_exchange is not None or self.price_source_type is not PriceSourceType.COMPOSITE:
                 raise InvalidSignalInputError("composite signal invariants are invalid")
         else:
-            expected = {Exchange.OURBIT: PriceSourceType.OURBIT_ONLY, Exchange.TOOBIT: PriceSourceType.TOOBIT_ONLY, Exchange.LBANK: PriceSourceType.LBANK_ONLY}
-            if self.selected_exchange not in expected or self.price_source_type is not expected[self.selected_exchange] or exchanges != [self.selected_exchange]:
+            if self.selected_exchange is None or self.price_source_type is not price_source_for_exchange(self.selected_exchange) or exchanges != [self.selected_exchange]:
                 raise InvalidSignalInputError("single-exchange signal invariants are invalid")
         object.__setattr__(self, "created_at", _utc(self.created_at, "created_at"))
         object.__setattr__(self, "updated_at", _utc(self.updated_at, "updated_at"))

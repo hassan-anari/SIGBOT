@@ -253,12 +253,13 @@ class SignalService:
             raise InconsistentReferencePriceError("reference result is inconsistent")
         if request.mode is SignalMode.COMPOSITE:
             if (request.selected_exchange is not None or result.price_source_type is not PriceSourceType.COMPOSITE
-                or len(prices)<2 or set(mapped)!=set(Exchange) or not set(exchanges).issubset(set(mapped))):
+                or len(prices)<2 or not {Exchange.OURBIT,Exchange.TOOBIT,Exchange.LBANK}.issubset(set(mapped))
+                or not set(mapped).issubset(set(Exchange)) or not set(exchanges).issubset(set(mapped))):
                 raise InconsistentReferencePriceError("composite reference result is inconsistent")
         else:
-            expected={Exchange.OURBIT:PriceSourceType.OURBIT_ONLY,Exchange.TOOBIT:PriceSourceType.TOOBIT_ONLY,Exchange.LBANK:PriceSourceType.LBANK_ONLY}
             selected=request.selected_exchange
-            if (selected not in expected or result.price_source_type is not expected[selected]
+            from chainura.domain.signal import price_source_for_exchange
+            if (selected is None or result.price_source_type is not price_source_for_exchange(selected)
                 or exchanges!=(selected,) or mapped!=(selected,) or request.native_symbol!=mappings[0][1]):
                 raise InconsistentReferencePriceError("single-exchange reference result is inconsistent")
 

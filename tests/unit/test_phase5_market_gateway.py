@@ -95,7 +95,7 @@ class ProductionLikeAdapter:
 def work(signal_id,symbol='BTCUSDT'):
  return SimpleNamespace(signal_id=signal_id,mode=SignalMode.COMPOSITE,selected_exchange=None,
   canonical_symbol=symbol,price_source_type=PriceSourceType.COMPOSITE,
-  exchange_symbols=tuple((exchange,{'ourbit':'BTCUSDT','toobit':'BTCUSDT','lbank':'btc_usdt'}[exchange.value]) for exchange in Exchange))
+  exchange_symbols=tuple((exchange,{'ourbit':'BTCUSDT','toobit':'BTCUSDT','lbank':'btc_usdt'}[exchange.value]) for exchange in (Exchange.OURBIT,Exchange.TOOBIT,Exchange.LBANK)))
 
 class RestartMarketTests(unittest.IsolatedAsyncioTestCase):
  def probe(self,sequences=None):

@@ -1,5 +1,15 @@
 # Phase 5B-1 local Renderer Lab
 
+WEEX uses the same preview/watch workflow as the other exchanges. Its centralized
+initial image specification is 1000×1000 PNG and its declarative layout is
+`chainura/rendering/layouts/weex.py`. This is a functional first-pass schema;
+Renderer Lab is the supported surface for final coordinate and typography tuning.
+
+```bash
+python -m chainura.rendering.lab preview --exchange weex --template .renderer_lab/templates/weex.png --output .renderer_lab/output/weex.png --fixture weex-long-neutral
+python -m chainura.rendering.lab watch --exchange weex --template .renderer_lab/templates/weex.png --output .renderer_lab/output/weex.png --fixture weex-long-neutral
+```
+
 Renderer Lab debug overlays and value overrides remain preview-only. Production
 uses the shared non-Lab core and exposes neither option.
 

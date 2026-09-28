@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from exchanges import LBankAdapter, OurbitAdapter, ToobitAdapter
+from exchanges import LBankAdapter, OurbitAdapter, ToobitAdapter, WEEXAdapter
 from logging_config import get_logger
 from models import (
     ExchangeHealth,
@@ -20,9 +20,44 @@ from models import (
 )
 
 LOGGER = get_logger("market")
-EXCHANGES = ("ourbit", "toobit", "lbank")
+COMPOSITE_CORE_EXCHANGES = ("ourbit", "toobit", "lbank")
+EXCHANGES = COMPOSITE_CORE_EXCHANGES + ("weex",)
 READY_STATUSES = {"healthy", "degraded"}
 DEFAULT_MAX_PRICE_AGE = timedelta(seconds=15)
+
+
+def composite_price_analysis(prices: dict[str, Decimal], max_spread_percent: Decimal) -> dict[str, Any]:
+    """Apply the single N-source policy used by creation and monitoring."""
+    result = {"status":"insufficient","reference_price":None,"method":None,
+              "outlier_source":None,"spread_percent":None,"reason":None}
+    def spread(a: Decimal,b: Decimal) -> Decimal:
+        low,high=min(a,b),max(a,b); return ((high-low)/low)*Decimal("100")
+    if len(prices)<2: result["reason"]="fewer_than_two_prices"; return result
+    ordered=sorted(prices.items(),key=lambda item:(item[1],item[0]))
+    if len(ordered)==2:
+        value=spread(ordered[0][1],ordered[1][1]); result["spread_percent"]=value
+        if value<=max_spread_percent: result.update(status="degraded",reference_price=sum(prices.values())/Decimal("2"),method="average_2")
+        else: result.update(status="unresolved",reason="two_sources_disagree")
+        return result
+    if len(ordered)==4:
+        overall=spread(ordered[0][1],ordered[-1][1]); result["spread_percent"]=overall
+        if overall<=max_spread_percent:
+            result.update(status="healthy",reference_price=(ordered[1][1]+ordered[2][1])/Decimal("2"),method="middle_average_4"); return result
+        clusters=[]
+        for omitted in range(4):
+            cluster=[item for i,item in enumerate(ordered) if i!=omitted]
+            if spread(cluster[0][1],cluster[-1][1])<=max_spread_percent: clusters.append((omitted,cluster))
+        if len(clusters)==1:
+            omitted,cluster=clusters[0]; result.update(status="degraded",reference_price=cluster[1][1],method="median_3_of_4",outlier_source=ordered[omitted][0],reason="one_outlier")
+        else: result.update(status="unresolved",reason="conflicting_clusters")
+        return result
+    low_exchange,low=ordered[0]; high_exchange,high=ordered[-1]; mid=ordered[len(ordered)//2][1]
+    overall=spread(low,high); result.update(spread_percent=overall,reference_price=mid,method="median_3")
+    if overall<=max_spread_percent: result["status"]="healthy"
+    elif spread(low,mid)<=max_spread_percent<spread(mid,high): result.update(status="degraded",outlier_source=high_exchange,reason="high_outlier")
+    elif spread(mid,high)<=max_spread_percent<spread(low,mid): result.update(status="degraded",outlier_source=low_exchange,reason="low_outlier")
+    else: result.update(status="unresolved",reference_price=None,method=None,reason="no_agreeing_pair")
+    return result
 
 
 def utc_now() -> datetime:
@@ -41,7 +76,8 @@ class MarketProbe:
         self.ourbit = OurbitAdapter(poll_seconds=poll_seconds)
         self.toobit = ToobitAdapter(poll_seconds=poll_seconds)
         self.lbank = LBankAdapter(poll_seconds=poll_seconds)
-        self.adapters = [self.ourbit, self.toobit, self.lbank]
+        self.weex = WEEXAdapter(poll_seconds=poll_seconds)
+        self.adapters = [self.ourbit, self.toobit, self.lbank, self.weex]
         self.max_spread_percent = max_spread_percent
         self.max_price_age = max_price_age
         self.clock = clock
@@ -72,7 +108,7 @@ class MarketProbe:
                 errors.append(f"{adapter.name}: {result}")
             else:
                 self.instruments[adapter.name] = result
-        if errors:
+        if any(error.split(":", 1)[0] in COMPOSITE_CORE_EXCHANGES for error in errors):
             message = "Instrument discovery failed: " + " | ".join(errors)
             LOGGER.error(message)
             raise RuntimeError(message)
@@ -80,10 +116,8 @@ class MarketProbe:
         self._exclude_canonical_collisions()
         self._filter_lbank_numeric_contracts()
         self._rebuild_symbol_maps()
-        symbol_sets = [
-            {item.canonical_symbol for item in self.instruments[adapter.name]}
-            for adapter in self.adapters
-        ]
+        symbol_sets = [{item.canonical_symbol for item in self.instruments[name]}
+                       for name in COMPOSITE_CORE_EXCHANGES]
         self.common_symbols = set.intersection(*symbol_sets)
         LOGGER.info(
             "discovery completed ourbit=%s toobit=%s lbank=%s common=%s "
@@ -283,7 +317,10 @@ class MarketProbe:
         prices: dict[str, Decimal] = {}
         missing: list[str] = []
         stale: list[dict[str, Any]] = []
-        for exchange in EXCHANGES:
+        considered = COMPOSITE_CORE_EXCHANGES + tuple(
+            exchange for exchange in EXCHANGES if exchange not in COMPOSITE_CORE_EXCHANGES
+            and symbol in self._mapping_for(exchange))
+        for exchange in considered:
             tick = self.latest.get((symbol, exchange))
             if tick is None:
                 missing.append(exchange)
@@ -306,31 +343,11 @@ class MarketProbe:
         if len(prices) < 2:
             result["reason"] = "fewer_than_two_prices"
             return result
-        if len(prices) == 2:
-            values = list(prices.values())
-            spread = self._spread_percent(values[0], values[1])
-            result["spread_percent"] = spread
-            if spread <= self.max_spread_percent:
-                result.update(status="degraded", reference_price=sum(values) / Decimal("2"), method="average_2")
-                result["reason"] = "one_source_stale" if stale else "one_source_missing"
-            else:
-                result.update(status="unresolved", reason="two_sources_disagree")
-            return result
-        ordered = sorted(prices.items(), key=lambda item: item[1])
-        (low_exchange, low), (_, mid), (high_exchange, high) = ordered
-        overall = self._spread_percent(low, high)
-        result.update(spread_percent=overall, reference_price=mid, method="median_3")
-        if overall <= self.max_spread_percent:
-            result["status"] = "healthy"
-            return result
-        low_mid = self._spread_percent(low, mid)
-        mid_high = self._spread_percent(mid, high)
-        if low_mid <= self.max_spread_percent < mid_high:
-            result.update(status="degraded", outlier_source=high_exchange, reason="high_outlier")
-        elif mid_high <= self.max_spread_percent < low_mid:
-            result.update(status="degraded", outlier_source=low_exchange, reason="low_outlier")
-        else:
-            result.update(status="unresolved", reference_price=None, method=None, reason="no_agreeing_pair")
+        policy = composite_price_analysis(prices, self.max_spread_percent)
+        policy_reason = policy["reason"]
+        result.update(policy)
+        if len(prices) == 2 and result["status"] == "degraded" and policy_reason is None:
+            result["reason"] = "one_source_stale" if stale else "one_source_missing"
         return result
 
     def analyze_prices(self, analysis_time: datetime | None = None) -> dict[str, Any]:
@@ -393,6 +410,8 @@ class MarketProbe:
                    for symbol in sorted(self.common_symbols)}
         all_sets = {exchange: {item.canonical_symbol for item in rows}
                     for exchange, rows in self.instruments.items()}
+        for exchange in EXCHANGES:
+            all_sets.setdefault(exchange, set())
         analysis = self.analyze_prices()
         collision_counts = {exchange: len(self.collisions[exchange]) for exchange in EXCHANGES}
         diagnostics = {
@@ -421,6 +440,11 @@ class MarketProbe:
             "lbank_numeric_candidate_count": len(self.lbank.numeric_only_candidates),
             "lbank_ignored_numeric_count": len(self.lbank.ignored_numeric_symbols),
             "lbank_preserved_numeric_symbols": self.lbank.preserved_numeric_symbols,
+            "weex_core_overlap_count": len(all_sets["weex"] & self.common_symbols),
+            "composite_enriched_by_weex_count": len(all_sets["weex"] & self.common_symbols),
+            "weex_only": sorted(all_sets["weex"] - set().union(*(all_sets[x] for x in COMPOSITE_CORE_EXCHANGES))),
+            "four_source_reference_count": sum(1 for item in analysis["references"] if len(item["sources"]) == 4),
+            "fallback_reference_count": sum(1 for item in analysis["references"] if len(item["sources"]) < 4),
         }
         values = {
             "common_symbols.json": sorted(self.common_symbols), "symbol_mapping.json": mapping,

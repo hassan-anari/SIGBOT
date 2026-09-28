@@ -11,7 +11,7 @@ from chainura.application.health import (HealthObservationRecorder, catalog_obse
 from chainura.application.signal_service import ReferencePriceResult
 from chainura.domain.destination import Exchange
 from chainura.domain.monitoring import MarketDecision
-from chainura.domain.signal import PriceSourceType, SignalMode
+from chainura.domain.signal import PriceSourceType, SignalMode, price_source_for_exchange
 from chainura.errors import SymbolCatalogError
 from market import MarketProbe, READY_STATUSES
 
@@ -97,25 +97,31 @@ class SymbolCatalogProvider:
                     raise SymbolCatalogError("symbol catalog is unavailable") from exc
             else:
                 results = await asyncio.gather(*(adapter.fetch_instruments() for adapter in self._probe.adapters), return_exceptions=True)
-                errors = [result for result in results if isinstance(result, Exception)]
-                if errors:
+                pairs = tuple(zip(self._probe.adapters, results))
+                core_errors = [result for adapter, result in pairs
+                               if adapter.name in {"ourbit", "toobit", "lbank"} and isinstance(result, Exception)]
+                if core_errors:
                     await self._record_catalog_results(zip(self._probe.adapters, results))
                     self._probe.common_symbols = set(); self._exchange_ready.clear()
                     raise SymbolCatalogError("symbol catalog is unavailable")
                 for adapter, rows in zip(self._probe.adapters, results):
-                    self._probe.instruments[adapter.name] = list(rows)
+                    if not isinstance(rows, Exception):
+                        self._probe.instruments[adapter.name] = list(rows)
                 if hasattr(self._probe, "_exclude_canonical_collisions"):
                     self._probe._exclude_canonical_collisions(); self._probe._filter_lbank_numeric_contracts(); self._probe._rebuild_symbol_maps()
-                    symbol_sets = [{item.canonical_symbol for item in self._probe.instruments[adapter.name]} for adapter in self._probe.adapters]
+                    from market import COMPOSITE_CORE_EXCHANGES
+                    symbol_sets = [{item.canonical_symbol for item in self._probe.instruments[name]} for name in COMPOSITE_CORE_EXCHANGES]
                     self._probe.common_symbols = set.intersection(*symbol_sets) if symbol_sets else set()
-                filtered_results = [(adapter, self._probe.instruments.get(adapter.name, ())) for adapter in self._probe.adapters]
+                filtered_results = [(adapter, result if isinstance(result, Exception)
+                                     else self._probe.instruments.get(adapter.name, ()))
+                                    for adapter, result in pairs]
                 await self._record_catalog_results(filtered_results)
-            required = {exchange.value for exchange in Exchange}
+            required = {"ourbit", "toobit", "lbank"}
             if not required.issubset(self._probe.instruments):
                 self._probe.common_symbols = set(); self._exchange_ready.clear()
                 raise SymbolCatalogError("symbol catalog is incomplete")
             self._shared_ready = True
-            self._exchange_ready.update(Exchange)
+            self._exchange_ready.update(Exchange(name) for name in self._probe.instruments)
 
     async def _ensure_exchange(self, exchange: Exchange) -> None:
         if exchange in self._exchange_ready:
@@ -160,7 +166,8 @@ class SymbolCatalogProvider:
     async def search_shared(self, query: str, page: int = 1) -> SymbolSearchPage:
         await self._ensure_discovered()
         needle = _query(query)
-        mappings = {name: self._probe._mapping_for(name) for name in ("ourbit", "toobit", "lbank")}
+        mappings = {exchange.value: self._probe._mapping_for(exchange.value)
+                    if exchange.value in self._probe.instruments else {} for exchange in Exchange}
         rows = []
         for symbol in self._probe.common_symbols:
             if needle in symbol.casefold():
@@ -213,7 +220,9 @@ class MarketReferencePriceProvider:
             else:
                 await self._catalog._fetch_prices(tuple(Exchange))
             item = self._probe._analyze_symbol(canonical_symbol, self._catalog._clock())
-            mappings = tuple((exchange, self._probe._mapping_for(exchange.value)[canonical_symbol]) for exchange in Exchange if canonical_symbol in self._probe._mapping_for(exchange.value))
+            mappings = tuple((exchange, self._probe._mapping_for(exchange.value)[canonical_symbol])
+                             for exchange in Exchange if exchange.value in self._probe.instruments
+                             and canonical_symbol in self._probe._mapping_for(exchange.value))
             prices = tuple((Exchange(name), price) for name, price in sorted(item["prices"].items()))
             return ReferencePriceResult(item["reference_price"], PriceSourceType.COMPOSITE, prices, item["status"] in READY_STATUSES, canonical_symbol, mappings, item.get("reason"))
         if selected_exchange is None or native_symbol is None:
@@ -224,7 +233,7 @@ class MarketReferencePriceProvider:
             raise SymbolCatalogError("selected contract is no longer available")
         raw = (await self._catalog.market_service.refresh_prices((selected_exchange,))) if self._catalog.market_service is not None else await self._catalog._fetch_prices((selected_exchange,))
         tick = next((x for x in raw.get(selected_exchange, ()) if x.exchange_symbol == native_symbol), None)
-        source = {Exchange.OURBIT: PriceSourceType.OURBIT_ONLY, Exchange.TOOBIT: PriceSourceType.TOOBIT_ONLY, Exchange.LBANK: PriceSourceType.LBANK_ONLY}[selected_exchange]
+        source = price_source_for_exchange(selected_exchange)
         healthy = tick is not None and isinstance(tick.last_price, Decimal) and tick.last_price.is_finite() and tick.last_price > 0
         return ReferencePriceResult(tick.last_price if healthy else None, source, ((selected_exchange, tick.last_price),) if healthy else (), healthy, contract.canonical_symbol, ((selected_exchange, native_symbol),), None if healthy else "missing_price")
 
@@ -262,7 +271,7 @@ class BatchedMarketSnapshotProvider:
         for signal in signals:
             if signal.mode is SignalMode.COMPOSITE:
                 prices = self._composite_prices(signal, raw_by_exchange, now)
-                reference = self._composite_reference(tuple(price for _, price in prices))
+                reference = self._composite_reference(prices)
                 if reference is None:
                     continue
                 item = {"reference_price": reference}
@@ -291,14 +300,11 @@ class BatchedMarketSnapshotProvider:
             rows.append((exchange, tick.last_price))
         return tuple(sorted(rows, key=lambda item: item[0].value))
 
-    def _composite_reference(self, values: tuple[Decimal, ...]) -> Decimal | None:
-        if len(values) < 2:
-            return None
-        if len(values) == 2:
-            if self.probe._spread_percent(values[0], values[1]) <= self.probe.max_spread_percent:
-                return sum(values) / Decimal("2")
-            return None
-        return sorted(values)[len(values) // 2]
+    def _composite_reference(self, prices) -> Decimal | None:
+        from market import composite_price_analysis
+        result=composite_price_analysis({exchange.value:price for exchange,price in prices},
+                                        getattr(self.probe,"max_spread_percent",Decimal("5")))
+        return result["reference_price"] if result["status"] in READY_STATUSES else None
 
 
 def hydrate_durable_symbol_mappings(probe: MarketProbe, signals) -> None:
