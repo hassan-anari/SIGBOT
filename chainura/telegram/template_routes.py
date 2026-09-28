@@ -13,7 +13,7 @@ from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.keyboards import admin_menu
 from chainura.telegram.states import AdminTemplateManagement
 router=Router(name="phase5c-template-management")
-CODES={"o":Exchange.OURBIT,"t":Exchange.TOOBIT,"l":Exchange.LBANK}
+CODES={"o":Exchange.OURBIT,"t":Exchange.TOOBIT,"l":Exchange.LBANK,"w":Exchange.WEEX}
 NAMES={e:texts.EXCHANGE_NAMES[e.value] for e in Exchange}
 
 def data(token,*parts):return ":".join(("tpl",token,*map(str,parts)))

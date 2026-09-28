@@ -12,6 +12,13 @@ from chainura.persistence.transaction import SqlAlchemySignalistTransactionFacto
 from integration_tests.support import create_safe_engine,migrate,require_safe_test_database
 class Prices:
  async def get_reference_price(self,**kw): return ReferencePriceResult(Decimal('100.00'),PriceSourceType.COMPOSITE,((Exchange.OURBIT,Decimal('100')),(Exchange.TOOBIT,Decimal('100'))),True,'BTCUSDT',((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),(Exchange.LBANK,'btc_usdt')))
+class FourPrices:
+ async def get_reference_price(self,**kw):
+  return ReferencePriceResult(Decimal('100'),PriceSourceType.COMPOSITE,
+   ((Exchange.OURBIT,Decimal('99')),(Exchange.TOOBIT,Decimal('100')),
+    (Exchange.LBANK,Decimal('100')),(Exchange.WEEX,Decimal('101'))),True,'BTCUSDT',
+   ((Exchange.OURBIT,'BTCUSDT'),(Exchange.TOOBIT,'BTCUSDT'),
+    (Exchange.LBANK,'btc_usdt'),(Exchange.WEEX,'BTCUSDT')))
 class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
  @classmethod
  def setUpClass(cls): cls.safe=require_safe_test_database(); migrate('head',cls.safe)
@@ -41,6 +48,15 @@ class SignalPersistenceTests(unittest.IsolatedAsyncioTestCase):
    await c.execute(text("delete from signal_exchange_symbols where signal_id=:id and exchange='lbank'"),{'id':one.id})
    with self.assertRaises(IntegrityError):
     await c.execute(text("insert into signal_initial_prices(signal_id,exchange,price) values (:id,'lbank','100')"),{'id':one.id})
+
+ async def test_new_weex_enriched_composite_persists_four_mappings(self):
+  service=SignalService(SqlAlchemySignalistTransactionFactory(self.sessions),FourPrices(),lambda:datetime(2026,8,1,tzinfo=timezone.utc))
+  signal=await service.create(self.command())
+  self.assertEqual(len(signal.exchange_symbols),4);self.assertEqual(len(signal.initial_source_prices),4)
+  self.assertEqual(dict(signal.exchange_symbols)[Exchange.WEEX],'BTCUSDT')
+  async with self.engine.connect() as c:
+   self.assertEqual(await c.scalar(text("select count(*) from signal_exchange_symbols where signal_id=:s"),{"s":signal.id}),4)
+   self.assertEqual(await c.scalar(text("select count(*) from signal_initial_prices where signal_id=:s"),{"s":signal.id}),4)
 
  async def test_stale_sending_recovery_retains_capacity_and_completes_request(self):
   from chainura.application.publication import InitialPublicationService

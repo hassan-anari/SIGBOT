@@ -17,6 +17,8 @@ from market import MarketProbe, READY_STATUSES
 
 PAGE_SIZE = 8
 LOGGER = logging.getLogger("chainura.market")
+COMPOSITE_CORE = frozenset((Exchange.OURBIT, Exchange.TOOBIT, Exchange.LBANK))
+OPTIONAL_EXCHANGES = tuple(exchange for exchange in Exchange if exchange not in COMPOSITE_CORE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +123,7 @@ class SymbolCatalogProvider:
                 self._probe.common_symbols = set(); self._exchange_ready.clear()
                 raise SymbolCatalogError("symbol catalog is incomplete")
             self._shared_ready = True
-            self._exchange_ready.update(Exchange(name) for name in self._probe.instruments)
+            self._exchange_ready.update(Exchange(name) for name, rows in self._probe.instruments.items() if rows)
 
     async def _ensure_exchange(self, exchange: Exchange) -> None:
         if exchange in self._exchange_ready:
@@ -142,9 +144,27 @@ class SymbolCatalogProvider:
             for row in rows:
                 grouped.setdefault(row.canonical_symbol, set()).add(row.exchange_symbol)
             ambiguous = {symbol for symbol, natives in grouped.items() if len(natives) > 1}
+            if hasattr(self._probe, "collisions"):
+                self._probe.collisions[exchange.value] = {
+                    symbol: sorted(grouped[symbol]) for symbol in sorted(ambiguous)
+                }
+            for symbol in sorted(ambiguous):
+                LOGGER.warning("canonical symbol collision exchange=%s canonical=%s native_count=%s",
+                               exchange.value, symbol, len(grouped[symbol]))
             self._probe.instruments[exchange.value] = sorted((row for row in rows if row.canonical_symbol not in ambiguous), key=lambda row: (row.canonical_symbol, row.exchange_symbol))
             adapter.symbol_map = {row.exchange_symbol: row.canonical_symbol for row in self._probe.instruments[exchange.value]}
             self._exchange_ready.add(exchange)
+
+    async def recover_optional_catalogs(self) -> None:
+        """Retry missing optional catalogs without disturbing shared-core readiness."""
+        for exchange in OPTIONAL_EXCHANGES:
+            if exchange in self._exchange_ready:
+                continue
+            try:
+                await self._ensure_exchange(exchange)
+            except Exception as exc:
+                LOGGER.warning("optional catalog recovery unavailable exchange=%s category=%s",
+                               exchange.value, type(exc).__name__)
 
     async def _fetch_prices(self, exchanges: tuple[Exchange, ...]):
         adapters = {Exchange(adapter.name): adapter for adapter in self._probe.adapters}
@@ -362,6 +382,7 @@ class MarketPriceWorker:
             await self.catalog._ensure_discovered()
         except Exception as exc:
             LOGGER.warning("market catalog refresh unavailable category=%s", type(exc).__name__)
+        await self.catalog.recover_optional_catalogs()
         # Discovery rebuilds maps, so durable mappings must be merged afterwards.
         hydrate_durable_symbol_mappings(self.probe, signals)
         # Price failures are converted to per-exchange observations by _fetch_prices;

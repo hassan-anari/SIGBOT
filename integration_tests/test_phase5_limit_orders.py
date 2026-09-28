@@ -164,6 +164,44 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await service.observe(signal.id,Decimal("100"),PriceSourceType.COMPOSITE,snapshot("100").source_prices,NOW))
         async with self.sessions() as s:self.assertIs((await s.get(SignalRecord,signal.id)).status,SignalLifecycleStatus.ENTRY_TRIGGERED)
 
+    async def test_weex_single_exchange_limit_admission_trigger_and_activation(self):
+        await self.only_good_destination()
+        async with self.engine.begin() as c:
+            await c.execute(text("DELETE FROM destination_exchange_priorities WHERE destination_id=:d"),{"d":self.good})
+            await c.execute(text("INSERT INTO destination_exchange_priorities(destination_id,exchange,position) VALUES(:d,'weex',1)"),{"d":self.good})
+        result=ReferencePriceResult(Decimal("100"),PriceSourceType.WEEX_ONLY,
+            ((Exchange.WEEX,Decimal("100")),),True,"BTCUSDT",((Exchange.WEEX,"BTCUSDT"),))
+        service=SignalService(self.tx,Prices(result=result),lambda:self.clock_now)
+        command=CreateLimitSignalCommand(self.actor.id,"weex-limit",SignalMode.SINGLE_EXCHANGE,
+            "BTCUSDT","BTC","USDT",Exchange.WEEX,"BTCUSDT",TradeDirection.LONG,
+            Decimal("90"),10,(Decimal("95"),Decimal("105")),Decimal("85"))
+        signal=await service.create_limit(command)
+        self.assertIs(signal.price_source_type,PriceSourceType.WEEX_ONLY)
+        self.assertEqual(signal.exchange_symbols,((Exchange.WEEX,"BTCUSDT"),))
+        publisher=Publisher();pending=LimitPendingPublicationService(self.tx,publisher,
+            DestinationMessageTemplateService(self.tx),lambda:self.clock_now)
+        await pending.plan_pending()
+        async with self.sessions() as s:
+            row=await s.scalar(select(LimitPendingPublicationRecord).where(
+                LimitPendingPublicationRecord.signal_id==signal.id))
+            self.assertIs(row.selected_exchange,Exchange.WEEX)
+        await pending.process(row.id)
+        limits=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
+        self.assertFalse(await limits.observe(signal.id,Decimal("91"),PriceSourceType.WEEX_ONLY,
+            ((Exchange.WEEX,Decimal("91")),),NOW))
+        self.assertTrue(await limits.observe(signal.id,Decimal("90"),PriceSourceType.WEEX_ONLY,
+            ((Exchange.WEEX,Decimal("90")),),NOW))
+        self.assertFalse(await limits.observe(signal.id,Decimal("89"),PriceSourceType.WEEX_ONLY,
+            ((Exchange.WEEX,Decimal("89")),),NOW))
+        self.assertTrue(await limits.activate(signal.id,self.actor.id))
+        async with self.sessions() as s:
+            self.assertEqual(await s.scalar(select(func.count()).select_from(LimitEntryTriggerRecord)
+                .where(LimitEntryTriggerRecord.signal_id==signal.id)),1)
+            activation=await s.scalar(select(DestinationPublicationRecord).where(
+                DestinationPublicationRecord.signal_id==signal.id))
+            self.assertIs(activation.selected_exchange,Exchange.WEEX)
+            self.assertIs((await s.get(SignalRecord,signal.id)).status,SignalLifecycleStatus.ACTIVE)
+
     async def test_triggered_active_signal_fallback_and_atomic_cancellation(self):
         signal=await self.signal_service.create_limit(self.command(token="cancel-limit"))
         publisher=Publisher();pending=LimitPendingPublicationService(self.tx,publisher,
