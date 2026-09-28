@@ -469,7 +469,7 @@ class SignalTemplateRecord(Base):
       ForeignKeyConstraint(["destination_id"],["destinations.id"],ondelete="CASCADE",name="fk_signal_templates_destination_id_destinations"),
       CheckConstraint("trim(storage_key) <> '' AND substr(storage_key,1,1) <> '/' AND instr(storage_key,'..') = 0",name="ck_signal_templates_storage_key_safe"),
       CheckConstraint("width > 0 AND height > 0",name="ck_signal_templates_dimensions_positive"),
-      CheckConstraint("(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005) OR (exchange='weex' AND width=1000 AND height=1000)",name="ck_signal_templates_exchange_dimensions"),
+      CheckConstraint("(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005) OR (exchange='weex' AND width=875 AND height=969)",name="ck_signal_templates_exchange_dimensions"),
       CheckConstraint("content_type = 'image/png'",name="ck_signal_templates_content_type_png"),
       Index("uq_signal_templates_default_exchange","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NULL")),
       Index("uq_signal_templates_destination_exchange","destination_id","exchange",unique=True,sqlite_where=__import__('sqlalchemy').text("destination_id IS NOT NULL")),)

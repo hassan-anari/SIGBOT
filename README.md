@@ -14,7 +14,7 @@ historical three-source mappings are unchanged. WEEX is also supported for
 single-exchange Market and Limit Signals, destination priorities, publication,
 monitoring, templates, rendering, diagnostics, and durable health status.
 
-The centralized 1000×1000 WEEX renderer is a deterministic functional first
+The centralized 875x969 WEEX renderer is a deterministic functional first
 pass. Final visual positioning is intentionally tuned through Renderer Lab.
 
 ## Production Upgrade Compatibility
@@ -401,7 +401,7 @@ alembic upgrade head
 
 مسیر سیگنالیست فعال اکنون جست‌وجو و صفحه‌بندی فهرست مشترک، مسیر قرارداد تأییدشدهٔ تک‌صرافی، انتخاب جهت، اعتبارسنجی اولیهٔ Entry، اهرم، تارگت‌های مرتب، SL، مرور نهایی و بازاعتبارسنجی بازار پیش از ثبت اتمیک را پوشش می‌دهد. Callbackهای این مسیر typed، ASCII و وابسته به Flow هستند و پاسخ دیررس جست‌وجو یا قیمت پس از لغو، `/start` یا بازگشت به منوی اصلی نمی‌تواند FSM را زنده یا سیگنال را ثبت کند. Runtime از `MarketProbe` و Adapterهای موجود برای Catalog و Reference Price استفاده می‌کند و معماری HTTP صرافی دیگری ندارد.
 
-مشخصات Canvas در `chainura/rendering/models.py` متمرکز است: Ourbit برابر 1080×1148، Toobit برابر 942×1010، LBank برابر 830×1005 و WEEX برابر 1000×1000، همگی PNG. چیدمان WEEX یک طرح declarative اولیه و عملیاتی است؛ Main Admin قالب پیش‌فرض/اختصاصی را مدیریت می‌کند و تنظیم نهایی مختصات و تایپوگرافی فقط از Renderer Lab انجام می‌شود.
+مشخصات Canvas در `chainura/rendering/models.py` متمرکز است: Ourbit برابر 1080×1148، Toobit برابر 942×1010، LBank برابر 830×1005 و WEEX برابر 875x969، همگی PNG. چیدمان WEEX یک طرح declarative اولیه و عملیاتی است؛ Main Admin قالب پیش‌فرض/اختصاصی را مدیریت می‌کند و تنظیم نهایی مختصات و تایپوگرافی فقط از Renderer Lab انجام می‌شود.
 
 ## Phase 5C initial publication
 
