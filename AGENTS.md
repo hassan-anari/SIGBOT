@@ -160,3 +160,10 @@ Main Admin reports are on-demand only, use Asia/Tehran date semantics, and calcu
   autonomous and idempotent.
 - The first-pass WEEX renderer schema is production-functional; exact coordinates
   and typography are tuned through Renderer Lab, not business logic.
+
+## Permanent Phase 7 private reporting rules
+
+- Active Signalist personal reports derive ownership only from the authenticated Actor and reveal no Destination, assignment, publication, delivery, capacity, or selected-Destination-exchange facts.
+- Main Admin Destination reports live inside the selected Destination management flow and never reveal Signalist identity.
+- Destination membership requires a definitely sent Market Initial or Limit Pending root and uses root `sent_at`; Limit activation never adds a second row.
+- All reports share weighted Decimal position accounting, with monitor ROI only as a legacy fallback, and remain synchronous SQLite reads without network calls or workers.

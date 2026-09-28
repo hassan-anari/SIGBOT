@@ -914,3 +914,24 @@ use WebSockets, candle high/low reconstruction, or per-Signal REST polling.
 Interrupted sends become `delivery_unknown` and are not blindly repeated.
 Telegram rate limits remain retryable until their explicit delay, while definite
 rejections use normalized privacy-safe categories rather than raw Telegram text.
+
+# Phase 7 — Private Performance Reports
+
+Phase 7 adds synchronous, SQLite-backed performance reports to the shared reporting
+projection. Active Signalists have an owner-only personal report based on Signal
+creation time; it contains trade performance only and discloses no Destination,
+assignment, capacity, publication, exchange-selection, or delivery fact. Ownership
+is always derived from the authenticated Actor, never callback or FSM data.
+
+Main Admin Destination performance is available only from the selected
+Destination's management screen. Its anonymous trade cohort consists solely of
+root admissions definitely sent to that Destination: the Market Initial root or
+the Limit Pending root. Cohort time is that root's `sent_at`; Limit activation does
+not add a row. Destination reports never contain Signalist identity. Existing Main
+Admin all/one-Signalist reports retain their named administrative context.
+
+All report surfaces prefer a modern Position State's Decimal
+`realized_weighted_roi`; closed outcomes are Win, Loss, or Neutral according to its
+sign. Legacy rows without Position State fall back to Monitor result/ROI. Cancelled
+trades have no result or ROI. Reports remain on-demand only, make no market or
+Telegram calls, and add no reporting schema or worker.

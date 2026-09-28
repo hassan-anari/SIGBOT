@@ -184,7 +184,8 @@ async def show_destination_detail(message, destination_id, destination_service):
     rows = [[button(label, cb("ds", "status", destination.id, action))],
             [button(texts.BUTTON_EDIT, cb("ds", "edit", destination.id)),
              button(texts.BUTTON_PRIORITY, cb("ds", "priority", destination.id))],
-            [button(texts.BUTTON_ASSIGNMENTS, cb("as", "list", destination.id, "assigned", 1))]]
+            [button(texts.BUTTON_ASSIGNMENTS, cb("as", "list", destination.id, "assigned", 1))],
+            [button(texts.DESTINATION_PERFORMANCE, f"p7:d:{destination.id}:period")]]
     await message.answer(texts.destination_detail(detail), reply_markup=markup(rows))
 
 
