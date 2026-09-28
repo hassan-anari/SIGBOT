@@ -63,6 +63,16 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
         values["lbank_leverage"] = f"{payload.leverage}x"
         values["lbank_time"] = values["time"].replace("-", "/")
 
+    if payload.exchange is Exchange.WEEX:
+        date_value, clock_value = values["time"].split(" ", 1)
+        _, month, day = date_value.split("-")
+
+        values["weex_perp"] = "Perp"
+        values["weex_direction"] = direction
+        values["weex_separator"] = "|"
+        values["weex_leverage"] = f"{payload.leverage}x"
+        values["weex_time"] = f"{month}/{day} {clock_value}"
+
     return values
 
 def compose_initial(
@@ -107,8 +117,25 @@ def compose_initial(
         pnl_state=pnl_semantic_state(pnl_value)
     fitted = []
     for layer in layout.text_layers:
-        state=pnl_state if layer.field=="pnl" else None
-        fitted.append((layer,draw_text_layer(draw,layer,values[layer.field],font_provider,state)))
+        if layer.field == "pnl":
+            state = pnl_state
+        elif layer.field in {"weex_direction", "weex_leverage"}:
+            state = payload.direction.value
+        else:
+            state = None
+
+        fitted.append(
+            (
+                layer,
+                draw_text_layer(
+                    draw,
+                    layer,
+                    values[layer.field],
+                    font_provider,
+                    state,
+                ),
+            )
+        )
     rows=[]
     for row in layout.inline_rows: rows.append((row, draw_inline_row(draw,row,values,font_provider)))
     if payload.coin_logo_path is not None:

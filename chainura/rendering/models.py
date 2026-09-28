@@ -38,7 +38,7 @@ EXCHANGE_IMAGE_SPECS = MappingProxyType({
     Exchange.OURBIT: ImageSpec(width=1080, height=1148, format="PNG", content_type="image/png"),
     Exchange.TOOBIT: ImageSpec(width=942, height=1010, format="PNG", content_type="image/png"),
     Exchange.LBANK: ImageSpec(width=830, height=1005, format="PNG", content_type="image/png"),
-    Exchange.WEEX: ImageSpec(width=1000, height=1000, format="PNG", content_type="image/png"),
+    Exchange.WEEX: ImageSpec(width=875, height=969,format="PNG", content_type="image/png"),
 })
 
 def _positive_decimal(value: object, name: str) -> None:

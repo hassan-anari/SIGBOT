@@ -47,7 +47,7 @@ class TemplateIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TemplateNotConfiguredError):await self.service.resolve(Exchange.LBANK)
     async def test_weex_default_override_validation_and_fallback(self):
         default=await self.service.install(Exchange.WEEX,png(Exchange.WEEX,"white"))
-        self.assertEqual((default.width,default.height),(1000,1000))
+        self.assertEqual((default.width,default.height),(875, 969))
         bad=io.BytesIO();Image.new("RGB",(999,1000),"white").save(bad,"PNG")
         with self.assertRaises(TemplateValidationError):
             await self.service.install(Exchange.WEEX,bad.getvalue())

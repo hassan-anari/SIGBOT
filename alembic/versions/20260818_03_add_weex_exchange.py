@@ -52,8 +52,14 @@ def upgrade():
     _exchange_constraints(EX4)
     _replace("signals","signal_price_source_type",f"price_source_type IN ({PS4})")
     _replace("limit_entry_triggers","signal_price_source_type",f"price_source_type IN ({PS4})")
-    _replace("signal_templates","ck_signal_templates_exchange_dimensions",
-             "(exchange='ourbit' AND width=1080 AND height=1148) OR (exchange='toobit' AND width=942 AND height=1010) OR (exchange='lbank' AND width=830 AND height=1005) OR (exchange='weex' AND width=1000 AND height=1000)")
+    _replace(
+        "signal_templates",
+        "ck_signal_templates_exchange_dimensions",
+        "(exchange='ourbit' AND width=1080 AND height=1148) OR "
+        "(exchange='toobit' AND width=942 AND height=1010) OR "
+        "(exchange='lbank' AND width=830 AND height=1005) OR "
+        "(exchange='weex' AND width=875 AND height=969)"
+    )
     _replace("service_health_states","ck_service_health_key",f"service_key IN ({S8})")
     _replace("outage_incidents","ck_outage_incidents_key",f"service_key IN ({S8})")
 

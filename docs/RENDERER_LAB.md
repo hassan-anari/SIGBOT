@@ -1,7 +1,7 @@
 # Phase 5B-1 local Renderer Lab
 
 WEEX uses the same preview/watch workflow as the other exchanges. Its centralized
-initial image specification is 1000×1000 PNG and its declarative layout is
+initial image specification is 875x969 PNG and its declarative layout is
 `chainura/rendering/layouts/weex.py`. This is a functional first-pass schema;
 Renderer Lab is the supported surface for final coordinate and typography tuning.
 

@@ -743,7 +743,7 @@ clock. Approved coordinates, fonts, templates, and layout tuning remain unchange
 ## Phase 5A finalized image specifications
 
 The centralized initial-card canvas specifications are Ourbit 1080×1148 PNG,
-Toobit 942×1010 PNG, LBank 830×1005 PNG, and WEEX 1000×1000 PNG. Long and Short use the same
+Toobit 942×1010 PNG, LBank 830×1005 PNG, and WEEX 875x969 PNG. Long and Short use the same
 exchange-specific dimensions. WEEX has a functional first-pass declarative layout. Main Admin may install a
 WEEX default PNG and Destination-specific override under the same fallback rules
 as other exchanges. Exact WEEX coordinates and typography are intentionally tuned
