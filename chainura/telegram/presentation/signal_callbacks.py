@@ -1,7 +1,7 @@
 from __future__ import annotations
 from aiogram.filters.callback_data import CallbackData
 
-ALLOWED_KINDS = frozenset({"ss","sp","out","ex","ns","np","dir","tp","back","cancel",
+ALLOWED_KINDS = frozenset({"ss","sp","out","ex","ns","np","dir","tp","ot","back","cancel",
                            "confirm","continue","confirm1","edit1","edit2"})
 
 class SignalCallback(CallbackData, prefix="s5"):

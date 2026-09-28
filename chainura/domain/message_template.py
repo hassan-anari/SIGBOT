@@ -13,6 +13,8 @@ class DestinationMessageKind(str, Enum):
     SAVE_PROFIT_50 = "save_profit_50"
     FULL_CLOSE = "full_close"
     RISK_FREE_HIT = "risk_free_hit"
+    LIMIT_PENDING = "limit_pending"
+    LIMIT_CANCELLED = "limit_cancelled"
 
 
 class MessageTemplateSource(str, Enum):

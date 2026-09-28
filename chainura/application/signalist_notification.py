@@ -7,11 +7,14 @@ from html import escape
 from sqlalchemy import select
 from decimal import Decimal, ROUND_HALF_UP
 from chainura.domain.monitoring import *
+from chainura.domain.signal import SignalLifecycleStatus
 from chainura.domain.signalist import SignalistStatus
 from chainura.persistence.models import (SignalistNotificationRecord,SignalistRecord,
- SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,BreakevenPromptRecord)
+ SignalUpdateCandidateRecord,SignalEventRecord,SignalRecord,BreakevenPromptRecord,
+ LimitEntryTriggerRecord)
 from chainura.trade_id import format_trade_id
 from chainura.application.monitoring import LEGACY_TERMINAL_INTERACTION_VERSION
+from chainura.application.telegram_delivery import normalize_telegram_error
 
 LOGGER=logging.getLogger("chainura.signalist_notification")
 
@@ -104,27 +107,42 @@ class SignalistNotificationService:
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
                 text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index,signal.id,
                     position_action=row.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION);source=candidate
-            else:
+            elif row.kind is NotificationKind.BREAKEVEN_PROMPT:
                 prompt=await s.get(BreakevenPromptRecord,row.prompt_id);signal=await s.get(SignalRecord,prompt.signal_id)
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return
                 text=prompt_text(signal.canonical_symbol,signal.entry_price,prompt.observed_price_at_creation,signal.id);source=prompt
-        try:message_id=await self.transport.send(telegram_id,text,row.kind,row.candidate_id or row.prompt_id)
-        except asyncio.TimeoutError:
-            async with self.sessions() as s,s.begin():
-                current=await s.get(SignalistNotificationRecord,notification_id);current.status=NotificationStatus.DELIVERY_UNKNOWN;current.last_error_category="ambiguous_timeout";current.updated_at=self.clock()
-            return
+            else:
+                trigger=await s.get(LimitEntryTriggerRecord,row.limit_trigger_signal_id)
+                signal=await s.get(SignalRecord,row.limit_trigger_signal_id)
+                if (trigger is None or signal is None or
+                        signal.status is not SignalLifecycleStatus.ENTRY_TRIGGERED):
+                    row.status=NotificationStatus.SUPERSEDED;return
+                from chainura.telegram.presentation import texts
+                text=texts.limit_trigger_notification(signal.id,signal.canonical_symbol,
+                    signal.direction,trigger.requested_entry,trigger.observed_reference_price)
+                source=trigger
+            source_id=row.candidate_id or row.prompt_id or row.limit_trigger_signal_id
+        try:message_id=await self.transport.send(telegram_id,text,row.kind,source_id)
         except Exception as exc:
+            failure=normalize_telegram_error(exc)
             async with self.sessions() as s,s.begin():
-                current=await s.get(SignalistNotificationRecord,notification_id);current.last_error_category=type(exc).__name__;current.updated_at=self.clock()
-                if current.attempt_count>=self.max_attempts:current.status=NotificationStatus.FAILED
-                else:current.status=NotificationStatus.RETRY_WAIT;current.retry_at=self.clock()+timedelta(seconds=self.retry_base*(2**(current.attempt_count-1)))
+                current=await s.get(SignalistNotificationRecord,notification_id)
+                current.last_error_category=failure.category;current.updated_at=self.clock()
+                if failure.retry_after is not None:
+                    current.status=NotificationStatus.RETRY_WAIT
+                    backoff=self.retry_base*(2**max(0,current.attempt_count-1))
+                    current.retry_at=self.clock()+timedelta(seconds=max(failure.retry_after,backoff))
+                elif failure.definite_no_send:
+                    current.status=NotificationStatus.FAILED;current.retry_at=None
+                else:
+                    current.status=NotificationStatus.DELIVERY_UNKNOWN;current.retry_at=None
             return
         async with self.sessions() as s,s.begin():
             current=await s.get(SignalistNotificationRecord,notification_id);current.status=NotificationStatus.SENT;current.telegram_message_id=message_id;current.sent_at=self.clock();current.updated_at=self.clock()
             if current.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,current.candidate_id)
                 if candidate.status is CandidateStatus.AWAITING_NOTIFICATION:candidate.status=CandidateStatus.AWAITING_DECISION;candidate.updated_at=self.clock()
-            else:
+            elif current.kind is NotificationKind.BREAKEVEN_PROMPT:
                 prompt=await s.get(BreakevenPromptRecord,current.prompt_id)
                 if prompt.status is PromptStatus.PENDING_NOTIFICATION:prompt.status=PromptStatus.AWAITING_RESPONSE;prompt.notified_at=self.clock();prompt.telegram_message_id=message_id;prompt.updated_at=self.clock()
 

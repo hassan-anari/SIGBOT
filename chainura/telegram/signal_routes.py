@@ -7,7 +7,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from chainura.application.access import Actor, ActorKind
-from chainura.application.signal_service import (SnapshotRequest, CreatePendingSignalCommand, FinalizeSignalDetailsCommand)
+from chainura.application.signal_service import (SnapshotRequest, CreatePendingSignalCommand,
+    CreateLimitSignalCommand, FinalizeSignalDetailsCommand)
 from chainura.domain.destination import Exchange
 from chainura.domain.signal import (PriceSourceType, SignalMode, TradeDirection,
     parse_leverage, parse_price)
@@ -19,7 +20,7 @@ from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.keyboards import (remove_menu, signal_directions,
     signal_exchanges, signal_form_navigation, signal_native_navigation,
     signal_results, signal_review_actions, signal_shared_navigation,
-    signal_stage_one_actions, signal_tp_actions, signalist_menu)
+    signal_stage_one_actions, signal_tp_actions, signalist_menu,signal_order_types)
 from chainura.trade_id import format_trade_id
 from chainura.telegram.presentation.signal_callbacks import SignalCallback
 from chainura.telegram.states import SignalCreate
@@ -198,15 +199,26 @@ async def start_signal(message:Message,actor:Actor,state:FSMContext,signal_servi
         else:
             finalizing=False
             flow=_token(); creation=uuid4().hex
-            await state.set_state(SignalCreate.shared_search)
+            await state.set_state(SignalCreate.order_type)
             await state.set_data({"flow_token":flow,"creation_token":creation,
                                   "signalist_id":actor.signalist.id})
-            if not await _owned(state,SignalCreate.shared_search,flow): return
+            if not await _owned(state,SignalCreate.order_type,flow): return
     if finalizing:
         await message.answer(texts.SIGNAL_FINALIZING)
         return
-    await message.answer(texts.ASK_SHARED_SYMBOL,
-                         reply_markup=signal_shared_navigation(flow))
+    await message.answer(texts.SIGNAL_ORDER_TYPE_ASK,reply_markup=signal_order_types(flow))
+
+@router.message(SignalCreate.limit_entry, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
+async def limit_entry_input(message:Message,actor:Actor,state:FSMContext):
+    if actor.kind is not ActorKind.ACTIVE_SIGNALIST:await _reject_actor(message,state,actor);return
+    try:value=parse_price(message.text)
+    except InvalidSignalInputError:await message.answer(texts.INVALID_INPUT);return
+    async with phase5_lock(message):
+        data=await state.get_data();flow=data.get("flow_token")
+        if not await _owned(state,SignalCreate.limit_entry,flow):return
+        await state.update_data(entry_price=str(value));await state.set_state(SignalCreate.leverage)
+    await message.answer(texts.SIGNAL_ASK_LEVERAGE,
+        reply_markup=signal_form_navigation(flow,"limit-entry"))
 
 @router.message(SignalCreate.finalizing)
 async def finalizing_input(message:Message,actor:Actor,state:FSMContext,signal_service):
@@ -275,10 +287,15 @@ async def leverage_input(message:Message,actor:Actor,state:FSMContext,signal_ser
         data=await state.get_data();flow=data.get("flow_token")
         if not await _owned(state,SignalCreate.leverage,flow):return
         await state.update_data(leverage=leverage)
-        await state.set_state(SignalCreate.stage_one_review)
+        if data.get("order_type")=="limit":
+            await state.set_state(SignalCreate.take_profits)
+        else:await state.set_state(SignalCreate.stage_one_review)
         data=await state.get_data()
-    await message.answer(texts.signal_stage_one_review(data),
-                         reply_markup=signal_stage_one_actions(flow))
+    if data.get("order_type")=="limit":
+        await message.answer(texts.SIGNAL_ASK_TP,
+            reply_markup=signal_tp_actions(flow,False))
+    else:await message.answer(texts.signal_stage_one_review(data),
+        reply_markup=signal_stage_one_actions(flow))
 
 @router.message(SignalCreate.take_profits, F.text, ~F.text.startswith("/"), ~F.text.in_(_TOP_LEVEL))
 async def tp_input(message:Message,actor:Actor,state:FSMContext):
@@ -346,6 +363,13 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
         await callback.message.answer(texts.INACTIVE if actor.kind is ActorKind.INACTIVE_SIGNALIST else texts.ARCHIVED,reply_markup=remove_menu()); return
     if data.get("flow_token") != flow: return
     if kind=="cancel": await _cancel(callback.message,state,flow,event=callback,signal_service=signal_service); return
+    if kind=="ot" and callback_data.ref in {"market","limit"}:
+        async with phase5_lock(callback):
+            if not await _owned(state,SignalCreate.order_type,flow):return
+            await state.update_data(order_type=callback_data.ref)
+            await state.set_state(SignalCreate.shared_search)
+        await callback.message.answer(texts.ASK_SHARED_SYMBOL,
+                                      reply_markup=signal_shared_navigation(flow));return
     if kind=="edit1":
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.stage_one_review,flow): return
@@ -473,8 +497,15 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
     if kind=="dir" and callback_data.ref in {"long","short"}:
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.direction,flow): return
-            await state.update_data(direction=callback_data.ref); await state.set_state(SignalCreate.leverage)
-        await callback.message.answer(texts.SIGNAL_ASK_LEVERAGE,reply_markup=signal_form_navigation(flow,"direction")); return
+            await state.update_data(direction=callback_data.ref)
+            if data.get("order_type")=="limit":await state.set_state(SignalCreate.limit_entry)
+            else:await state.set_state(SignalCreate.leverage)
+        if data.get("order_type")=="limit":
+            await callback.message.answer(texts.SIGNAL_ASK_LIMIT_ENTRY,
+                reply_markup=signal_form_navigation(flow,"direction"))
+        else:await callback.message.answer(texts.SIGNAL_ASK_LEVERAGE,
+                reply_markup=signal_form_navigation(flow,"direction"))
+        return
     if kind=="tp":
         async with phase5_lock(callback):
             current=await state.get_data()
@@ -493,22 +524,31 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             if not await _owned(state,SignalCreate.review,flow):return
             current=await state.get_data()
         try:
-            await signal_service.finalize_details(FinalizeSignalDetailsCommand(int(current["pending_signal_id"]),actor.signalist.id,tuple(Decimal(x) for x in current["take_profits"]),Decimal(current["stop_loss"])))
+            if current.get("order_type")=="limit":
+                signal=await signal_service.create_limit(_limit_command(current))
+            else:
+                await signal_service.finalize_details(FinalizeSignalDetailsCommand(int(current["pending_signal_id"]),actor.signalist.id,tuple(Decimal(x) for x in current["take_profits"]),Decimal(current["stop_loss"])))
+                signal=None
+        except InvalidSignalInputError:
+            await callback.message.answer(texts.SIGNAL_LIMIT_REVALIDATE);return
         except PendingSignalStateError:
             await callback.message.answer(texts.SIGNAL_DETAILS_STALE);return
         except ApplicationError:
             await callback.message.answer(texts.TEMPORARY_ERROR);return
         await state.clear();await callback.message.answer(
-            texts.signal_details_recorded(format_trade_id(int(current["pending_signal_id"]))),
+            texts.SIGNAL_LIMIT_RECORDED if signal else texts.signal_details_recorded(format_trade_id(int(current["pending_signal_id"]))),
             reply_markup=signalist_menu());return
     if kind=="edit2":
         async with phase5_lock(callback):
             if not await _owned(state,SignalCreate.review,flow): return
             await state.update_data(take_profits=[],stop_loss=None)
-            await state.set_state(SignalCreate.take_profits)
-        await callback.message.answer(texts.SIGNAL_ASK_TP,
-            reply_markup=signal_tp_actions(flow,False,
-                details_only=bool(data.get("details_only")))); return
+            await state.set_state(SignalCreate.limit_entry if data.get("order_type")=="limit" else SignalCreate.take_profits)
+        if data.get("order_type")=="limit":
+            await callback.message.answer(texts.SIGNAL_ASK_LIMIT_ENTRY,
+                reply_markup=signal_form_navigation(flow,"direction"))
+        else:await callback.message.answer(texts.SIGNAL_ASK_TP,
+            reply_markup=signal_tp_actions(flow,False,details_only=bool(data.get("details_only"))))
+        return
     if kind=="back":
         allowed={
             "shared":SignalCreate.exchange_selection.state,
@@ -516,6 +556,7 @@ async def signal_callback_handler(callback:CallbackQuery,callback_data:SignalCal
             "native-shared":SignalCreate.native_search.state,
             "symbol":SignalCreate.direction.state,
             "direction":SignalCreate.leverage.state,
+            "limit-entry":SignalCreate.leverage.state,
             "leverage":SignalCreate.take_profits.state,
             "tp":SignalCreate.stop_loss.state,
             "sl":SignalCreate.review.state,
@@ -536,6 +577,7 @@ async def _back_state(state,data,target,flow):
         if data.get("mode")=="single_exchange": await state.set_state(SignalCreate.native_search); return texts.SIGNAL_ASK_NATIVE,signal_native_navigation(flow)
         else: await state.set_state(SignalCreate.shared_search); return texts.ASK_SHARED_SYMBOL,signal_shared_navigation(flow)
     elif target=="direction": await state.set_state(SignalCreate.direction); return texts.SIGNAL_SELECT_DIRECTION,signal_directions(flow)
+    elif target=="limit-entry": await state.set_state(SignalCreate.limit_entry); return texts.SIGNAL_ASK_LIMIT_ENTRY,signal_form_navigation(flow,"direction")
     elif target=="leverage": await state.set_state(SignalCreate.leverage); return texts.SIGNAL_ASK_LEVERAGE,signal_form_navigation(flow,"direction")
     elif target=="tp": await state.set_state(SignalCreate.take_profits); return texts.SIGNAL_ASK_TP,signal_tp_actions(flow,bool(data.get("take_profits")),details_only=bool(data.get("details_only")))
     elif target=="sl": await state.set_state(SignalCreate.stop_loss); return texts.SIGNAL_ASK_SL,signal_form_navigation(flow,"tp")
@@ -545,3 +587,11 @@ def _item(value): return {"canonical_symbol":value.canonical_symbol,"native_symb
 def _pending_command(data):
     p0=__import__("chainura.application.signal_service",fromlist=["ReferencePriceResult"]).ReferencePriceResult(Decimal(data["p0_reference_price"]),PriceSourceType(data["p0_price_source_type"]),tuple((Exchange(e),Decimal(p)) for e,p in data["p0_source_prices"]),True,data["canonical_symbol"],tuple((Exchange(e),n) for e,n in data["p0_native_symbols"]))
     return CreatePendingSignalCommand(data["signalist_id"],data["creation_token"],SignalMode(data["mode"]),data["canonical_symbol"],data["base_asset"],data["quote_asset"],Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,data.get("native_symbol"),TradeDirection(data["direction"]),int(data["leverage"]),p0)
+
+def _limit_command(data):
+    return CreateLimitSignalCommand(data["signalist_id"],data["creation_token"],
+        SignalMode(data["mode"]),data["canonical_symbol"],data["base_asset"],
+        data["quote_asset"],Exchange(data["selected_exchange"]) if data.get("selected_exchange") else None,
+        data.get("native_symbol"),TradeDirection(data["direction"]),Decimal(data["entry_price"]),
+        int(data["leverage"]),tuple(Decimal(x) for x in data["take_profits"]),
+        Decimal(data["stop_loss"]))

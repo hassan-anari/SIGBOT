@@ -5,9 +5,9 @@ from decimal import Decimal
 from typing import Protocol
 
 from chainura.domain.destination import Exchange
-from chainura.domain.signal import (PriceSourceType, Signal, SignalLifecycleStatus,
+from chainura.domain.signal import (PriceSourceType, Signal, SignalEntryType, SignalLifecycleStatus,
     SignalMode, TradeDirection, initial_entry_drift_is_acceptable,
-    MAX_NEW_SIGNAL_LEVERAGE)
+    MAX_NEW_SIGNAL_LEVERAGE, validate_limit_entry)
 from chainura.domain.signalist import SignalistStatus
 from chainura.errors import (DuplicateSignalCreationTokenError,
     InconsistentReferencePriceError, InitialEntryDriftExceededError,
@@ -53,6 +53,22 @@ class CreatePendingSignalCommand:
 class FinalizeSignalDetailsCommand:
     signal_id: int
     signalist_id: int
+    take_profits: tuple[Decimal, ...]
+    stop_loss: Decimal
+
+@dataclass(frozen=True, slots=True)
+class CreateLimitSignalCommand:
+    signalist_id: int
+    creation_token: str
+    mode: SignalMode
+    canonical_symbol: str
+    base_asset: str
+    quote_asset: str
+    selected_exchange: Exchange | None
+    native_symbol: str | None
+    direction: TradeDirection
+    entry_price: Decimal
+    leverage: int
     take_profits: tuple[Decimal, ...]
     stop_loss: Decimal
 
@@ -161,6 +177,39 @@ class SignalService:
                 created=await tx.signals.get_by_creation_token(command.creation_token)
             if created is None:raise
         if self._publication_wake:self._publication_wake()
+        return created
+
+    async def create_limit(self, command: CreateLimitSignalCommand) -> Signal:
+        """Atomically create a complete pending Limit from a fresh snapshot."""
+        async with self._transactions() as tx:
+            existing=await tx.signals.get_by_creation_token(command.creation_token)
+            if existing is not None:return existing
+        self._validate_new_leverage(command.leverage)
+        snapshot=await self.capture_snapshot(SnapshotRequest(command.mode,
+            command.canonical_symbol,command.selected_exchange,command.native_symbol))
+        validate_limit_entry(command.direction,command.entry_price,snapshot.reference_price)
+        now=self._clock()
+        signal=Signal(None,command.signalist_id,command.creation_token,command.mode,
+            snapshot.canonical_symbol,command.base_asset,command.quote_asset,
+            command.selected_exchange,command.direction,command.entry_price,
+            command.leverage,command.take_profits,command.stop_loss,
+            snapshot.reference_price,snapshot.price_source_type,
+            SignalLifecycleStatus.PENDING_ENTRY,snapshot.native_symbols,now,now,
+            snapshot.source_prices,None,SignalEntryType.LIMIT)
+        try:
+            async with self._transactions() as tx:
+                existing=await tx.signals.get_by_creation_token(command.creation_token)
+                if existing is not None:return existing
+                actor=await tx.signalists.get_by_id_fresh(command.signalist_id)
+                if actor is None or actor.status is not SignalistStatus.ACTIVE:
+                    raise SignalistCannotCreateSignalError("an active signalist is required")
+                created=await tx.signals.add(signal);await tx.commit()
+        except DuplicateSignalCreationTokenError:
+            async with self._transactions() as tx:
+                created=await tx.signals.get_by_creation_token(command.creation_token)
+            if created is None:raise
+        if self._publication_wake:self._publication_wake()
+        if self._monitoring_wake:self._monitoring_wake()
         return created
 
     async def finalize_details(self, command: FinalizeSignalDetailsCommand) -> Signal:

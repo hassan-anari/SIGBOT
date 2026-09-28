@@ -14,7 +14,7 @@ MESSAGE_TEMPLATE_SAVED="✅ متن با موفقیت ثبت شد."
 MESSAGE_TEMPLATE_REMOVED="✅ متن حذف شد و متن ارث‌برده‌شده استفاده می‌شود."
 MESSAGE_TEMPLATE_INVALID="❌ متن معتبر نیست؛ جای‌نگهدارها، HTML و طول متن را بررسی کنید."
 MESSAGE_TEMPLATE_VIEW="<b>متن فعلی</b>\nمنبع: {source}\n\n{template}"
-MESSAGE_TEMPLATE_KIND_LABELS={"i":"شات اولیه","d":"جزئیات سیگنال","t":"تارگت","s":"حد ضرر","b":"بریک‌ایون","c":"کنسل سیگنال","w":"آماده‌باش","r":"فعال‌سازی ریسک فری","v":"سیو سود ۵۰٪","f":"بستن کامل","h":"برخورد ریسک فری"}
+MESSAGE_TEMPLATE_KIND_LABELS={"i":"شات اولیه","d":"جزئیات سیگنال","t":"تارگت","s":"حد ضرر","b":"بریک‌ایون","c":"کنسل سیگنال","w":"آماده‌باش","r":"فعال‌سازی ریسک فری","v":"سیو سود ۵۰٪","f":"بستن کامل","h":"برخورد ریسک فری","l":"سفارش لیمیت در انتظار","x":"لغو سفارش لیمیت"}
 MESSAGE_TEMPLATE_SOURCE_LABELS={"builtin":"پیش‌فرض","global":"پیش‌فرض سفارشی","destination":"اختصاصی مقصد"}
 MESSAGE_TEMPLATE_SCOPE_GLOBAL="پیش‌فرض عمومی"
 MESSAGE_TEMPLATE_SCOPE_DESTINATION="مقصد «{destination}»"
@@ -181,9 +181,10 @@ def signal_review(data):
     rows=[
         SIGNAL_REVIEW_TITLE,
         "",
+        f"📌 <b>نوع ورود:</b> {SIGNAL_ORDER_LIMIT if data.get('order_type')=='limit' else SIGNAL_ORDER_MARKET}",
         f"🪙 <b>نماد:</b> {format_symbol(data['canonical_symbol'])}",
         f"{'📈' if data['direction']=='long' else '📉'} <b>جهت:</b> {direction}",
-        f"💵 <b>قیمت ورود:</b> {format_decimal(Decimal(data['entry_price']))}",
+        f"💵 <b>{'ورود لیمیت' if data.get('order_type')=='limit' else 'قیمت ورود'}:</b> {format_decimal(Decimal(data['entry_price']))}",
         f"⚡ <b>اهرم:</b> {format_leverage(data['leverage'])}",
         "",
         "🎯 <b>تارگت‌ها:</b>",
@@ -212,6 +213,26 @@ def signal_stage_one_review(data):
 SIGNAL_STAGE_ONE_CONFIRM="✅ تأیید و ایجاد سیگنال"
 SIGNAL_STAGE_ONE_EDIT="✏️ بازگشت و ویرایش"
 SIGNAL_PRICE_UNAVAILABLE = "⚠️ قیمت فعلی این نماد ناموجود است. لطفاً دوباره تلاش کنید."
+SIGNAL_ORDER_TYPE_ASK="نوع ورود سیگنال را انتخاب کنید."
+SIGNAL_ORDER_MARKET="بازار"
+SIGNAL_ORDER_LIMIT="لیمیت"
+SIGNAL_ASK_LIMIT_ENTRY="قیمت ورود لیمیت را با ارقام انگلیسی وارد کنید."
+SIGNAL_LIMIT_REVALIDATE="قیمت بازار تغییر کرده و ورود لیمیت دیگر معتبر نیست؛ قیمت ورود را ویرایش و دوباره تلاش کنید."
+SIGNAL_LIMIT_RECORDED="✅ سفارش لیمیت ثبت شد و تا رسیدن قیمت به‌صورت پایدار پایش می‌شود."
+SIGNAL_LIMIT_ACTIVATE="✅ فعال‌سازی سیگنال"
+SIGNAL_LIMIT_ACTIVATED="✅ سیگنال لیمیت فعال شد."
+ACTIVE_SIGNAL_LIMIT_WAITING="در انتظار رسیدن قیمت ورود"
+ACTIVE_SIGNAL_LIMIT_TRIGGERED="قیمت ورود رسیده — در انتظار فعال‌سازی"
+
+def limit_trigger_notification(signal_id,symbol,direction,entry,observed):
+    from chainura.telegram.presentation.formatting import format_decimal,format_symbol,bidi_ascii
+    from chainura.trade_id import format_trade_id
+    direction_text=SIGNAL_DIRECTION_LONG if getattr(direction,"value",direction)=="long" else SIGNAL_DIRECTION_SHORT
+    return (f"شناسه معامله: {bidi_ascii(format_trade_id(signal_id))}\n"
+            f"🎯 <b>شرط ورود لیمیت {format_symbol(symbol)} برقرار شد</b>\n\n"
+            f"جهت: {direction_text}\nورود درخواستی: {format_decimal(entry)}\n"
+            f"قیمت مشاهده‌شده: {format_decimal(observed)}\n\n"
+            "برای شروع پایش پوزیشن، سیگنال را صریحاً فعال کنید.")
 EVENT_APPROVED = "✅ درخواست انتشار این آپدیت ثبت شد."
 EVENT_DECLINED = "این آپدیت برای مقصدها منتشر نخواهد شد."
 EVENT_DECISION_STALE = "⚠️ این درخواست دیگر قابل انجام نیست."
@@ -292,7 +313,7 @@ def _report_state(value):
     if text.startswith("Active Win"): return text.replace("Active Win at TP", "برد فعال در TP")
     if text.startswith("Completed Win"): return text.replace("Completed Win at TP", "برد تکمیل‌شده در TP")
     if text.startswith("Cancelled after TP"): return text.replace("Cancelled after TP","کنسل‌شده پس از TP")
-    return {"Pending Details":"در انتظار تکمیل","Cancelled":"کنسل‌شده","Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
+    return {"Pending Details":"در انتظار تکمیل","Limit Pending Entry":"لیمیت در انتظار ورود","Limit Entry Triggered":"ورود لیمیت رسیده","Cancelled":"کنسل‌شده","Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
 def trade_history_text(page, all_scope=True):
     rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {persian_digits(page.page)} از {persian_digits(page.pages)}"]
     for item in page.items:

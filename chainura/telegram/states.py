@@ -46,10 +46,12 @@ class AdminMessageTemplateManagement(StatesGroup):
 
 
 class SignalCreate(StatesGroup):
+    order_type = State()
     shared_search = State()
     exchange_selection = State()
     native_search = State()
     direction = State()
+    limit_entry = State()
     leverage = State()
     stage_one_review = State()
     stage_one_creating = State()

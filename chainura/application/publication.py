@@ -4,10 +4,12 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
 from chainura.application.initial_caption import build_signal_details_text
 from chainura.application.message_templates import initial_context, details_context, event_context
+from chainura.application.telegram_delivery import normalize_telegram_error
 from chainura.domain.message_template import DestinationMessageKind
 from chainura.domain.destination import DestinationStatus
 from chainura.domain.publication import PublicationStatus, tehran_local_date
@@ -19,6 +21,12 @@ class DeliveryRejected(TelegramDeliveryError, RenderPayloadError, RenderingError
 class DeliveryAmbiguous(TelegramDeliveryError, RenderPayloadError, RenderingError):pass
 class DeliveryRateLimited(TelegramDeliveryError, RenderPayloadError, RenderingError):
  def __init__(self,retry_after):self.retry_after=retry_after
+
+def _raise_telegram(exc):
+ failure=normalize_telegram_error(exc)
+ if failure.retry_after is not None:raise DeliveryRateLimited(failure.retry_after) from None
+ if failure.definite_no_send:raise DeliveryRejected(failure.category) from None
+ raise DeliveryAmbiguous(failure.category) from None
 
 class UpdateContentType(str, Enum):
  PHOTO="photo"
@@ -35,55 +43,46 @@ def update_content_type(event_kind):
 
 class TelegramPhotoPublisher:
  def __init__(self,bot):self.bot=bot
- async def send_initial(self,chat_id,path,caption):
-  try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption or None)
-  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+ async def send_initial(self,chat_id,path,caption,reply_to_message_id=None):
+  try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption or None,
+   reply_to_message_id=reply_to_message_id)
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
   return message_id
  async def send_update(self,chat_id,path,caption,reply_to_message_id):
   try:message=await self.bot.send_photo(chat_id=chat_id,photo=FSInputFile(path),caption=caption,reply_to_message_id=reply_to_message_id)
-  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,'message_id',None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous('invalid_response')
   return message_id
  async def send_text_update(self,chat_id,text,reply_to_message_id):
   try:message=await self.bot.send_message(chat_id=chat_id,text=text,reply_to_message_id=reply_to_message_id)
-  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,'message_id',None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous('invalid_response')
   return message_id
  async def send_details(self,chat_id,text,reply_to_message_id):
   try:message=await self.bot.send_message(chat_id=chat_id,text=text,reply_to_message_id=reply_to_message_id)
-  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
   return message_id
  async def send_standalone_text(self,chat_id,text):
   try:message=await self.bot.send_message(chat_id=chat_id,text=text)
-  except TelegramRetryAfter as exc:raise DeliveryRateLimited(max(0.0,float(exc.retry_after))) from None
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except (TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
   return message_id
  async def send_initial_status(self,telegram_user_id,text,reply_markup):
   try:message=await self.bot.send_message(chat_id=telegram_user_id,text=text,reply_markup=reply_markup)
-  except (TelegramForbiddenError,TelegramBadRequest) as exc:raise DeliveryRejected(type(exc).__name__) from None
-  except Exception as exc:raise DeliveryAmbiguous(type(exc).__name__) from None
+  except (TelegramRetryAfter,TelegramForbiddenError,TelegramBadRequest,TelegramNetworkError,TimeoutError,ConnectionError,asyncio.TimeoutError) as exc:_raise_telegram(exc)
+  except Exception as exc:_raise_telegram(exc)
   message_id=getattr(message,"message_id",None)
   if isinstance(message_id,bool) or not isinstance(message_id,int) or message_id<=0:raise DeliveryAmbiguous("invalid_response")
   return message_id
@@ -156,9 +155,9 @@ class SignalDetailsPublicationService:
    await tx._session.execute(update(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.id==item_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING).values(**values));await tx.commit()
 
 class InitialPublicationService:
- def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
+ def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None,cancellation_wake=None):
   self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock
-  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
+  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates;self.cancellation_wake=cancellation_wake
  async def recover(self):
   from sqlalchemy import update
   from chainura.persistence.models import InitialPublicationNotificationRecord
@@ -213,18 +212,19 @@ class InitialPublicationService:
   if status is not DestinationStatus.ACTIVE or not assigned:
    target=PublicationStatus.SKIPPED_INACTIVE if status is not DestinationStatus.ACTIVE else PublicationStatus.SKIPPED_UNASSIGNED
    await self._finish(delivery,target);return
-  # Capacity is durable before any external operation. Conflicts are retried in bounded transactions.
-  capacity=None
-  for attempt in range(3):
-   try:
-    async with self.transactions() as tx:
-     capacity=await tx.publications.claim_capacity(delivery.id,delivery.destination_id,
-      tehran_local_date(now),delivery.daily_limit,now);await tx.commit()
-    break
-   except DailyCapacityError:
-    if attempt==2:capacity=None
-  if capacity is None:
-   await self._finish(delivery,PublicationStatus.SKIPPED_DAILY_LIMIT);return
+  # Limit activation reuses the slot reserved by its Pending announcement.
+  if delivery.origin=="market":
+   capacity=None
+   for attempt in range(3):
+    try:
+     async with self.transactions() as tx:
+      capacity=await tx.publications.claim_capacity(delivery.id,delivery.destination_id,
+       tehran_local_date(now),delivery.daily_limit,now);await tx.commit()
+     break
+    except DailyCapacityError:
+     if attempt==2:capacity=None
+   if capacity is None:
+    await self._finish(delivery,PublicationStatus.SKIPPED_DAILY_LIMIT);return
   output=None
   try:
    async with self.transactions() as tx:signal=await tx.signals.get_by_id(delivery.signal_id);await tx.commit()
@@ -234,10 +234,20 @@ class InitialPublicationService:
    caption=caption or None
    output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now)
    async with self.transactions() as tx:
-    ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,delivery.destination_id,self.clock())
+    if delivery.origin=="market":
+     ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,
+      delivery.destination_id,self.clock())
+    else:
+     ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,
+      delivery.destination_id,self.clock(),delivery.origin)
     await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
    if ownership!="sending":return
-   try:message_id=await self.publisher.send_initial(delivery.telegram_chat_id,output.file_path,caption)
+   try:
+    if delivery.reply_to_message_id is None:
+     message_id=await self.publisher.send_initial(delivery.telegram_chat_id,output.file_path,caption)
+    else:
+     message_id=await self.publisher.send_initial(delivery.telegram_chat_id,output.file_path,
+      caption,delivery.reply_to_message_id)
    except DeliveryRateLimited as exc:
     attempts=delivery.attempt_count+1
     if attempts<self.max_attempts:
@@ -254,12 +264,27 @@ class InitialPublicationService:
     await self._finish(delivery,PublicationStatus.FAILED,str(exc),expected=PublicationStatus.SENDING,release=True);return
    except DeliveryAmbiguous as exc:
     await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,str(exc),expected=PublicationStatus.SENDING);return
+   cancellation_created=False
    try:
     async with self.transactions() as tx:
+     from chainura.domain.signal import SignalLifecycleStatus
+     from chainura.persistence.models import SignalCancellationPublicationRecord,SignalRecord
      changed=await tx.publications.transition(delivery.id,PublicationStatus.SENDING,
       PublicationStatus.SENT,self.clock(),message_id=message_id)
      if not changed:raise TelegramDeliveryError("publication ownership was lost")
+     signal=await tx._session.get(SignalRecord,delivery.signal_id)
+     if signal and signal.status is SignalLifecycleStatus.CANCELLED:
+      result=await tx._session.execute(sqlite_insert(SignalCancellationPublicationRecord).values(
+       signal_id=delivery.signal_id,destination_id=delivery.destination_id,
+       status=PublicationStatus.PENDING,attempt_count=0,created_at=self.clock(),
+       updated_at=self.clock()).on_conflict_do_nothing(
+        index_elements=("signal_id","destination_id")))
+      cancellation_created=result.rowcount==1
+     elif delivery.origin=="limit_activation":
+      await tx.publications.ensure_details(delivery.signal_id,delivery.destination_id,
+                                           message_id,self.clock())
      await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+    if cancellation_created and self.cancellation_wake:self.cancellation_wake()
    except Exception as exc:
     LOGGER.warning("sent result persistence ambiguous publication_id=%s category=%s",delivery.id,type(exc).__name__)
     try:await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,"sent_commit_failed",expected=PublicationStatus.SENDING)

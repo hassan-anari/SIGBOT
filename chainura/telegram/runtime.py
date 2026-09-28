@@ -69,6 +69,9 @@ from chainura.application.message_templates import DestinationMessageTemplateSer
 from chainura.application.active_signals import ActiveSignalService
 from chainura.application.publication import CancellationPublicationService,CancellationPublicationWorker
 from chainura.application.signal_comments import SignalCommentService,SignalCommentPublicationService,SignalCommentPublicationWorker
+from chainura.application.limit_orders import LimitOrderService,LimitMonitoringWorker
+from chainura.application.limit_publication import (LimitPendingPublicationService,
+    LimitCancellationPublicationService,LimitPublicationWorker)
 
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
@@ -161,6 +164,9 @@ class Runtime:
         self.comment_publication_worker=None;self.comment_publication_task=None
         self.warmup_publication_worker=None;self.warmup_publication_task=None
         self.position_action_publication_worker=None;self.position_action_publication_task=None
+        self.limit_monitoring_worker=None;self.limit_monitoring_task=None
+        self.limit_publication_worker=None;self.limit_publication_task=None
+        self.limit_cancellation_worker=None;self.limit_cancellation_task=None
 
     def request_shutdown(self) -> None:
         if self.state is not RuntimeState.STOPPED:
@@ -282,9 +288,15 @@ class Runtime:
                 monitoring_service=MonitoringService(sessions,snapshot_provider,
                 BreakevenSettings(self.settings.breakeven_min_open_seconds,self.settings.breakeven_favorable_move_percent,self.settings.breakeven_execution_tolerance_percent,self.settings.breakeven_rearm_distance_percent,self.settings.breakeven_prompt_cooldown_seconds))
                 await self._startup_await(monitoring_service.reconcile())
+            limit_order_service=(LimitOrderService(sessions,snapshot_provider)
+                                 if hasattr(sessions,"class_") else None)
+            async def load_all_market_work(limit):
+                normal=await monitoring_service.load_work(limit) if monitoring_service else ()
+                pending=await limit_order_service.load_work(limit) if limit_order_service else ()
+                return tuple(normal)+tuple(pending)
             self.market_worker = MarketPriceWorker(
                 market_probe, symbol_catalog,
-                monitoring_service.load_work if monitoring_service is not None else None,
+                load_all_market_work if monitoring_service is not None else None,
                 self.settings.market_price_poll_seconds,
             )
             symbol_catalog.market_service = self.market_worker
@@ -299,8 +311,11 @@ class Runtime:
                         actions=(await monitoring_service.tp_action_availability(source_id,candidate.signalist_id)
                             if candidate and (not notification or notification.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION) else ())
                         markup=event_decision_keyboard(source_id,actions)
-                    else:
+                    elif kind is NotificationKind.BREAKEVEN_PROMPT:
                         markup=breakeven_prompt_keyboard(source_id)
+                    else:
+                        from chainura.telegram.active_signal_routes import limit_activation_keyboard
+                        markup=limit_activation_keyboard(source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
                     return message.message_id
             class AdminAlertTransport:
@@ -324,10 +339,30 @@ class Runtime:
                 self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds,
                     lifecycle_reconcile=monitoring_service.reconcile_inactive_final_positions)
                 monitoring_service.notification_wake=self.notification_worker.wake
+                if limit_order_service is not None:
+                    limit_order_service.notification_wake=self.notification_worker.wake
                 if self.settings.monitoring_enabled:
                     self.monitoring_worker=MonitoringWorker(monitoring_service,self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,self.settings.monitoring_concurrency)
+                    self.limit_monitoring_worker=LimitMonitoringWorker(limit_order_service,
+                        self.settings.monitoring_interval_seconds,self.settings.monitoring_batch_size,
+                        self.settings.monitoring_concurrency)
             template_admin_service=None
             message_template_service=DestinationMessageTemplateService(transactions)
+            telegram_publisher=TelegramPhotoPublisher(self.bot)
+            limit_pending_service=None;limit_cancellation_service=None
+            if hasattr(sessions,"class_"):
+                limit_pending_service=LimitPendingPublicationService(transactions,
+                    telegram_publisher,message_template_service,max_attempts=self.settings.send_max_attempts,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.limit_publication_worker=LimitPublicationWorker(limit_pending_service,
+                    self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                limit_cancellation_service=LimitCancellationPublicationService(transactions,
+                    telegram_publisher,message_template_service,
+                    retry_base_seconds=self.settings.send_retry_base_seconds)
+                self.limit_cancellation_worker=LimitPublicationWorker(limit_cancellation_service,
+                    self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                await self._startup_await(limit_pending_service.recover())
+                await self._startup_await(limit_cancellation_service.recover())
             warmup_service = None
             if hasattr(sessions,"class_"):
                 warmup_delivery = WarmupPublicationService(
@@ -349,18 +384,25 @@ class Runtime:
                 self.cancellation_publication_worker=CancellationPublicationWorker(cancellation_service,self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 await self._startup_await(cancellation_service.recover());await self._startup_await(self.cancellation_publication_worker.start())
                 self.cancellation_publication_task=self.cancellation_publication_worker.task
-            active_signal_service=ActiveSignalService(transactions,cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None)
+                if limit_pending_service is not None:
+                    limit_pending_service.cancellation_wake=self.limit_cancellation_worker.wake
+            active_signal_service=ActiveSignalService(transactions,
+                cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None,
+                limit_cancellation_wake=self.limit_cancellation_worker.wake if self.limit_cancellation_worker else None)
             if self.settings.rendering is not None:
                 template_service=TemplateService(transactions,TemplateAssetStore(self.settings.rendering.template_asset_root))
                 self.initial_image_service=InitialImageService(InitialPayloadFactory(
                     CoinLogoStore(self.settings.rendering.toobit_logo_root)),template_service,
                     self.settings.rendering.output_root,self.settings.rendering.concurrency)
-                photo_publisher=TelegramPhotoPublisher(self.bot)
+                photo_publisher=telegram_publisher
                 publication_service=InitialPublicationService(transactions,self.initial_image_service,
                     photo_publisher,max_attempts=self.settings.send_max_attempts,
-                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
+                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service,
+                    cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None)
                 self.publication_worker=InitialPublicationWorker(publication_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
+                if limit_pending_service is not None:
+                    limit_pending_service.activation_wake=self.publication_worker.wake
                 update_publication_service=UpdatePublicationService(transactions,self.initial_image_service,
                     photo_publisher,max_attempts=self.settings.update_send_max_attempts,
                     retry_base_seconds=self.settings.update_send_retry_base_seconds,message_templates=message_template_service)
@@ -385,8 +427,17 @@ class Runtime:
                 class BothTemplateService:
                     async def unblock_templates(_,):
                         await publication_service.unblock_templates();await update_publication_service.unblock_templates()
+                        if limit_pending_service:
+                            async with transactions() as tx:
+                                from chainura.persistence.models import LimitPendingPublicationRecord
+                                from chainura.domain.publication import PublicationStatus
+                                from sqlalchemy import update
+                                await tx._session.execute(update(LimitPendingPublicationRecord).where(
+                                    LimitPendingPublicationRecord.status==PublicationStatus.BLOCKED_TEMPLATE).values(
+                                    status=PublicationStatus.PENDING,last_error_category=None));await tx.commit()
                 def wake_templates():
                     self.publication_worker.wake();self.update_publication_worker.wake()
+                    if self.limit_publication_worker:self.limit_publication_worker.wake()
                 template_admin_service=TemplateAdministrationService(template_service,
                     BothTemplateService(),wake_templates)
             if self.publication_worker is not None:
@@ -405,6 +456,14 @@ class Runtime:
                 await self._startup_await(self.details_publication_worker.start())
                 self.details_publication_task=self.details_publication_worker.task
                 self.details_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"signal details publication worker"))
+            if self.limit_publication_worker is not None:
+                await self._startup_await(self.limit_publication_worker.start())
+                self.limit_publication_task=self.limit_publication_worker.task
+                self.limit_publication_task.add_done_callback(lambda task:self._observed_worker_done(task,"Limit pending publication worker"))
+            if self.limit_cancellation_worker is not None:
+                await self._startup_await(self.limit_cancellation_worker.start())
+                self.limit_cancellation_task=self.limit_cancellation_worker.task
+                self.limit_cancellation_task.add_done_callback(lambda task:self._observed_worker_done(task,"Limit cancellation publication worker"))
             comment_service=None
             if hasattr(sessions,"class_"):
                 comment_delivery=SignalCommentPublicationService(transactions,TelegramPhotoPublisher(self.bot),self.initial_image_service,max_attempts=self.settings.update_send_max_attempts,retry_base_seconds=self.settings.update_send_retry_base_seconds)
@@ -419,6 +478,10 @@ class Runtime:
                 await self._startup_await(self.monitoring_worker.start())
                 self.monitoring_task=self.monitoring_worker.task
                 self.monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"monitoring worker"))
+            if self.limit_monitoring_worker is not None:
+                await self._startup_await(self.limit_monitoring_worker.start())
+                self.limit_monitoring_task=self.limit_monitoring_worker.task
+                self.limit_monitoring_task.add_done_callback(lambda task:self._observed_worker_done(task,"Limit monitoring worker"))
             if self.admin_alert_worker is not None:
                 await self._startup_await(self.admin_alert_worker.start())
                 self.admin_alert_task=self.admin_alert_worker.task
@@ -434,10 +497,15 @@ class Runtime:
                 if self.details_publication_worker:self.details_publication_worker.wake()
                 if self.monitoring_worker:self.monitoring_worker.wake()
                 if self.admin_alert_worker:self.admin_alert_worker.wake()
+                if self.limit_publication_worker:self.limit_publication_worker.wake()
+                if self.limit_monitoring_worker:self.limit_monitoring_worker.wake()
             signal_service = SignalService(
                 transactions, MarketReferencePriceProvider(market_probe, symbol_catalog, health_repository),
                 publication_wake=wake_background,monitoring_wake=wake_background,
                 details_publication_wake=wake_background)
+            if limit_order_service is not None:
+                limit_order_service.publication_wake=wake_background
+                limit_order_service.monitoring_wake=wake_background
             admin_signalist_service = AdminSignalistService(
                 self.settings.application.main_admin_telegram_ids,
                 service,
@@ -452,6 +520,7 @@ class Runtime:
                 template_admin_service=template_admin_service,
                 message_template_service=message_template_service,
                 active_signal_service=active_signal_service,
+                limit_order_service=limit_order_service,
                 signal_comment_service=comment_service,
                 warmup_service=warmup_service,
                 destination_inspector=TelegramDestinationInspector(self.bot))
@@ -496,6 +565,9 @@ class Runtime:
         if self.admin_alert_task is not None:watched.add(self.admin_alert_task)
         if self.comment_publication_task is not None:watched.add(self.comment_publication_task)
         if self.warmup_publication_task is not None:watched.add(self.warmup_publication_task)
+        if self.limit_monitoring_task is not None:watched.add(self.limit_monitoring_task)
+        if self.limit_publication_task is not None:watched.add(self.limit_publication_task)
+        if self.limit_cancellation_task is not None:watched.add(self.limit_cancellation_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -544,6 +616,12 @@ class Runtime:
         if self.warmup_publication_task is not None and self.warmup_publication_task in done:
             self._observe_task_failure(self.warmup_publication_task,"warm-up publication worker")
             if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or "warm-up publication worker stopped unexpectedly"
+        for task,component in ((self.limit_monitoring_task,"Limit monitoring worker"),
+                               (self.limit_publication_task,"Limit pending publication worker"),
+                               (self.limit_cancellation_task,"Limit cancellation publication worker")):
+            if task is not None and task in done:
+                self._observe_task_failure(task,component)
+                if self.state is RuntimeState.RUNNING:fatal_reason=fatal_reason or f"{component} stopped unexpectedly"
         self.request_shutdown()
         shutdown_waiter.cancel()
         with suppress(asyncio.CancelledError):
@@ -598,6 +676,8 @@ class Runtime:
 
             if self.monitoring_worker:
                 await self._best_effort(self.monitoring_worker.stop(), "monitoring worker")
+            if self.limit_monitoring_worker:
+                await self._best_effort(self.limit_monitoring_worker.stop(), "Limit monitoring worker")
             if self.market_worker:
                 await self._best_effort(self.market_worker.stop(), "market price worker")
             if self.notification_worker:
@@ -616,6 +696,10 @@ class Runtime:
                 await self._best_effort(self.comment_publication_worker.close(), "signal comment publication worker")
             if self.warmup_publication_worker:
                 await self._best_effort(self.warmup_publication_worker.close(), "warm-up publication worker")
+            if self.limit_cancellation_worker:
+                await self._best_effort(self.limit_cancellation_worker.close(), "Limit cancellation publication worker")
+            if self.limit_publication_worker:
+                await self._best_effort(self.limit_publication_worker.close(), "Limit pending publication worker")
             if self.publication_worker:
                 await self._best_effort(self.publication_worker.close(), "publication worker")
             if self.initial_image_service:

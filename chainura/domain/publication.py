@@ -72,6 +72,8 @@ class PublicationDelivery:
     telegram_chat_id: int
     private: bool
     daily_limit: int
+    origin: str = "market"
+    reply_to_message_id: int | None = None
 
 
 def select_event_exchange(mode, selected_exchange, priorities, source_exchanges):

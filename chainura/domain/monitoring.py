@@ -56,6 +56,7 @@ class PromptStatus(str, Enum):
 class NotificationKind(str, Enum):
     EVENT = "event"
     BREAKEVEN_PROMPT = "breakeven_prompt"
+    LIMIT_TRIGGER = "limit_trigger"
 
 
 class NotificationStatus(str, Enum):

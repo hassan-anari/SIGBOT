@@ -13,7 +13,7 @@ from chainura.persistence.models import (DestinationExchangePriorityRecord, Dest
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
     SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
-    DestinationTradeLockRecord, utc_now)
+    DestinationTradeLockRecord, SignalDetailsPublicationRecord, utc_now)
 from chainura.domain.signal import SignalLifecycleStatus
 from chainura.domain.monitoring import MonitorStage
 
@@ -169,16 +169,18 @@ class SqlAlchemyPublicationRepository:
             retry_at=None,
             first_attempt_at=func.coalesce(DestinationPublicationRecord.first_attempt_at,now)).returning(
             DestinationPublicationRecord.signal_id,DestinationPublicationRecord.destination_id,
-            DestinationPublicationRecord.selected_exchange,DestinationPublicationRecord.attempt_count))).one_or_none()
+            DestinationPublicationRecord.selected_exchange,DestinationPublicationRecord.attempt_count,
+            DestinationPublicationRecord.origin,DestinationPublicationRecord.reply_to_message_id))).one_or_none()
         if claimed is None:return None
-        signal_id,destination_id,exchange,attempts=claimed
+        signal_id,destination_id,exchange,attempts,origin,reply_to=claimed
         destination=await self.session.get(DestinationRecord,destination_id)
         signalist_id=await self.session.scalar(select(SignalRecord.signalist_id).where(SignalRecord.id==signal_id))
         assigned=await self.session.scalar(select(exists().where(DestinationSignalistRecord.destination_id==destination_id,
             DestinationSignalistRecord.signalist_id==signalist_id)))
         if destination is None:return None
         return PublicationDelivery(publication_id,signal_id,destination_id,exchange,PublicationStatus.RENDERING,
-            attempts,destination.telegram_chat_id,destination.access_level is DestinationAccessLevel.PRIVATE,destination.daily_limit),destination.status,assigned
+            attempts,destination.telegram_chat_id,destination.access_level is DestinationAccessLevel.PRIVATE,
+            destination.daily_limit,origin,reply_to),destination.status,assigned
 
     async def transition(self, publication_id, expected, target, now, *, error=None, message_id=None, template_sha=None, increment=False,retry_at=None):
         values={"status":target,"updated_at":now,"last_error_category":error,
@@ -189,7 +191,7 @@ class SqlAlchemyPublicationRepository:
             DestinationPublicationRecord.id==publication_id,DestinationPublicationRecord.status==expected).values(**values))
         return result.rowcount==1
 
-    async def prepare_send(self,publication_id,signal_id,destination_id,now):
+    async def prepare_send(self,publication_id,signal_id,destination_id,now,origin="market"):
         destination=await self.session.get(DestinationRecord,destination_id)
         signal=await self.session.get(SignalRecord,signal_id);signalist_id=signal.signalist_id if signal else None
         assigned=bool(await self.session.scalar(select(exists().where(
@@ -200,6 +202,17 @@ class SqlAlchemyPublicationRepository:
         elif destination is None or destination.status is not DestinationStatus.ACTIVE:
             target=PublicationStatus.SKIPPED_INACTIVE
         elif not assigned:target=PublicationStatus.SKIPPED_UNASSIGNED
+        elif origin=="limit_activation":
+            owner=await self.session.scalar(select(DestinationTradeLockRecord.signal_id).where(
+                DestinationTradeLockRecord.destination_id==destination_id,
+                DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))
+            if owner!=signal_id:
+                changed=await self.transition(publication_id,PublicationStatus.RENDERING,
+                    PublicationStatus.SUPERSEDED,now,error=TRADE_LOCK_REASON)
+                return PublicationStatus.SUPERSEDED.value if changed else "lost"
+            changed=await self.transition(publication_id,PublicationStatus.RENDERING,
+                PublicationStatus.SENDING,now,increment=True)
+            return "sending" if changed else "lost"
         else:
             admitted=await self.acquire_trade_lock(signal_id,destination_id,signal.canonical_symbol,now)
             if not admitted:
@@ -234,6 +247,15 @@ class SqlAlchemyPublicationRepository:
     async def release_capacity(self,publication_id):
         await self.session.execute(delete(InitialPublicationDailySlotRecord).where(
             InitialPublicationDailySlotRecord.publication_id==publication_id))
+
+    async def ensure_details(self,signal_id,destination_id,message_id,now):
+        exists_row=await self.session.scalar(select(SignalDetailsPublicationRecord.id).where(
+            SignalDetailsPublicationRecord.signal_id==signal_id,
+            SignalDetailsPublicationRecord.destination_id==destination_id))
+        if exists_row is None:
+            self.session.add(SignalDetailsPublicationRecord(signal_id=signal_id,
+                destination_id=destination_id,status=PublicationStatus.PENDING,
+                reply_to_message_id=message_id,created_at=now,updated_at=now))
 
     async def complete_request(self,signal_id,now):
         unfinished=await self.session.scalar(select(func.count()).select_from(DestinationPublicationRecord).where(

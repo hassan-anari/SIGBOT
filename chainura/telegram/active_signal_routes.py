@@ -15,11 +15,16 @@ from chainura.telegram.presentation.formatting import bidi_ascii
 
 router=Router(name="phase7-active-signals");PREFIX="as7:"
 def cb(action,*parts):return PREFIX+":".join((action,*(str(x) for x in parts)))
+def limit_activation_keyboard(signal_id):
+ return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+  text=texts.SIGNAL_LIMIT_ACTIVATE,callback_data=cb("a",signal_id,1))]])
 def _parse(data):
  try:
   parts=data.split(":");return parts[1],tuple(int(x) for x in parts[2:])
  except (ValueError,IndexError,AttributeError):return None,()
 def _status(x):return (texts.ACTIVE_SIGNAL_PENDING if x.status is SignalLifecycleStatus.PENDING_DETAILS else
+ texts.ACTIVE_SIGNAL_LIMIT_WAITING if x.status is SignalLifecycleStatus.PENDING_ENTRY else
+ texts.ACTIVE_SIGNAL_LIMIT_TRIGGERED if x.status is SignalLifecycleStatus.ENTRY_TRIGGERED else
  texts.ACTIVE_SIGNAL_LEGACY_UNAVAILABLE if x.monitor_stage is MonitorStage.DISABLED_LEGACY else texts.ACTIVE_SIGNAL_ACTIVE)
 def _label(x):return f"{format_trade_id(x.id)} • {x.symbol} • {'لانگ' if x.direction is TradeDirection.LONG else 'شورت'} • {_status(x)}"
 def list_keyboard(page):
@@ -36,6 +41,9 @@ def detail_text(x):
   rows.append(f"ریسک فری: {'فعال' if x.risk_free_active else 'استفاده‌شده' if x.risk_free_used else 'استفاده‌نشده'}")
   rows.append(f"سیو سود ۵۰٪: {'استفاده‌شده' if x.save_profit_50_used else 'استفاده‌نشده'}")
   if x.realized_weighted_roi:rows.append(f"بازده محقق‌شده: {format_decimal(x.realized_weighted_roi)}٪")
+ elif x.status in (SignalLifecycleStatus.PENDING_ENTRY,SignalLifecycleStatus.ENTRY_TRIGGERED):
+  rows.extend([f"نوع ورود: {texts.SIGNAL_ORDER_LIMIT}",f"ورود لیمیت: {format_decimal(x.entry)}"])
+  if x.trigger_price is not None:rows.append(f"قیمت مشاهده‌شده: {format_decimal(x.trigger_price)}")
  return "\n".join(rows)
 def detail_keyboard(x,page):
  rows=[]
@@ -43,6 +51,8 @@ def detail_keyboard(x,page):
   rows.extend([[InlineKeyboardButton(text=(texts.ACTIVE_SIGNAL_TP_REACHED if i<=x.highest_tp_index else texts.ACTIVE_SIGNAL_TP_WAITING).format(index=i),callback_data=cb("n",x.id))] for i in range(1,len(x.take_profits)+1)]);rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_SL_WAITING,callback_data=cb("n",x.id))])
  elif x.status is SignalLifecycleStatus.PENDING_DETAILS:
   rows.append([InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CONTINUE,callback_data=cb("r",x.id))])
+ elif x.status is SignalLifecycleStatus.ENTRY_TRIGGERED:
+  rows.append([InlineKeyboardButton(text=texts.SIGNAL_LIMIT_ACTIVATE,callback_data=cb("a",x.id,page))])
  actions=[]
  if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_COMMENT,callback_data=cb("o",x.id,page)))
  actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL,callback_data=cb("c",x.id,page)));rows.append(actions);rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("l",page))]);return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -74,7 +84,7 @@ async def _show(message,actor,service,page=1):
 async def active_list(message:Message,actor:Actor,active_signal_service):await _show(message,actor,active_signal_service)
 
 @router.callback_query(F.data.startswith(PREFIX))
-async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,signal_comment_service=None):
+async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,limit_order_service=None,signal_comment_service=None):
  action,args=_parse(callback.data);await callback_ack.answer_once()
  if not isinstance(callback.message,Message):return
  from chainura.telegram.signal_routes import reconcile_stage_one_creating
@@ -114,6 +124,12 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
   from chainura.telegram.signal_routes import signal_callback_handler
   from chainura.telegram.presentation.signal_callbacks import SignalCallback
   return await signal_callback_handler(callback,SignalCallback(kind="continue",flow="resume",ref=str(signal_id),page=1),actor,state,callback_ack,None,signal_service)
+ if action=="a":
+  if item.status is not SignalLifecycleStatus.ENTRY_TRIGGERED or limit_order_service is None:
+   return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+  activated=await limit_order_service.activate(signal_id,actor.signalist.id)
+  return await callback.message.answer(texts.SIGNAL_LIMIT_ACTIVATED if activated else texts.ACTIVE_SIGNAL_STALE,
+                                       reply_markup=signalist_menu())
  if action=="c":
   markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL_YES,callback_data=cb("y",signal_id,page)),InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL_NO,callback_data=cb("d",signal_id,page))],[InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("d",signal_id,page))]])
   return await callback.message.answer(texts.active_signal_cancel_confirm(

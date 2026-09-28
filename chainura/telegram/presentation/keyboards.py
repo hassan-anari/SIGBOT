@@ -70,6 +70,13 @@ def signal_directions(flow: str) -> InlineKeyboardMarkup:
       [InlineKeyboardButton(text=texts.SIGNAL_LONG,callback_data=signal_callback("dir",flow,"long")),InlineKeyboardButton(text=texts.SIGNAL_SHORT,callback_data=signal_callback("dir",flow,"short"))],
       [InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"symbol")),InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))]])
 
+def signal_order_types(flow: str) -> InlineKeyboardMarkup:
+    from chainura.telegram.presentation.signal_callbacks import signal_callback
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=texts.SIGNAL_ORDER_MARKET,callback_data=signal_callback("ot",flow,"market")),
+        InlineKeyboardButton(text=texts.SIGNAL_ORDER_LIMIT,callback_data=signal_callback("ot",flow,"limit"))],
+        [InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))]])
+
 
 def signal_tp_actions(flow: str, has_tps: bool, *, details_only: bool = False) -> InlineKeyboardMarkup:
     from chainura.telegram.presentation.signal_callbacks import signal_callback
