@@ -79,6 +79,8 @@ class ReportSummary:
     maximum_positive_roi: Decimal | None = None
     average_negative_roi: Decimal | None = None
     minimum_negative_roi: Decimal | None = None
+    best_roi: Decimal | None = None
+    worst_roi: Decimal | None = None
     tp1_count: int = 0
     tp2_count: int = 0
     tp3_plus_count: int = 0
@@ -91,12 +93,6 @@ class ReportSummary:
     def neutral(self): return self.breakevens
     @property
     def active_signals(self): return self.open_signals
-    @property
-    def best_roi(self): return self.maximum_positive_roi if self.maximum_positive_roi is not None else (self.minimum_negative_roi if self.minimum_negative_roi is not None else None)
-    @property
-    def worst_roi(self): return self.minimum_negative_roi if self.minimum_negative_roi is not None else self.maximum_positive_roi
-
-
 @dataclass(frozen=True, slots=True)
 class TradeHistoryItem:
     signal_id: int; signalist_display_name: str; canonical_symbol: str; direction: str
@@ -200,6 +196,7 @@ def summarize(items, *, published_count=0) -> ReportSummary:
         total_roi=sum(rois, Decimal("0")), average_roi=avg(rois), average_positive_roi=avg(positive),
         maximum_positive_roi=max(positive) if positive else None, average_negative_roi=avg(negative),
         minimum_negative_roi=min(negative) if negative else None,
+        best_roi=max(rois) if rois else None, worst_roi=min(rois) if rois else None,
         tp1_count=sum(x.highest_tp == 1 and not x.cancelled for x in items), tp2_count=sum(x.highest_tp == 2 and not x.cancelled for x in items),
         tp3_plus_count=sum(bool(x.highest_tp and x.highest_tp >= 3 and not x.cancelled) for x in items),
         composite_count=sum(x.source_label == "Composite" for x in items),

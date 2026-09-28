@@ -67,3 +67,11 @@ class SignalComment(StatesGroup):
 class AdminReportFlow(StatesGroup):
     start_date = State()
     end_date = State()
+
+class SignalistReportFlow(StatesGroup):
+    start_date = State()
+    end_date = State()
+
+class DestinationReportFlow(StatesGroup):
+    start_date = State()
+    end_date = State()

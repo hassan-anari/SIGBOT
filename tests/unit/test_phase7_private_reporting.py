@@ -49,3 +49,16 @@ def test_private_formatters_structurally_have_no_cross_identity_fields():
     rendered=texts.private_history_text(page)
     for forbidden in ("Destination","مقصد","انتشار","ارسال"):
         assert forbidden not in rendered
+
+def test_best_and_worst_use_all_roi_samples():
+    cases=((('-5','-1','2','8'),Decimal('8'),Decimal('-5')),
+           (('1','5','3'),Decimal('5'),Decimal('1')),
+           (('-5','-1','-3'),Decimal('-1'),Decimal('-5')),
+           (('4',),Decimal('4'),Decimal('4')))
+    for values,best,worst in cases:
+        rows=tuple(_projection(signal(),monitor(),position(value,True)) for value in values)
+        summary=summarize(rows)
+        assert summary.best_roi == best
+        assert summary.worst_roi == worst
+    empty=summarize(())
+    assert empty.best_roi is None and empty.worst_roi is None
