@@ -81,15 +81,15 @@ tasks, await `InitialImageService.aclose()`, then close renderer registration.
 
 ## کار فعلی پروژه
 
-- دریافت لیست قراردادهای خطی USDT از Ourbit، Toobit و LBank
+- دریافت فهرست هستهٔ مشترک از Ourbit، Toobit و LBank و غنی‌سازی اختیاری با WEEX
 - نرمال‌سازی Symbolها
-- استخراج اشتراک سه صرافی
-- دریافت Last Price هر سه صرافی با REST هر ۵ ثانیه
+- حفظ اشتراک سه صرافی هسته؛ نبود قرارداد WEEX نماد مشترک را حذف نمی‌کند
+- دریافت قیمت‌های سه منبع هسته و WEEX MARK به‌صورت REST گروهی؛ بدون درخواست جداگانه برای هر سیگنال
 - محاسبه Reference Price:
-  - سه منبع سالم: Median
-  - سه منبع با یک Outlier: Median و وضعیت `degraded`
-  - دو منبع نزدیک: Average و وضعیت `degraded`
-  - کمتر از دو منبع یا منابع ناسازگار: بدون Reference Price
+  - دو منبع هم‌نظر: Average
+  - سه منبع: Median با حفاظت agreement/outlier
+  - چهار منبع هم‌نظر: Average دو قیمت میانی؛ یک Outlier یکتا: Median سه منبع باقی‌مانده
+  - کمتر از دو منبع یا بدون quorum یکتا: بدون Reference Price
 - ذخیره خروجی‌های بررسی در فایل JSON
 - حذف قیمت‌های قدیمی‌تر از ۱۵ ثانیه از محاسبه در زمان تحلیل
 - تشخیص Snapshot ناقص و نگهداری وضعیت جاری هر صرافی در حافظه
@@ -337,7 +337,7 @@ Outlier = lbank
 
 داخل `output/`:
 
-- `common_symbols.json`: اشتراک سه صرافی
+- `common_symbols.json`: اشتراک سه صرافی هسته (Ourbit/Toobit/LBank)
 - `symbol_mapping.json`: Symbol خام هر صرافی
 - `symbol_diagnostics.json`: آمار کامل Discovery و Validation
 - `price_ready_symbols.json`: Symbolهایی که Reference Price دارند
@@ -362,6 +362,8 @@ Outlier یا Reference Price شرکت نمی‌کند. وضعیت جاری صر�
 - Toobit prices: `GET https://api.toobit.com/quote/v1/contract/ticker/price`
 - LBank instruments: `GET https://lbkperp.lbank.com/cfd/openApi/v1/pub/instrument?productGroup=SwapU`
 - LBank prices: `GET https://lbkperp.lbank.com/cfd/openApi/v1/pub/marketData?productGroup=SwapU`
+- WEEX catalog: Contract API V3 `exchangeInfo` intersected with `apiTradingSymbols`
+- WEEX prices: bulk Contract API V3 `premiumIndex`, using `markPrice`
 
 ## ساختار پروژه
 
@@ -384,7 +386,7 @@ haz-market-data-rest-logging/
 
 ## فاز 5A: ساخت سیگنال و قرارداد رندر
 
-فاز 5A مدل پایدار سیگنال، دو مسیر نماد مشترک و قرارداد دقیق تک‌صرافی، اعتبارسنجی Decimal قیمت ورود با تلورانس دقیق `0.05%`، بازاعتبارسنجی نهایی، و ثبت اتمیک و idempotent را اضافه می‌کند. فقط سیگنالیست فعال از گزینهٔ پایدار `➕ ساخت سیگنال` استفاده می‌کند؛ پیش‌نویس فقط در FSM موقت Redis است و پس از تأیید، پیام فارسی کنترل‌شدهٔ ثبت موفق نمایش داده می‌شود. هیچ اطلاعات مقصدی نشان داده و هیچ انتشاری انجام نمی‌شود.
+مسیر فعلی Market هنگام انتخاب Symbol مقدار P0 و هنگام ایجاد نهایی P1 تازه را ثبت می‌کند؛ Drift دقیق P0→P1 حداکثر `0.70%` است و Reference پذیرفته‌شده Entry معتبر Market می‌شود. Stage Two در `PENDING_DETAILS` ادامه می‌یابد. مسیر Limit نیز Entry درخواستی Decimal را طبق بخش Limit پایین‌تر حفظ می‌کند. فقط سیگنالیست فعال از گزینهٔ پایدار `➕ ساخت سیگنال` استفاده می‌کند؛ پیش‌نویس فقط در FSM موقت Redis است و پس از تأیید، پیام فارسی کنترل‌شدهٔ ثبت موفق نمایش داده می‌شود. هیچ اطلاعات مقصدی نشان داده و هیچ انتشاری انجام نمی‌شود.
 
 Migration را با دستور زیر اعمال کنید:
 
@@ -398,7 +400,7 @@ alembic upgrade head
 
 مسیر سیگنالیست فعال اکنون جست‌وجو و صفحه‌بندی فهرست مشترک، مسیر قرارداد تأییدشدهٔ تک‌صرافی، انتخاب جهت، اعتبارسنجی اولیهٔ Entry، اهرم، تارگت‌های مرتب، SL، مرور نهایی و بازاعتبارسنجی بازار پیش از ثبت اتمیک را پوشش می‌دهد. Callbackهای این مسیر typed، ASCII و وابسته به Flow هستند و پاسخ دیررس جست‌وجو یا قیمت پس از لغو، `/start` یا بازگشت به منوی اصلی نمی‌تواند FSM را زنده یا سیگنال را ثبت کند. Runtime از `MarketProbe` و Adapterهای موجود برای Catalog و Reference Price استفاده می‌کند و معماری HTTP صرافی دیگری ندارد.
 
-اندازه‌های نهایی Canvas به‌صورت Specification تغییرناپذیر در `chainura/rendering/models.py` تعریف شده‌اند: Ourbit برابر 1080×1148، Toobit برابر 942×1010 و LBank برابر 830×1005، همگی PNG. این مشخصات فقط Contract هستند؛ همچنان هیچ Pillow compositor، مختصات، فونت یا Template تولیدی وجود ندارد.
+مشخصات Canvas در `chainura/rendering/models.py` متمرکز است: Ourbit برابر 1080×1148، Toobit برابر 942×1010، LBank برابر 830×1005 و WEEX برابر 1000×1000، همگی PNG. چیدمان WEEX یک طرح declarative اولیه و عملیاتی است؛ Main Admin قالب پیش‌فرض/اختصاصی را مدیریت می‌کند و تنظیم نهایی مختصات و تایپوگرافی فقط از Renderer Lab انجام می‌شود.
 
 ## Phase 5C initial publication
 
@@ -415,21 +417,21 @@ and may approve or decline future destination publication. Phase 6A records that
 intent only; destination rendering, publication, retries, and Reply Chains remain
 Phase 6B work.
 
-Breakeven is contextual and manual: after five minutes and a 1.00% favorable
-move, a return to the 0.10% Entry zone creates one durable prompt. Rearming needs
-a 0.20% exit and a 15-minute cooldown, and acceptance always rechecks a fresh
-price. Symbol-search buttons display current composite or selected-exchange prices
-and unavailable results cannot advance.
+Current Signals do not create automatic Breakeven prompts. After an eligible TP,
+the Signalist may explicitly activate Risk Free, which moves Effective Stop to
+Entry. A later Entry hit records `RISK_FREE_HIT` and closes the remaining slice at
+exact zero ROI. Historical Breakeven events, prompts, routes, and report rows remain
+readable compatibility data only.
 
 ### Phase 6B update publication
 
-Approved TP/SL/Breakeven candidates now create durable update-publication requests. The worker waits for completed initial publication, plans only destinations with confirmed initial messages, renders a new event-time image with the existing template hierarchy, sends a concise Persian caption as a Telegram photo reply, preserves per-destination Reply Chains, and recovers safely after restart. Updates do not consume initial daily capacity and never include `#پیامک`.
+Approved current TP/SL/Risk-Free lifecycle updates, plus historical Breakeven candidates retained for compatibility, use durable update-publication requests. The worker waits for completed initial publication, plans only destinations with confirmed initial messages, renders a new event-time image with the existing template hierarchy, sends a concise Persian caption as a Telegram photo reply, preserves per-destination Reply Chains, and recovers safely after restart. Updates do not consume initial daily capacity and never include `#پیامک`.
 
 ## Phase 6C reports and API health
 
-Main Admin reports are on-demand only. Report dates use the Asia/Tehran calendar and are converted to half-open UTC intervals based on Signal creation time. Win Rate is `wins / (wins + losses) * 100`; Breakeven and active no-result Signals are excluded. Theoretical ROI uses only persisted event ROI: highest reached TP for wins, SL ROI for losses, zero for Breakeven, and never current market prices.
+Main Admin reports are on-demand only. Report dates use the Asia/Tehran calendar and are converted to half-open UTC intervals based on Signal creation time. Win Rate is `wins / (wins + losses) * 100`; historical Breakeven and active no-result Signals are excluded. Theoretical ROI uses persisted event ROI: highest reached TP for wins, SL ROI for losses, zero for historical Breakeven, and never current market prices.
 
-The API-health subsystem durably monitors six services: Ourbit/Toobit/LBank prices and Ourbit/Toobit/LBank catalogs. `down` opens one outage incident per service and sends immediate Main Admin alert, one repeat every 60 seconds while still down, and one recovery alert after usable connectivity returns. `degraded` is shown in health status but does not open an incident. The bot does not reconstruct historical events missed during outages.
+The API-health subsystem durably monitors eight services: independent price and catalog services for Ourbit, Toobit, LBank, and WEEX. WEEX catalog failure does not disable the three-exchange Shared core and missing optional catalog recovery is autonomous. `down` opens one outage incident per service and sends immediate Main Admin alert, one repeat every 60 seconds while still down, and one recovery alert after usable connectivity returns. `degraded` is shown in health status but does not open an incident. The bot does not reconstruct historical events missed during outages.
 
 ### Phase 4B: اقدام‌های پوزیشن
 
