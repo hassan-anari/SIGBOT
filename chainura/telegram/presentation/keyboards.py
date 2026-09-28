@@ -60,7 +60,7 @@ def signal_results(items, page: int, pages: int, flow: str, *, native: bool = Fa
 def signal_exchanges(flow: str) -> InlineKeyboardMarkup:
     from chainura.telegram.presentation.signal_callbacks import signal_callback
     return InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text=texts.EXCHANGE_NAMES[x],callback_data=signal_callback("ex",flow,x)) for x in ("ourbit","toobit","lbank")],
+      [InlineKeyboardButton(text=texts.EXCHANGE_NAMES[x],callback_data=signal_callback("ex",flow,x)) for x in ("ourbit","toobit","lbank","weex")],
       [InlineKeyboardButton(text=texts.SIGNAL_BACK,callback_data=signal_callback("back",flow,"shared")),InlineKeyboardButton(text=texts.SIGNAL_CANCEL,callback_data=signal_callback("cancel",flow))]])
 
 

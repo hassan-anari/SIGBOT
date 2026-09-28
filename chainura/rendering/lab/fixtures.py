@@ -198,6 +198,7 @@ _PREVIEW_EXCHANGES = (
     Exchange.OURBIT,
     Exchange.TOOBIT,
     Exchange.LBANK,
+    Exchange.WEEX,
 )
 
 _PREVIEW_DIRECTIONS = (
@@ -274,11 +275,8 @@ def fixture(
     source = value.price_source_type
 
     if source is not PriceSourceType.COMPOSITE:
-        source = {
-            Exchange.OURBIT: PriceSourceType.OURBIT_ONLY,
-            Exchange.TOOBIT: PriceSourceType.TOOBIT_ONLY,
-            Exchange.LBANK: PriceSourceType.LBANK_ONLY,
-        }[exchange]
+        from chainura.domain.signal import price_source_for_exchange
+        source = price_source_for_exchange(exchange)
 
     return replace(
         value,

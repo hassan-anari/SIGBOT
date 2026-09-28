@@ -4,6 +4,7 @@ from chainura.domain.destination import Exchange
 from chainura.rendering.layouts.ourbit import LAYOUT as OURBIT_LAYOUT
 from chainura.rendering.layouts.toobit import LAYOUT as TOOBIT_LAYOUT
 from chainura.rendering.layouts.lbank import LAYOUT as LBANK_LAYOUT
+from chainura.rendering.layouts.weex import LAYOUT as WEEX_LAYOUT
 from chainura.rendering.layouts.models import DebugOverlayConfig, InitialCardLayout
 from chainura.rendering.models import SignalRenderPayload, RenderedSignalImage
 from chainura.rendering.pillow.compositor import compose_initial
@@ -11,7 +12,7 @@ from chainura.rendering.pillow.errors import RendererLayoutError
 from chainura.rendering.pillow.text import FontProvider
 from typing import Mapping
 
-LAYOUTS={Exchange.OURBIT:OURBIT_LAYOUT,Exchange.TOOBIT:TOOBIT_LAYOUT,Exchange.LBANK:LBANK_LAYOUT}
+LAYOUTS={Exchange.OURBIT:OURBIT_LAYOUT,Exchange.TOOBIT:TOOBIT_LAYOUT,Exchange.LBANK:LBANK_LAYOUT,Exchange.WEEX:WEEX_LAYOUT}
 
 def render_initial(payload:SignalRenderPayload, template_path:Path|str,
                    output_path:Path|str, font_provider:FontProvider)->RenderedSignalImage:

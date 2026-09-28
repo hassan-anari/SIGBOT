@@ -34,10 +34,12 @@ SERVICE_LABELS = {
     "toobit_catalog": "فهرست قراردادهای Toobit",
     "lbank_prices": "قیمت LBank",
     "lbank_catalog": "فهرست قراردادهای LBank",
+    "weex_prices": "قیمت WEEX",
+    "weex_catalog": "فهرست قراردادهای WEEX",
 }
 ALL_SERVICES: tuple[tuple[str, Exchange, ApiOperation], ...] = tuple(
     (f"{exchange.value}_{operation.value}", exchange, operation)
-    for exchange in (Exchange.OURBIT, Exchange.TOOBIT, Exchange.LBANK)
+    for exchange in Exchange
     for operation in (ApiOperation.PRICES, ApiOperation.CATALOG)
 )
 

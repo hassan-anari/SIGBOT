@@ -74,7 +74,8 @@ class Phase6CReportingHealthTests(unittest.IsolatedAsyncioTestCase):
 
 from market import MarketProbe
 from models import Instrument, PriceTick
-from chainura.application.market_gateway import SymbolCatalogProvider, BatchedMarketSnapshotProvider, MarketReferencePriceProvider
+from chainura.application.market_gateway import (SymbolCatalogProvider, BatchedMarketSnapshotProvider,
+    MarketReferencePriceProvider, MarketPriceWorker)
 from chainura.domain.monitoring import MarketDecision
 from chainura.application.monitoring import MonitorWork
 
@@ -161,6 +162,42 @@ class Phase6CMarketObservationTests(unittest.IsolatedAsyncioTestCase):
             price=await s.get(ServiceHealthRecord,'ourbit_prices'); self.assertEqual(price.status,ServiceHealthStatus.DOWN)
             self.assertIsNone(await s.get(ServiceHealthRecord,'ourbit_catalog'))
 
+    async def test_optional_weex_catalog_recovers_autonomously_and_enriches_composite(self):
+        core=tuple(FakeAdapter(name,[self.inst(name)],[self.tick(name,value)]) for name,value in
+                   (("ourbit","100"),("toobit","101"),("lbank","102")))
+        weex=FakeAdapter("weex",[self.inst("weex")],[self.tick("weex","103")],
+                         fail_instruments=True,fail_prices=True)
+        p=self.probe(core+(weex,));repo=HealthRepository(self.sessions);catalog=SymbolCatalogProvider(p,repo)
+        historical=MonitorWork(1,1,SignalMode.COMPOSITE,"BTCUSDT",None,TradeDirection.LONG,
+            Decimal("100"),10,(Decimal("110"),),Decimal("90"),PriceSourceType.COMPOSITE,
+            ((Exchange.OURBIT,"BTCUSDT"),(Exchange.TOOBIT,"BTCUSDT"),(Exchange.LBANK,"BTCUSDT")),self.now)
+        enriched=MonitorWork(2,1,SignalMode.COMPOSITE,"BTCUSDT",None,TradeDirection.LONG,
+            Decimal("100"),10,(Decimal("110"),),Decimal("90"),PriceSourceType.COMPOSITE,
+            historical.exchange_symbols+((Exchange.WEEX,"BTCUSDT"),),self.now)
+        worker=MarketPriceWorker(p,catalog,lambda limit: self._work((historical,enriched)))
+        catalog.market_service=worker
+        await worker.run_cycle()
+        self.assertTrue(catalog._shared_ready);self.assertNotIn(Exchange.WEEX,catalog._exchange_ready)
+        self.assertEqual(p.common_symbols,{"BTCUSDT"})
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ServiceHealthRecord,"weex_catalog")).status,ServiceHealthStatus.DOWN)
+            self.assertEqual((await s.get(ServiceHealthRecord,"ourbit_prices")).status,ServiceHealthStatus.HEALTHY)
+        weex.fail_instruments=False;weex.fail_prices=False
+        await worker.run_cycle()
+        self.assertIn(Exchange.WEEX,catalog._exchange_ready)
+        self.assertEqual(len(p.instruments["weex"]),1);self.assertEqual(weex.symbol_map,{"BTCUSDT":"BTCUSDT"})
+        self.assertIn(("BTCUSDT","weex"),p.latest);self.assertEqual(weex.instrument_calls,3)
+        decisions=await BatchedMarketSnapshotProvider(p,catalog).snapshot((historical,enriched))
+        self.assertEqual(len(decisions[1].source_prices),3);self.assertEqual(len(decisions[2].source_prices),4)
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ServiceHealthRecord,"weex_catalog")).status,ServiceHealthStatus.HEALTHY)
+            self.assertEqual((await s.get(ServiceHealthRecord,"weex_prices")).status,ServiceHealthStatus.HEALTHY)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(OutageIncidentRecord)
+                .where(OutageIncidentRecord.service_key=="weex_catalog")),1)
+
+    async def _work(self, rows):
+        return rows
+
 class Phase6CAlertLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.engine=create_async_engine('sqlite+aiosqlite:///:memory:')
@@ -208,9 +245,9 @@ class Phase6CHealthSeedTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as c: await c.run_sync(Base.metadata.create_all)
         self.sessions=async_sessionmaker(self.engine,expire_on_commit=False)
     async def asyncTearDown(self): await self.engine.dispose()
-    async def test_seed_materializes_all_six_unknown_services(self):
+    async def test_seed_materializes_all_eight_unknown_services(self):
         repo=HealthRepository(self.sessions); await repo.seed_unknown_services(datetime(2026,8,4,tzinfo=timezone.utc))
-        rows=await repo.list_health(); self.assertEqual(len(rows),6); self.assertEqual({r.status for r in rows},{ServiceHealthStatus.UNKNOWN})
+        rows=await repo.list_health(); self.assertEqual(len(rows),8); self.assertEqual({r.status for r in rows},{ServiceHealthStatus.UNKNOWN})
 
 class Phase6CCustomReportStateTests(unittest.TestCase):
     def test_custom_refresh_reuses_all_scope_range(self):

@@ -30,6 +30,7 @@ class Exchange(str, Enum):
     OURBIT = "ourbit"
     TOOBIT = "toobit"
     LBANK = "lbank"
+    WEEX = "weex"
 
 
 def _integer(value: object, name: str, *, nonzero: bool = False) -> int:
@@ -114,8 +115,8 @@ class DestinationExchangePriority:
     exchanges: tuple[Exchange, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.exchanges, tuple) or not 1 <= len(self.exchanges) <= 3:
-            raise InvalidExchangePriorityError("priority must contain one to three exchanges")
+        if not isinstance(self.exchanges, tuple) or not 1 <= len(self.exchanges) <= len(Exchange):
+            raise InvalidExchangePriorityError("priority must contain one to four exchanges")
         if any(not isinstance(item, Exchange) for item in self.exchanges):
             raise InvalidExchangePriorityError("priority contains an invalid exchange")
         if len(set(self.exchanges)) != len(self.exchanges):

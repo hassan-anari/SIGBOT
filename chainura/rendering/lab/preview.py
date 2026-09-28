@@ -13,6 +13,7 @@ _LAYOUT_MODULES = {
     Exchange.OURBIT: "chainura.rendering.layouts.ourbit",
     Exchange.TOOBIT: "chainura.rendering.layouts.toobit",
     Exchange.LBANK: "chainura.rendering.layouts.lbank",
+    Exchange.WEEX: "chainura.rendering.layouts.weex",
 }
 
 
@@ -116,7 +117,11 @@ def render_lbank_initial(
         value_overrides=value_overrides,
     )
 
-RENDERERS={Exchange.OURBIT:render_ourbit_initial,Exchange.TOOBIT:render_toobit_initial,Exchange.LBANK:render_lbank_initial}
+def render_weex_initial(payload, template_path, output_path, font_provider, *, debug=False, value_overrides=None):
+    return _render_expected(Exchange.WEEX,payload,template_path,output_path,font_provider,
+                            debug=debug,value_overrides=value_overrides)
+
+RENDERERS={Exchange.OURBIT:render_ourbit_initial,Exchange.TOOBIT:render_toobit_initial,Exchange.LBANK:render_lbank_initial,Exchange.WEEX:render_weex_initial}
 
 def render_preview(
     payload,

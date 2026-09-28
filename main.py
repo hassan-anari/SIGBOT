@@ -60,7 +60,7 @@ async def run_symbols(output: Path, max_spread: Decimal) -> None:
         "Exchange health: "
         + ", ".join(
             f"{exchange}={probe.health[exchange].status.value}"
-            for exchange in ("ourbit", "toobit", "lbank")
+            for exchange in probe.health
         )
     )
     print(f"Files written to: {output.resolve()}")
@@ -71,7 +71,7 @@ async def run_watch(seconds: int | None, max_spread: Decimal) -> None:
     await probe.discover()
     LOGGER.info("watch initialized common_symbols=%s poll_seconds=5", len(probe.common_symbols))
     print(f"Common symbols: {len(probe.common_symbols)}")
-    print("Ourbit: REST/5s | Toobit: REST/5s | LBank: REST/5s")
+    print("Ourbit: REST/5s | Toobit: REST/5s | LBank: REST/5s | WEEX MARK: REST/5s")
     await probe.watch(seconds=seconds)
 
 

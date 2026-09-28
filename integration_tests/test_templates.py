@@ -45,3 +45,20 @@ class TemplateIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count,0)
     async def test_missing_default(self):
         with self.assertRaises(TemplateNotConfiguredError):await self.service.resolve(Exchange.LBANK)
+    async def test_weex_default_override_validation_and_fallback(self):
+        default=await self.service.install(Exchange.WEEX,png(Exchange.WEEX,"white"))
+        self.assertEqual((default.width,default.height),(1000,1000))
+        bad=io.BytesIO();Image.new("RGB",(999,1000),"white").save(bad,"PNG")
+        with self.assertRaises(TemplateValidationError):
+            await self.service.install(Exchange.WEEX,bad.getvalue())
+        override=await self.service.install(Exchange.WEEX,png(Exchange.WEEX,"black"),destination_id=1)
+        resolved=await self.service.resolve(Exchange.WEEX,1)
+        self.assertTrue(resolved.is_destination_specific);self.assertEqual(resolved.sha256,override.sha256)
+        await self.service.remove_override(Exchange.WEEX,1)
+        resolved=await self.service.resolve(Exchange.WEEX,1)
+        self.assertFalse(resolved.is_destination_specific);self.assertEqual(resolved.sha256,default.sha256)
+    async def test_all_exchange_default_template_contracts_remain_installable(self):
+        for exchange in Exchange:
+            asset=await self.service.install(exchange,png(exchange))
+            self.assertEqual((asset.width,asset.height),
+                             (EXCHANGE_IMAGE_SPECS[exchange].width,EXCHANGE_IMAGE_SPECS[exchange].height))

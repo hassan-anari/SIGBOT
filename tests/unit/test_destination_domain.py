@@ -8,7 +8,7 @@ class DestinationDomainTests(unittest.TestCase):
     def make(self): return Destination.create("  Alpha  ",-100,DestinationType.CHANNEL,DestinationAccessLevel.PRIVATE,5)
     def test_enums_are_lowercase(self):
         self.assertEqual([x.value for x in DestinationStatus],["active","inactive"])
-        self.assertEqual([x.value for x in Exchange],["ourbit","toobit","lbank"])
+        self.assertEqual([x.value for x in Exchange],["ourbit","toobit","lbank","weex"])
     def test_creation_trims_and_starts_active(self):
         item=self.make(); self.assertEqual(item.internal_name,"Alpha"); self.assertIs(item.status,DestinationStatus.ACTIVE)
     def test_identity_and_daily_limit_validation(self):
