@@ -33,7 +33,10 @@ BUILTIN_TEMPLATES = {
         "شناسه معامله: {trade_id}\nنماد: {symbol}\nجهت: {direction}\n"
         "ورود لیمیت: {entry}\nاهرم: {leverage}\nاهداف: {targets}\nحد ضرر: {stop_loss}"
     ),
-    DestinationMessageKind.LIMIT_CANCELLED: "❌ <b>سفارش لیمیت {symbol} لغو شد</b>",
+    DestinationMessageKind.LIMIT_CANCELLED: (
+        "❌ <b>سفارش لیمیت لغو شد</b>\n"
+        "شناسه معامله: {trade_id}\nنماد: {symbol}"
+    ),
 }
 
 PLACEHOLDERS = {

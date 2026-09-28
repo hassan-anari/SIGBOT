@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
 from chainura.application.initial_caption import build_signal_details_text
@@ -154,9 +155,9 @@ class SignalDetailsPublicationService:
    await tx._session.execute(update(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.id==item_id,SignalDetailsPublicationRecord.status==PublicationStatus.SENDING).values(**values));await tx.commit()
 
 class InitialPublicationService:
- def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None):
+ def __init__(self,transactions,image_service,publisher,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5,message_templates=None,cancellation_wake=None):
   self.transactions=transactions;self.image_service=image_service;self.publisher=publisher;self.clock=clock
-  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates
+  self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds;self.message_templates=message_templates;self.cancellation_wake=cancellation_wake
  async def recover(self):
   from sqlalchemy import update
   from chainura.persistence.models import InitialPublicationNotificationRecord
@@ -263,15 +264,27 @@ class InitialPublicationService:
     await self._finish(delivery,PublicationStatus.FAILED,str(exc),expected=PublicationStatus.SENDING,release=True);return
    except DeliveryAmbiguous as exc:
     await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,str(exc),expected=PublicationStatus.SENDING);return
+   cancellation_created=False
    try:
     async with self.transactions() as tx:
+     from chainura.domain.signal import SignalLifecycleStatus
+     from chainura.persistence.models import SignalCancellationPublicationRecord,SignalRecord
      changed=await tx.publications.transition(delivery.id,PublicationStatus.SENDING,
       PublicationStatus.SENT,self.clock(),message_id=message_id)
      if not changed:raise TelegramDeliveryError("publication ownership was lost")
-     if delivery.origin=="limit_activation":
+     signal=await tx._session.get(SignalRecord,delivery.signal_id)
+     if signal and signal.status is SignalLifecycleStatus.CANCELLED:
+      result=await tx._session.execute(sqlite_insert(SignalCancellationPublicationRecord).values(
+       signal_id=delivery.signal_id,destination_id=delivery.destination_id,
+       status=PublicationStatus.PENDING,attempt_count=0,created_at=self.clock(),
+       updated_at=self.clock()).on_conflict_do_nothing(
+        index_elements=("signal_id","destination_id")))
+      cancellation_created=result.rowcount==1
+     elif delivery.origin=="limit_activation":
       await tx.publications.ensure_details(delivery.signal_id,delivery.destination_id,
                                            message_id,self.clock())
      await tx.publications.complete_request(delivery.signal_id,self.clock());await tx.commit()
+    if cancellation_created and self.cancellation_wake:self.cancellation_wake()
    except Exception as exc:
     LOGGER.warning("sent result persistence ambiguous publication_id=%s category=%s",delivery.id,type(exc).__name__)
     try:await self._finish(delivery,PublicationStatus.DELIVERY_UNKNOWN,"sent_commit_failed",expected=PublicationStatus.SENDING)

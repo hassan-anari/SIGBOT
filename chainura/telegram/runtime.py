@@ -384,6 +384,8 @@ class Runtime:
                 self.cancellation_publication_worker=CancellationPublicationWorker(cancellation_service,self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 await self._startup_await(cancellation_service.recover());await self._startup_await(self.cancellation_publication_worker.start())
                 self.cancellation_publication_task=self.cancellation_publication_worker.task
+                if limit_pending_service is not None:
+                    limit_pending_service.cancellation_wake=self.limit_cancellation_worker.wake
             active_signal_service=ActiveSignalService(transactions,
                 cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None,
                 limit_cancellation_wake=self.limit_cancellation_worker.wake if self.limit_cancellation_worker else None)
@@ -395,7 +397,8 @@ class Runtime:
                 photo_publisher=telegram_publisher
                 publication_service=InitialPublicationService(transactions,self.initial_image_service,
                     photo_publisher,max_attempts=self.settings.send_max_attempts,
-                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service)
+                    retry_base_seconds=self.settings.send_retry_base_seconds,message_templates=message_template_service,
+                    cancellation_wake=self.cancellation_publication_worker.wake if self.cancellation_publication_worker else None)
                 self.publication_worker=InitialPublicationWorker(publication_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 if limit_pending_service is not None:

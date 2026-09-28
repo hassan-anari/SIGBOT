@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime,timezone,timedelta
 from sqlalchemy import delete,exists,func,or_,select,update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from chainura.application.message_templates import (limit_cancellation_context,
     limit_pending_context)
@@ -33,10 +34,12 @@ def _safe_error(exc):
 
 class LimitPendingPublicationService:
     def __init__(self,transactions,publisher,message_templates,clock=lambda:datetime.now(timezone.utc),
-                 max_attempts=3,retry_base_seconds=.5,activation_wake=None):
+                 max_attempts=3,retry_base_seconds=.5,activation_wake=None,
+                 cancellation_wake=None):
         self.transactions=transactions;self.publisher=publisher;self.templates=message_templates
         self.clock=clock;self.max_attempts=max_attempts;self.retry_base=retry_base_seconds
         self.activation_wake=activation_wake
+        self.cancellation_wake=cancellation_wake
 
     async def recover(self):
         now=self.clock()
@@ -206,7 +209,7 @@ class LimitPendingPublicationService:
                                message_id=message_id)
 
     async def _transition(self,publication_id,expected,target,error=None,retry_at=None,message_id=None):
-        activation_created=False
+        activation_created=False;cancellation_created=False
         async with self.transactions() as tx:
             values={"status":target,"last_error_category":error,"retry_at":retry_at,"updated_at":self.clock()}
             if target is PublicationStatus.SENT:values.update(telegram_message_id=message_id,sent_at=self.clock())
@@ -216,26 +219,35 @@ class LimitPendingPublicationService:
             if changed and target is PublicationStatus.SENT:
                 s=tx._session;pending=await s.get(LimitPendingPublicationRecord,publication_id)
                 signal=await s.get(SignalRecord,pending.signal_id)
-                existing=await s.scalar(select(DestinationPublicationRecord.id).where(
-                    DestinationPublicationRecord.signal_id==pending.signal_id,
-                    DestinationPublicationRecord.destination_id==pending.destination_id))
-                destination=await s.get(DestinationRecord,pending.destination_id)
-                assigned=bool(signal and await s.scalar(select(exists().where(
-                    DestinationSignalistRecord.destination_id==pending.destination_id,
-                    DestinationSignalistRecord.signalist_id==signal.signalist_id))))
-                owner=(await s.scalar(select(DestinationTradeLockRecord.signal_id).where(
-                    DestinationTradeLockRecord.destination_id==pending.destination_id,
-                    DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))) if signal else None
-                if (signal and signal.status is SignalLifecycleStatus.ACTIVE and existing is None and
-                        destination and destination.status is DestinationStatus.ACTIVE and assigned and
-                        owner==signal.id):
-                    s.add(DestinationPublicationRecord(signal_id=signal.id,
-                        destination_id=pending.destination_id,event_kind="initial",
-                        origin="limit_activation",selected_exchange=pending.selected_exchange,
-                        reply_to_message_id=message_id,status=PublicationStatus.PENDING,
-                        created_at=self.clock(),updated_at=self.clock()));activation_created=True
+                if signal and signal.status is SignalLifecycleStatus.CANCELLED:
+                    result=await s.execute(sqlite_insert(LimitCancellationPublicationRecord).values(
+                        signal_id=signal.id,destination_id=pending.destination_id,
+                        pending_publication_id=pending.id,reply_to_message_id=message_id,
+                        status=PublicationStatus.PENDING,attempt_count=0,
+                        created_at=self.clock(),updated_at=self.clock()).on_conflict_do_nothing(
+                            index_elements=("signal_id","destination_id")))
+                    cancellation_created=result.rowcount==1
+                elif signal and signal.status is SignalLifecycleStatus.ACTIVE:
+                    existing=await s.scalar(select(DestinationPublicationRecord.id).where(
+                        DestinationPublicationRecord.signal_id==pending.signal_id,
+                        DestinationPublicationRecord.destination_id==pending.destination_id))
+                    destination=await s.get(DestinationRecord,pending.destination_id)
+                    assigned=bool(await s.scalar(select(exists().where(
+                        DestinationSignalistRecord.destination_id==pending.destination_id,
+                        DestinationSignalistRecord.signalist_id==signal.signalist_id))))
+                    owner=await s.scalar(select(DestinationTradeLockRecord.signal_id).where(
+                        DestinationTradeLockRecord.destination_id==pending.destination_id,
+                        DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))
+                    if (existing is None and destination and destination.status is DestinationStatus.ACTIVE
+                            and assigned and owner==signal.id):
+                        s.add(DestinationPublicationRecord(signal_id=signal.id,
+                            destination_id=pending.destination_id,event_kind="initial",
+                            origin="limit_activation",selected_exchange=pending.selected_exchange,
+                            reply_to_message_id=message_id,status=PublicationStatus.PENDING,
+                            created_at=self.clock(),updated_at=self.clock()));activation_created=True
             await tx.commit()
         if activation_created and self.activation_wake:self.activation_wake()
+        if cancellation_created and self.cancellation_wake:self.cancellation_wake()
 
     async def _definite_no_send(self,publication_id,error,expected=PublicationStatus.RENDERING):
         async with self.transactions() as tx:

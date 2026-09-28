@@ -10,9 +10,10 @@ from aiogram.exceptions import TelegramRetryAfter
 from sqlalchemy import func,select,text
 
 from chainura.application.limit_orders import LimitOrderService
-from chainura.application.limit_publication import LimitPendingPublicationService
+from chainura.application.limit_publication import (LimitCancellationPublicationService,
+    LimitPendingPublicationService)
 from chainura.application.message_templates import DestinationMessageTemplateService
-from chainura.application.publication import InitialPublicationService
+from chainura.application.publication import CancellationPublicationService,InitialPublicationService
 from chainura.application.publication import DeliveryAmbiguous,DeliveryRateLimited,DeliveryRejected
 from chainura.application.signal_service import (CreateLimitSignalCommand,CreatePendingSignalCommand,
     ReferencePriceResult,SignalService)
@@ -27,7 +28,8 @@ from chainura.domain.signal import (PriceSourceType,SignalEntryType,SignalLifecy
 from chainura.domain.signalist import Signalist
 from chainura.persistence.database import create_session_factory
 from chainura.persistence.models import (DestinationPublicationRecord,DestinationTradeLockRecord,
-    InitialPublicationDailySlotRecord,LimitEntryTriggerRecord,LimitPendingPublicationRecord,
+    InitialPublicationDailySlotRecord,LimitCancellationPublicationRecord,LimitEntryTriggerRecord,LimitPendingPublicationRecord,
+    SignalCancellationPublicationRecord,
     SignalDetailsPublicationRecord,SignalMonitorStateRecord,SignalPositionStateRecord,
     SignalRecord,SignalistNotificationRecord)
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
@@ -48,6 +50,19 @@ class Publisher:
     async def send_standalone_text(self,chat_id,body):self.text.append((chat_id,body));return 700+len(self.text)
     async def send_initial(self,chat_id,path,caption,reply_to_message_id=None):
         self.photos.append((chat_id,path,caption,reply_to_message_id));return 800+len(self.photos)
+    async def send_text_update(self,chat_id,body,reply_to_message_id):
+        self.text.append((chat_id,body,reply_to_message_id));return 900+len(self.text)
+class BlockingPublisher(Publisher):
+    def __init__(self,kind="text",error=None):
+        super().__init__();self.kind=kind;self.error=error
+        self.started=asyncio.Event();self.release=asyncio.Event()
+    async def _wait(self):
+        self.started.set();await self.release.wait()
+        if self.error:raise self.error
+    async def send_standalone_text(self,chat_id,body):
+        await self._wait();return await super().send_standalone_text(chat_id,body)
+    async def send_initial(self,chat_id,path,caption,reply_to_message_id=None):
+        await self._wait();return await super().send_initial(chat_id,path,caption,reply_to_message_id)
 class Image:
     async def render_initial_signal(self,*args):
         class Output:file_path=Path("/tmp/limit-test.png")
@@ -92,6 +107,10 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         signal=await self.signal_service.create_pending(cmd)
         async with self.sessions() as s,s.begin():s.add(DestinationTradeLockRecord(destination_id=self.blocked,canonical_symbol="BTCUSDT",signal_id=signal.id,acquired_at=NOW,updated_at=NOW))
         return signal
+
+    async def only_good_destination(self):
+        async with self.engine.begin() as c:
+            await c.execute(text("UPDATE destinations SET status='inactive' WHERE id=:d"),{"d":self.blocked})
 
     async def test_long_production_style_lifecycle_and_retry(self):
         await self.create_blocking_market();signal=await self.signal_service.create_limit(self.command())
@@ -229,3 +248,82 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row.last_error_category,"chat_not_found")
             self.assertIsNone(await s.scalar(select(InitialPublicationDailySlotRecord.id).where(
                 InitialPublicationDailySlotRecord.limit_publication_id==other.id)))
+
+    async def test_pending_send_cancel_then_sent_queues_one_exact_cancellation(self):
+        await self.only_good_destination();signal=await self.signal_service.create_limit(
+            self.command(token="pending-cancel-race"))
+        publisher=BlockingPublisher();templates=DestinationMessageTemplateService(self.tx)
+        wakes=[];service=LimitPendingPublicationService(self.tx,publisher,templates,
+            lambda:self.clock_now,cancellation_wake=lambda:wakes.append(True))
+        await service.plan_pending();publication_id=(await service.pending_ids())[0]
+        sending=asyncio.create_task(service.process(publication_id));await publisher.started.wait()
+        self.assertTrue((await ActiveSignalService(self.tx,lambda:self.clock_now).cancel_signal(
+            signal.id,self.actor.id)).cancelled)
+        async with self.sessions() as s:
+            self.assertEqual(await s.scalar(select(func.count()).select_from(
+                LimitCancellationPublicationRecord)),0)
+        publisher.release.set();await sending
+        async with self.sessions() as s:
+            rows=(await s.scalars(select(LimitCancellationPublicationRecord))).all()
+            self.assertEqual(len(rows),1);row=rows[0]
+            self.assertEqual((row.signal_id,row.destination_id,row.pending_publication_id,
+                row.reply_to_message_id),(signal.id,self.good,publication_id,701))
+        self.assertEqual(wakes,[True])
+        await service._transition(publication_id,PublicationStatus.SENDING,
+            PublicationStatus.SENT,message_id=701)
+        async with self.sessions() as s:
+            self.assertEqual(await s.scalar(select(func.count()).select_from(
+                LimitCancellationPublicationRecord)),1)
+        cancellation=LimitCancellationPublicationService(self.tx,publisher,templates,
+            lambda:self.clock_now);await cancellation.process(row.id)
+        self.assertEqual(publisher.text[-1][2],701)
+        self.assertIn("شناسه معامله",publisher.text[-1][1])
+        self.assertIn(f"TR-{signal.id:06d}",publisher.text[-1][1])
+
+    async def test_activation_send_cancel_then_sent_queues_one_normal_cancellation(self):
+        await self.only_good_destination();signal=await self.signal_service.create_limit(
+            self.command(token="activation-cancel-race"))
+        publisher=Publisher();templates=DestinationMessageTemplateService(self.tx)
+        pending=LimitPendingPublicationService(self.tx,publisher,templates,lambda:self.clock_now)
+        await pending.plan_pending();await pending.process((await pending.pending_ids())[0])
+        orders=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
+        await orders.observe(signal.id,Decimal("90"),PriceSourceType.COMPOSITE,
+            snapshot("90").source_prices,NOW);await orders.activate(signal.id,self.actor.id)
+        async with self.sessions() as s:
+            activation=await s.scalar(select(DestinationPublicationRecord).where(
+                DestinationPublicationRecord.signal_id==signal.id))
+        blocking=BlockingPublisher(kind="photo");wakes=[]
+        initial=InitialPublicationService(self.tx,Image(),blocking,lambda:self.clock_now,
+            message_templates=templates,cancellation_wake=lambda:wakes.append(True))
+        sending=asyncio.create_task(initial.process(activation.id));await blocking.started.wait()
+        self.assertTrue((await ActiveSignalService(self.tx,lambda:self.clock_now).cancel_signal(
+            signal.id,self.actor.id)).cancelled)
+        blocking.release.set();await sending
+        async with self.sessions() as s:
+            rows=(await s.scalars(select(SignalCancellationPublicationRecord))).all()
+            self.assertEqual(len(rows),1);cancellation_row=rows[0]
+        self.assertEqual(wakes,[True])
+        normal=CancellationPublicationService(self.tx,blocking,lambda:self.clock_now,
+            message_templates=templates);await normal.process(cancellation_row.id)
+        self.assertEqual(blocking.text[-1][2],801)
+        await normal.pending_ids()
+        async with self.sessions() as s:
+            self.assertEqual(await s.scalar(select(func.count()).select_from(
+                SignalCancellationPublicationRecord)),1)
+
+    async def test_cancelled_ambiguous_pending_send_has_no_guessed_compensation(self):
+        await self.only_good_destination();signal=await self.signal_service.create_limit(
+            self.command(token="ambiguous-cancel-race"))
+        publisher=BlockingPublisher(error=DeliveryAmbiguous("network"))
+        service=LimitPendingPublicationService(self.tx,publisher,
+            DestinationMessageTemplateService(self.tx),lambda:self.clock_now)
+        await service.plan_pending();publication_id=(await service.pending_ids())[0]
+        sending=asyncio.create_task(service.process(publication_id));await publisher.started.wait()
+        await ActiveSignalService(self.tx,lambda:self.clock_now).cancel_signal(signal.id,self.actor.id)
+        publisher.release.set();await sending
+        async with self.sessions() as s:
+            publication=await s.get(LimitPendingPublicationRecord,publication_id)
+            self.assertIs(publication.status,PublicationStatus.DELIVERY_UNKNOWN)
+            self.assertIsNone(publication.telegram_message_id)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(
+                LimitCancellationPublicationRecord)),0)
