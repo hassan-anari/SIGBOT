@@ -31,6 +31,7 @@ from chainura.persistence.database import (create_database_engine, create_sessio
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
 from chainura.telegram.middlewares import (ActorResolutionMiddleware, IdempotencyMiddleware,
                                             PrivateChatGate, TelegramErrorBoundary)
+from chainura.telegram.report_routes import router as report_router
 from chainura.telegram.presentation import texts
 from chainura.telegram.redis_runtime import (FSM_TTL_SECONDS, PollerLease, UpdateIdempotency,
                                              bot_identity)
@@ -117,6 +118,7 @@ def build_dispatcher(storage: RedisStorage, idempotency: UpdateIdempotency,
     dispatcher.include_router(template_router)
     dispatcher.include_router(message_template_router)
     dispatcher.include_router(active_signal_router)
+    dispatcher.include_router(report_router)
     dispatcher.include_router(warmup_router)
     dispatcher.include_router(signal_router)
     dispatcher.include_router(event_router)

@@ -295,6 +295,12 @@ REPORT_ASK_START="تاریخ شروع را به میلادی و با قالب YY
 REPORT_ASK_END="تاریخ پایان را به میلادی و با قالب YYYY-MM-DD وارد کنید."
 REPORT_INVALID_RANGE="بازه تاریخ معتبر نیست؛ تاریخ‌ها را با قالب YYYY-MM-DD و به‌ترتیب درست وارد کنید."
 REPORT_HISTORY="تاریخچه معاملات"; REPORT_REFRESH="تازه‌سازی"; REPORT_YES="بله"; REPORT_NO="خیر"; REPORT_DASH="—"
+MENU_SIGNALIST_REPORT="📊 گزارش عملکرد من"
+DESTINATION_PERFORMANCE="📊 گزارش عملکرد"
+SIGNALIST_REPORT_TITLE="<b>📊 گزارش عملکرد من</b>"
+DESTINATION_REPORT_TITLE="<b>📊 گزارش عملکرد مقصد</b>"
+REPORT_PERIOD_PRIVATE="بازه گزارش عملکرد را انتخاب کنید."
+REPORT_DESTINATION_MISSING="مقصد دیگر در دسترس نیست."
 HEALTH_STATUS_TITLE="<b>🛡 وضعیت APIها</b>"
 HEALTH_LABELS={"ourbit_prices":"قیمت Ourbit","ourbit_catalog":"فهرست قراردادهای Ourbit","toobit_prices":"قیمت Toobit","toobit_catalog":"فهرست قراردادهای Toobit","lbank_prices":"قیمت LBank","lbank_catalog":"فهرست قراردادهای LBank","weex_prices":"قیمت WEEX","weex_catalog":"فهرست قراردادهای WEEX"}
 HEALTH_STATUS_LABELS={"unknown":"نامشخص","healthy":"سالم","degraded":"محدود","down":"قطع"}
@@ -305,7 +311,37 @@ def report_summary_text(summary, scope_label=None, start_text=None, end_text=Non
     rows=["<b>📊 خلاصه گزارش</b>"]
     if scope_label: rows.append(f"دامنه: {safe(scope_label)}")
     if start_text and end_text: rows.append(f"بازه: {safe(start_text)} تا {safe(end_text)}")
-    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"⏳ در انتظار تکمیل: {persian_digits(summary.pending_signals)}",f"🟢 باز: {persian_digits(summary.open_signals)}",f"❌ کنسل‌شده: {persian_digits(summary.cancelled_signals)}",f"✅ نتیجه‌دار: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"بریک‌ایون: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI کل نظری: {_dec(summary.total_roi)}",f"میانگین ROI نظری: {_dec(summary.average_roi)}",f"میانگین ROI مثبت: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی: {_dec(summary.average_negative_roi)}",f"کمترین ROI: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
+    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"⏳ در انتظار تکمیل: {persian_digits(summary.pending_signals)}",f"🟢 باز: {persian_digits(summary.open_signals)}",f"❌ کنسل‌شده: {persian_digits(summary.cancelled_signals)}",f"✅ نتیجه‌دار: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"خنثی: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI تحقق‌یافته کل: {_dec(summary.total_roi)}",f"میانگین ROI تحقق‌یافته: {_dec(summary.average_roi)}",f"میانگین ROI مثبت تحقق‌یافته: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت تحقق‌یافته: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی تحقق‌یافته: {_dec(summary.average_negative_roi)}",f"کمترین ROI تحقق‌یافته: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
+    return "\n".join(rows)
+def _report_ltr(value):
+    return bidi_ascii(str(value))
+def _report_decimal(value):
+    return REPORT_DASH if value is None else bidi_ascii(f"{value.quantize(__import__('decimal').Decimal('0.01'))}")
+def _report_percent(value):
+    return REPORT_DASH if value is None else bidi_ascii(f"{value.quantize(__import__('decimal').Decimal('0.01'))}%")
+def private_report_summary_text(summary, title, context=None):
+    rows=[title]
+    if context: rows.append(f"مقصد: {safe(context)}")
+    rows.extend(["",f"تعداد سیگنال‌ها: {_report_ltr(summary.total_signals)}",
+        f"در انتظار: {_report_ltr(summary.pending_signals)}",f"باز: {_report_ltr(summary.open_signals)}",
+        f"برد: {_report_ltr(summary.wins)}",f"باخت: {_report_ltr(summary.losses)}",
+        f"خنثی: {_report_ltr(summary.breakevens)}",f"لغوشده: {_report_ltr(summary.cancelled_signals)}",
+        f"وین‌ریت: {_report_percent(summary.win_rate)}",f"ROI تحقق‌یافته کل: {_report_decimal(summary.total_roi)}",
+        f"میانگین ROI تحقق‌یافته: {_report_decimal(summary.average_roi)}",
+        f"بهترین ROI: {_report_decimal(summary.best_roi)}",f"بدترین ROI: {_report_decimal(summary.worst_roi)}"])
+    return "\n".join(rows)
+def private_history_text(page, *, destination=False):
+    from chainura.trade_id import format_trade_id
+    rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {_report_ltr(page.page)} از {_report_ltr(page.pages)}"]
+    for item in page.items:
+        when=item.published_at_tehran if destination else item.created_at_tehran
+        exchange=f"\nصرافی: {bidi_ascii(item.selected_exchange)}" if destination else ""
+        rows.append(f"\n{bidi_ascii(format_trade_id(item.trade_id))}\nنماد: {bidi_ascii(item.canonical_symbol)}"
+            f"\nجهت: {bidi_ascii(item.direction.upper())}\nنوع ورود: {bidi_ascii(item.entry_type.upper())}"
+            f"\nمنبع: {safe(_report_source(item.source_label))}{exchange}\nزمان: {datetime_value(when)}"
+            f"\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {_report_ltr(item.highest_tp) if item.highest_tp else REPORT_DASH}"
+            f"\nROI تحقق‌یافته: {_report_decimal(item.realized_weighted_roi)}")
+    if not page.items: rows.append(EMPTY_LIST)
     return "\n".join(rows)
 def _report_direction(value): return {"long":"لانگ","short":"شورت"}.get(str(value), str(value))
 def _report_source(value): return {"Composite":"مرجع مشترک","Single Exchange":"تک‌صرافی"}.get(str(value), str(value))
@@ -314,7 +350,7 @@ def _report_state(value):
     if text.startswith("Active Win"): return text.replace("Active Win at TP", "برد فعال در TP")
     if text.startswith("Completed Win"): return text.replace("Completed Win at TP", "برد تکمیل‌شده در TP")
     if text.startswith("Cancelled after TP"): return text.replace("Cancelled after TP","کنسل‌شده پس از TP")
-    return {"Pending Details":"در انتظار تکمیل","Limit Pending Entry":"لیمیت در انتظار ورود","Limit Entry Triggered":"ورود لیمیت رسیده","Cancelled":"کنسل‌شده","Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"بریک‌ایون"}.get(text,text)
+    return {"Pending Details":"در انتظار تکمیل","Limit Pending Entry":"لیمیت در انتظار ورود","Limit Entry Triggered":"ورود لیمیت رسیده","Cancelled":"کنسل‌شده","Active without result":"فعال بدون نتیجه","Loss":"باخت","Breakeven":"خنثی","Neutral":"خنثی"}.get(text,text)
 def trade_history_text(page, all_scope=True):
     rows=[f"<b>📜 تاریخچه معاملات</b>\nصفحه {persian_digits(page.page)} از {persian_digits(page.pages)}"]
     for item in page.items:

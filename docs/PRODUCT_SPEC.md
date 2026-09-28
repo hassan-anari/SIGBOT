@@ -31,7 +31,7 @@ The system is a comprehensive Telegram bot for creating, publishing, monitoring,
 
 Signalists create Market or Limit signals through the bot. The system retrieves market prices, establishes the authoritative Entry, detects TP, SL, and explicit Risk Free lifecycle events, generates images, and publishes eligible approved updates. Historical Breakeven events remain readable compatibility data only.
 
-The system also maintains complete trade history, Signalist performance statistics, Win Rate, and theoretical profit.
+The system also maintains complete trade history, private Signalist performance statistics, Destination performance, Win Rate, and weighted realized ROI.
 
 ---
 
@@ -61,7 +61,7 @@ The Main Admin has access to system-wide administrative functions and is respons
 - Service and API status
 - Outage and recovery alerts
 
-Reports are generated only when requested by the Main Admin.
+Reports are generated only on demand. Main Admin requests administrative and Destination reports; each active Signalist may request only their own private performance report.
 
 ## 2.2. Signalist
 
@@ -477,36 +477,15 @@ If an event was not published, the next event replies to the last message that w
 
 # 15. Reports
 
-Reports are generated only when requested by the Main Admin.
+Reports are synchronous, on-demand SQLite reads. Main Admin general reports retain named all-Signalist and one-Signalist contexts. Main Admin Destination performance is available only inside the selected Destination management screen and never exposes Signalist identity. Active Signalists may request only their own performance; their output never reveals Destination, assignment, publication, delivery, capacity, or selected-Destination-exchange facts.
 
-Reports include:
+All surfaces share one performance projection. Modern Signals use Decimal `realized_weighted_roi` from Position State; historical Signals without Position State fall back to Monitor result/ROI. Cancelled Signals have no performance result or ROI. Win Rate is Wins divided by Wins plus Losses; Neutral is excluded.
 
-- Complete trade history
-- Daily signal count
-- Weekly signal count
-- Monthly signal count
-- Total trade count
-- Active trades
-- Win
-- Loss
-- Historical Breakeven compatibility count
-- Win Rate
-- Total theoretical profit
-- Average theoretical profit
-- Highest TP for each trade
-- Comprehensive report for all Signalists
-- Individual report for each Signalist
-- Price-source type for each signal
-- Number of published and unpublished signals
+Reports include trade history, total/pending/open/cancelled counts, Win/Loss/Neutral, Win Rate, total/average/best/worst realized ROI, highest TP, and source type. Main Admin general reports additionally retain named Signalist context and publication metrics.
 
-Date filtering must be flexible, including:
+Destination membership requires a definitely-sent Market Initial or Limit Pending root. Its period uses root `sent_at`; Limit activation does not add a second row. Personal and general Signalist cohorts use Signal creation time.
 
-- Today
-- Last seven days
-- Last thirty days
-- Custom date range
-
----
+Every report supports Tehran-calendar Today, last seven days including today, last thirty days including today, and inclusive Gregorian custom ranges entered as `YYYY-MM-DD`, converted to lower-inclusive and upper-exclusive UTC boundaries.
 
 # 16. Background Tasks
 
@@ -836,7 +815,7 @@ Reports, Win Rate screens, outage/recovery alerts, and final Phase 6 acceptance 
 
 # Phase 6C — Main Admin Reports, API Health Alerts, and Final Phase 6 Acceptance
 
-Phase 6C completes Phase 6. Reports remain Main Admin-only and on-demand; there are no scheduled reports, Signalist-visible reports, or destination reports. Report periods use Asia/Tehran calendar days and Signal creation time. Selected Tehran dates are converted into `start_utc <= signals.created_at < end_exclusive_utc`. Supported periods are today, last seven days including today, last thirty days including today, and inclusive Gregorian custom ranges entered as `YYYY-MM-DD`.
+Historically, Phase 6C completed Phase 6 with Main Admin-only on-demand reports and no Signalist-visible or Destination reports. That access limitation is superseded by Phase 7; its period and legacy compatibility rules below remain historical context. Report periods use Asia/Tehran calendar days and Signal creation time. Selected Tehran dates are converted into `start_utc <= signals.created_at < end_exclusive_utc`. Supported periods are today, last seven days including today, last thirty days including today, and inclusive Gregorian custom ranges entered as `YYYY-MM-DD`.
 
 Report summaries include total Signals, active Signals, resulted Signals, Wins, Losses, historical Breakevens, Win Rate, theoretical ROI totals/averages/extremes, highest-TP distribution, Composite/Single Exchange counts, confirmed-published count, and unpublished count. Win Rate is `wins / (wins + losses) × 100`; Historical Breakevens and active no-result Signals are excluded, and an empty denominator displays `—`. Decimal is used end-to-end. Theoretical ROI is persisted highest-TP ROI for Wins, persisted SL ROI for Losses, exact zero for historical Breakeven, and excludes active no-result Signals. Confirmed publication means at least one Phase 5 initial destination publication has status `sent` with a positive Telegram message ID.
 
@@ -914,3 +893,24 @@ use WebSockets, candle high/low reconstruction, or per-Signal REST polling.
 Interrupted sends become `delivery_unknown` and are not blindly repeated.
 Telegram rate limits remain retryable until their explicit delay, while definite
 rejections use normalized privacy-safe categories rather than raw Telegram text.
+
+# Phase 7 — Private Performance Reports
+
+Phase 7 adds synchronous, SQLite-backed performance reports to the shared reporting
+projection. Active Signalists have an owner-only personal report based on Signal
+creation time; it contains trade performance only and discloses no Destination,
+assignment, capacity, publication, exchange-selection, or delivery fact. Ownership
+is always derived from the authenticated Actor, never callback or FSM data.
+
+Main Admin Destination performance is available only from the selected
+Destination's management screen. Its anonymous trade cohort consists solely of
+root admissions definitely sent to that Destination: the Market Initial root or
+the Limit Pending root. Cohort time is that root's `sent_at`; Limit activation does
+not add a row. Destination reports never contain Signalist identity. Existing Main
+Admin all/one-Signalist reports retain their named administrative context.
+
+All report surfaces prefer a modern Position State's Decimal
+`realized_weighted_roi`; closed outcomes are Win, Loss, or Neutral according to its
+sign. Legacy rows without Position State fall back to Monitor result/ROI. Cancelled
+trades have no result or ROI. Reports remain on-demand only, make no market or
+Telegram calls, and add no reporting schema or worker.
