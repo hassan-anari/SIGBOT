@@ -226,12 +226,12 @@ Exchange Signal requires that exact exchange and never substitutes another.
 
 ## 8.2. Destination Trade Lock
 
-Initial-publication admission permits at most one open trade for each persisted
-canonical Symbol in each destination. The rule is destination-specific, global
-across Signalists, and independent of direction and Signal mode. An admitted
-`PENDING_DETAILS` Signal occupies the slot immediately. A blocked destination is
-permanently skipped for that Signal and is never backfilled after the owner closes;
-the blocked Signal itself remains valid, is monitored, and counts normally.
+Admission permits at most one open trade for each `(destination_id,
+canonical_symbol)`. The lock is global across Signalists, Market/Limit entry type,
+exchange, direction, and leverage. Market acquires it during Initial-publication
+admission/planning. Limit acquires it during Pending admission before activation;
+activation keeps that lock and never acquires a second one. A blocked destination
+is permanently skipped for that Signal and is never late-backfilled.
 
 Pending/retrying/template-blocked, `sent`, and `delivery_unknown` Initials retain
 occupancy while their Signal is open. A definite pre-send or delivery failure
@@ -275,8 +275,12 @@ Even if a signal is sent to no destination, it is still:
 - `#پیامک` is fixed.
 - It is added only to the initial message for a private destination.
 - Updates do not include `#پیامک`.
-- The daily limit applies only to the initial message.
-- Updates do not consume daily capacity.
+- Capacity uses the destination's Tehran local date. Market Initial admission
+  consumes one daily slot. Limit Pending admission consumes one daily slot, and
+  later activation reuses that admission without consuming a second slot.
+- TP, SL, Risk Free, Save50, Full Close, cancellation, comments, details, and other
+  lifecycle updates consume no additional daily admission capacity unless an
+  explicit rule states otherwise.
 - An inactive destination receives neither an initial message nor updates.
 - An update is sent only to a destination that successfully received the initial message.
 
@@ -287,9 +291,15 @@ Even if a signal is sent to no destination, it is still:
 ## 9.1 Initial-card financial snapshot
 
 The final successful Entry validation persists its immutable, exact Decimal
-per-exchange source-price snapshot with the Signal. Composite signals retain the
-two or three healthy sources used by validation; Single Exchange signals retain
-exactly the selected exchange. Initial image generation never refreshes prices.
+per-exchange source-price snapshot separately from durable exchange mappings.
+Historical Composite Signals retain their persisted mappings. Current Composite
+eligibility requires the three core mappings, and new Signals additionally persist
+WEEX mapping when available, so they normally have three or four durable mappings.
+The actual healthy/degraded validation snapshot may contain two, three, or four
+fresh valid source prices; all persisted prices must correspond to a mapping, but
+not every mapping must have supplied a fresh creation price. Single Exchange
+Signals retain exactly their selected mapping and price. Initial rendering uses
+the exact persisted validation prices and never refreshes them.
 
 For an exchange card, Reference Price remains the persisted validation reference,
 while Display Price is that exchange's persisted snapshot price. Initial leveraged
@@ -316,14 +326,12 @@ Template selection priority:
 
 All templates use a shared data model. The backend produces the same information, and the Renderer places it onto the relevant design.
 
-All of the following events have images:
+Current publication content types are:
 
-- Initial signal
-- TP1
-- TP2 and subsequent TPs
-- SL
-- Risk Free hit
-- Historical Breakeven updates remain renderable for compatibility only.
+- Photo: Initial Signal and `TP_HIT`.
+- Photo for compatibility: historical `BREAKEVEN` update.
+- Text: `SL_HIT`, `RISK_FREE_HIT`, eligible Phase-4 position-action follow-ups,
+  cancellation, details, and comments according to their existing flows.
 
 ---
 
@@ -333,9 +341,14 @@ All of the following events have images:
 
 - TPs are recorded only in sequence.
 - TP2 is not processed as an independent stage before TP1.
-- The highest reached TP is the signal's final result.
-- TP profits are not added together.
-- A previous profit is replaced by the profit of a higher TP.
+- Highest-TP/current-result compatibility fields remain available for reporting,
+  while each TP Event ROI is the ROI of that specific threshold.
+- Normal at an intermediate TP realizes no fraction. Save Profit 50% realizes half
+  the then-remaining fraction at current TP ROI; Full Close realizes all remaining
+  fraction; final Normal realizes all remaining fraction at final-TP ROI.
+- Applicable SL realizes the remaining fraction, and `RISK_FREE_HIT` realizes it at
+  zero ROI. Terminal weighted ROI is the exact Decimal sum of every
+  `closed fraction × leveraged ROI` slice; it is not replaced by a later TP value.
 
 ## 10.2. SL Before TP1
 
@@ -344,10 +357,14 @@ All of the following events have images:
 
 ## 10.3. State After TP1
 
-- Once TP1 is reached, the signal is considered a Win.
-- After TP1, SL is no longer checked.
-- Only subsequent TPs are monitored.
-- If price reaches SL after TP1, the result remains TP and Win.
+- TP1 makes the Signal a Win for classification.
+- While a remaining fraction is open and Risk Free is not active, original SL
+  remains monitored after TP1. An SL after partial realization closes the remaining
+  fraction and updates Decimal weighted realized ROI.
+- With Risk Free active, original SL is ignored and Entry is the effective stop; an
+  Entry hit creates `RISK_FREE_HIT` and closes remaining volume at zero ROI.
+- Once final TP is detected in `AWAITING_FINAL_TP_ACTION`, the Signal waits for the
+  owner's final action and a later SL cannot supersede it.
 
 ## 10.4. Crossing Multiple TPs in One Poll
 
@@ -436,7 +453,7 @@ Historical Breakeven reporting:
 When an event is detected:
 
 1. The result is recorded in the system.
-2. The corresponding image is generated.
+2. The configured photo or text content for that event is prepared.
 3. The Signalist is notified.
 4. A button to publish to destinations is displayed.
 5. After Signalist approval, the message is sent.
@@ -522,7 +539,7 @@ The system requires the following background tasks:
 
 - Generate initial signal images
 - Generate TP images
-- Generate SL images
+- Generate Initial and `TP_HIT` images; publish `SL_HIT` and `RISK_FREE_HIT` as text
 - Render historical Breakeven images only when reading compatible historical events
 - Select the appropriate template for the destination and exchange
 
@@ -740,7 +757,7 @@ validation reference, and Display Price/PnL derive deterministically from the
 selected exchange's persisted final-validation source snapshot as specified in
 section 9.1. Elapsed duration is zero. TP and SL are retained for a future caption
 and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M`
-initially), while Toobit and LBank display the externally supplied render time
+initially), while Toobit, LBank, and WEEX display the externally supplied render time
 converted to Asia/Tehran. Renderers receive all clock values; they do not read a
 clock. Approved coordinates, fonts, templates, and layout tuning remain unchanged.
 
