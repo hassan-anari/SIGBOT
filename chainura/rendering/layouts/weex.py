@@ -23,8 +23,8 @@ LAYOUT = InitialCardLayout(
         # BTCUSDT
         TextLayer(
             field="symbol",
-            box=Rectangle(45, 204, 245, 262),
-            font=FontSpec("medium", 46, 30),
+            box=Rectangle(45, 204, 268, 262),
+            font=FontSpec("medium", 46, 12),
             horizontal=HorizontalAlignment.LEFT,
             vertical=VerticalAlignment.CENTER,
             fill=WHITE,
