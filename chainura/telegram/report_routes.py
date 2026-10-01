@@ -4,14 +4,14 @@ Personal callback/FSM data never contains an owner ID. Every query derives the
 owner from the freshly resolved Actor. Destination context is revalidated for
 every callback and custom-date message.
 """
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from chainura.application.access import Actor, ActorKind
-from chainura.application.reporting import (DestinationReportFilter, ReportFilter,
+from chainura.application.reporting import (DestinationReportFilter, ReportFilter, TEHRAN,
     destination_period_filter, period_filter)
 from chainura.telegram.presentation import texts
 from chainura.telegram.presentation.keyboards import remove_menu
@@ -47,6 +47,11 @@ def _stored_filter(data):
         value=ReportFilter(datetime.fromisoformat(data["p7_start"]), datetime.fromisoformat(data["p7_end"]))
         return value if value.start_utc.tzinfo and value.end_utc.tzinfo and value.start_utc < value.end_utc else None
     except (KeyError, TypeError, ValueError): return None
+
+def _range_labels(flt):
+    start_label=flt.start_utc.astimezone(TEHRAN).date().isoformat()
+    end_label=(flt.end_utc.astimezone(TEHRAN).date()-timedelta(days=1)).isoformat()
+    return start_label,end_label
 
 def _positive(value):
     if not isinstance(value, str) or not value.isascii() or not value.isdigit(): return None
@@ -155,8 +160,10 @@ async def destination_callback(query: CallbackQuery, actor: Actor, state: FSMCon
             flt=destination_period_filter(destination_id,argument,datetime.now(timezone.utc))
             await state.update_data(p7_destination_id=destination_id,p7_period=argument,p7_start=flt.start_utc.isoformat(),p7_end=flt.end_utc.isoformat())
         else: return await _stale(query)
-        summary=await reporting_service.destination_summary(flt)
-        return await query.message.answer(texts.private_report_summary_text(summary,texts.DESTINATION_REPORT_TITLE,destination.internal_name),
+        performance=await reporting_service.destination_performance(flt)
+        start_label,end_label=_range_labels(flt)
+        return await query.message.answer(
+            texts.destination_performance_text(performance,destination.internal_name,start_label,end_label),
             reply_markup=_summary_actions(f"p7:d:{destination_id}",f"p4:ds:view:{destination_id}"))
     if action == "hist":
         page_number=_positive(argument); data=await state.get_data()
@@ -196,6 +203,8 @@ async def destination_custom_end(message:Message,actor:Actor,state:FSMContext,re
         flt=destination_period_filter(destination_id,"custom",datetime.now(timezone.utc),start,end)
     except (KeyError,TypeError,ValueError):return await message.answer(texts.REPORT_INVALID_RANGE)
     await state.set_state(None);await state.update_data(p7_period="custom",p7_start=flt.start_utc.isoformat(),p7_end=flt.end_utc.isoformat())
-    summary=await reporting_service.destination_summary(flt)
-    await message.answer(texts.private_report_summary_text(summary,texts.DESTINATION_REPORT_TITLE,destination.internal_name),
+    performance=await reporting_service.destination_performance(flt)
+    start_label,end_label=_range_labels(flt)
+    await message.answer(
+        texts.destination_performance_text(performance,destination.internal_name,start_label,end_label),
         reply_markup=_summary_actions(f"p7:d:{destination_id}",f"p4:ds:view:{destination_id}"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from html import escape
 from datetime import timezone
+from decimal import Decimal
 from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, RLM, bidi_ascii, bidi_ascii_id,
     format_datetime, format_priority, persian_digits)
 
@@ -296,7 +297,7 @@ REPORT_ASK_END="تاریخ پایان را به میلادی و با قالب YY
 REPORT_INVALID_RANGE="بازه تاریخ معتبر نیست؛ تاریخ‌ها را با قالب YYYY-MM-DD و به‌ترتیب درست وارد کنید."
 REPORT_HISTORY="تاریخچه معاملات"; REPORT_REFRESH="تازه‌سازی"; REPORT_YES="بله"; REPORT_NO="خیر"; REPORT_DASH="—"
 MENU_SIGNALIST_REPORT="📊 گزارش عملکرد من"
-DESTINATION_PERFORMANCE="📊 گزارش عملکرد"
+DESTINATION_PERFORMANCE="📊 برآیند سیگنال‌ها"
 SIGNALIST_REPORT_TITLE="<b>📊 گزارش عملکرد من</b>"
 DESTINATION_REPORT_TITLE="<b>📊 گزارش عملکرد مقصد</b>"
 REPORT_PERIOD_PRIVATE="بازه گزارش عملکرد را انتخاب کنید."
@@ -319,6 +320,29 @@ def _report_decimal(value):
     return REPORT_DASH if value is None else bidi_ascii(f"{value.quantize(__import__('decimal').Decimal('0.01'))}")
 def _report_percent(value):
     return REPORT_DASH if value is None else bidi_ascii(f"{value.quantize(__import__('decimal').Decimal('0.01'))}%")
+def _signed_report_percent(value):
+    rounded=Decimal(value).quantize(Decimal("0.01"))
+    if rounded > 0: raw=f"+{rounded}%"
+    elif rounded < 0: raw=f"{rounded}%"
+    else: raw="0%"
+    return bidi_ascii(raw)
+def destination_performance_text(report, context=None, start_text=None, end_text=None):
+    rows=["<b>📊 برآیند سیگنال‌ها</b>"]
+    if context: rows.append(f"مقصد: {safe(context)}")
+    if start_text and end_text: rows.append(f"🗓 بازه: {safe(start_text)} تا {safe(end_text)}")
+    rows.append("")
+    if report.symbols:
+        for item in report.symbols:
+            rounded=Decimal(item.roi).quantize(Decimal("0.01"))
+            icon="🟢" if rounded > 0 else "🔴" if rounded < 0 else "⏺"
+            rows.append(f"{icon} {bidi_ascii(item.canonical_symbol)}: {_signed_report_percent(item.roi)}")
+    else:
+        rows.append(EMPTY_LIST)
+    rows.extend(["",
+        f"💰 جمع سود بدون احتساب ضررها: {_signed_report_percent(report.positive_total)}",
+        f"🔄 جمع ضررها: {_signed_report_percent(report.negative_total)}",
+        f"🔥 برآیند نهایی با احتساب ضررها: {_signed_report_percent(report.net_total)}"])
+    return "\n".join(rows)
 def private_report_summary_text(summary, title, context=None):
     rows=[title]
     if context: rows.append(f"مقصد: {safe(context)}")

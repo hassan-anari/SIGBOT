@@ -33,10 +33,11 @@ class Phase7PrivateReportingAcceptance(unittest.IsolatedAsyncioTestCase):
             y=DestinationRecord(internal_name='DESTINATION_Y_PRIVATE',telegram_chat_id=-10071002,destination_type=DestinationType.CHANNEL,access_level=DestinationAccessLevel.PRIVATE,status=DestinationStatus.ACTIVE,daily_limit=20,created_at=START,updated_at=START)
             s.add_all((a,b,x,y));await s.flush();self.a,self.b,self.x,self.y=a.id,b.id,x.id,y.id
     async def asyncTearDown(self): await self.engine.dispose()
-    async def signal(self,owner,token,created=START,entry=SignalEntryType.MARKET,status=SignalLifecycleStatus.ACTIVE,roi=None):
+    async def signal(self,owner,token,created=START,entry=SignalEntryType.MARKET,status=SignalLifecycleStatus.ACTIVE,roi=None,symbol=None):
         async with self.sessions() as s,s.begin():
+            asset=(symbol or token).upper()
             row=SignalRecord(signalist_id=owner,creation_token=token,entry_type=entry,mode=SignalMode.COMPOSITE,
-                canonical_symbol=token.upper()+'USDT',base_asset=token.upper(),quote_asset='USDT',direction=TradeDirection.LONG,
+                canonical_symbol=asset+'USDT',base_asset=asset,quote_asset='USDT',direction=TradeDirection.LONG,
                 entry_price=Decimal('100'),leverage=10,stop_loss=Decimal('90'),reference_price=Decimal('100'),
                 price_source_type=PriceSourceType.COMPOSITE,status=status,cancelled_at=created if status is SignalLifecycleStatus.CANCELLED else None,
                 created_at=created,updated_at=created);s.add(row);await s.flush()
@@ -91,3 +92,33 @@ class Phase7PrivateReportingAcceptance(unittest.IsolatedAsyncioTestCase):
         for secret in ('PRIVATE_OWNER_ALPHA','PRIVATE_OWNER_BETA','71001','71002','سیگنالیست'):
             self.assertNotIn(secret,rendered)
         self.assertEqual((await self.service.destination_summary(DestinationReportFilter(self.y,START,END))).total_signals,1)
+
+    async def test_destination_performance_groups_repeated_symbols_and_excludes_non_performance(self):
+        btc_win=await self.signal(self.a,'btc-win',roi='10',symbol='btc')
+        btc_loss=await self.signal(self.b,'btc-loss',roi='-3.5',symbol='btc')
+        eth_loss=await self.signal(self.a,'eth-loss',roi='-4',symbol='eth')
+        neutral=await self.signal(self.a,'ong-flat',roi='0',symbol='ong')
+        cancelled=await self.signal(
+            self.a,'zro-cancelled',status=SignalLifecycleStatus.CANCELLED,roi='99',symbol='zro')
+        no_result=await self.signal(self.a,'arb-open',symbol='arb')
+        await self.market_root(btc_win,self.x,PublicationStatus.SENT,START+timedelta(hours=1),301)
+        await self.market_root(btc_loss,self.x,PublicationStatus.SENT,START+timedelta(hours=2),302)
+        await self.market_root(eth_loss,self.x,PublicationStatus.SENT,START+timedelta(hours=3),303)
+        await self.market_root(neutral,self.x,PublicationStatus.SENT,START+timedelta(hours=4),304)
+        await self.market_root(cancelled,self.x,PublicationStatus.SENT,START+timedelta(hours=5),305)
+        await self.market_root(no_result,self.x,PublicationStatus.SENT,START+timedelta(hours=6),306)
+
+        report=await self.service.destination_performance(DestinationReportFilter(self.x,START,END))
+        self.assertEqual(
+            [(item.canonical_symbol,item.roi) for item in report.symbols],
+            [('BTCUSDT',Decimal('6.5')),('ETHUSDT',Decimal('-4')),('ONGUSDT',Decimal('0'))])
+        self.assertEqual(
+            (report.positive_total,report.negative_total,report.net_total),
+            (Decimal('6.5'),Decimal('-4'),Decimal('2.5')))
+        rendered=texts.destination_performance_text(
+            report,'DESTINATION_X_PRIVATE','2026-09-01','2026-09-01')
+        self.assertEqual(rendered.count('BTCUSDT'),1)
+        self.assertNotIn('ZROUSDT',rendered);self.assertNotIn('ARBUSDT',rendered)
+        for secret in ('PRIVATE_OWNER_ALPHA','PRIVATE_OWNER_BETA','71001','71002','سیگنالیست'):
+            self.assertNotIn(secret,rendered)
+

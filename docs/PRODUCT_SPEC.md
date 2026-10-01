@@ -481,7 +481,9 @@ Reports are synchronous, on-demand SQLite reads. Main Admin general reports reta
 
 All surfaces share one performance projection. Modern Signals use Decimal `realized_weighted_roi` from Position State; historical Signals without Position State fall back to Monitor result/ROI. Cancelled Signals have no performance result or ROI. Win Rate is Wins divided by Wins plus Losses; Neutral is excluded.
 
-Reports include trade history, total/pending/open/cancelled counts, Win/Loss/Neutral, Win Rate, total/average/best/worst realized ROI, highest TP, and source type. Main Admin general reports additionally retain named Signalist context and publication metrics.
+Personal and Main Admin general reports include trade history, total/pending/open/cancelled counts, Win/Loss/Neutral, Win Rate, total/average/best/worst realized ROI, highest TP, and source type. Main Admin general reports additionally retain named Signalist context and publication metrics.
+
+A Destination summary is a symbol-level performance aggregate for the selected period. Each canonical symbol appears once, with all eligible projected ROI samples for that symbol netted together first. The footer sums positive symbol aggregates, negative symbol aggregates, and their final net. Cancelled Signals and Signals without reportable ROI do not contribute; a reportable zero remains a neutral symbol row. Destination trade history remains available separately.
 
 Destination membership requires a definitely-sent Market Initial or Limit Pending root. Its period uses root `sent_at`; Limit activation does not add a second row. Personal and general Signalist cohorts use Signal creation time.
 

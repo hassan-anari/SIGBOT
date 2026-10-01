@@ -93,6 +93,22 @@ class ReportSummary:
     def neutral(self): return self.breakevens
     @property
     def active_signals(self): return self.open_signals
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationSymbolPerformance:
+    canonical_symbol: str
+    roi: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationPerformance:
+    symbols: tuple[DestinationSymbolPerformance, ...]
+    positive_total: Decimal
+    negative_total: Decimal
+    net_total: Decimal
+
+
 @dataclass(frozen=True, slots=True)
 class TradeHistoryItem:
     signal_id: int; signalist_display_name: str; canonical_symbol: str; direction: str
@@ -204,6 +220,28 @@ def summarize(items, *, published_count=0) -> ReportSummary:
         confirmed_published_count=published_count, unpublished_count=len(items)-published_count)
 
 
+def summarize_destination_performance(items) -> DestinationPerformance:
+    totals: dict[str, Decimal] = {}
+    for item in items:
+        if item.cancelled or item.report_roi is None:
+            continue
+        totals[item.canonical_symbol] = (
+            totals.get(item.canonical_symbol, Decimal("0")) + Decimal(item.report_roi)
+        )
+    symbols = tuple(
+        DestinationSymbolPerformance(canonical_symbol=symbol, roi=roi)
+        for symbol, roi in totals.items()
+    )
+    positive_total = sum((item.roi for item in symbols if item.roi > 0), Decimal("0"))
+    negative_total = sum((item.roi for item in symbols if item.roi < 0), Decimal("0"))
+    return DestinationPerformance(
+        symbols=symbols,
+        positive_total=positive_total,
+        negative_total=negative_total,
+        net_total=positive_total + negative_total,
+    )
+
+
 class ReportingRepository:
     def __init__(self, sessions: async_sessionmaker): self.sessions = sessions
     def _base(self, flt):
@@ -282,6 +320,17 @@ class ReportingRepository:
                 .join(roots,roots.c.signal_id==SignalRecord.id).outerjoin(SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id)
                 .outerjoin(SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id))).all()
             return summarize(_projection(*row) for row in rows)
+    async def destination_performance(self,flt):
+        async with self.sessions() as s:
+            if not await s.scalar(select(DestinationRecord.id).where(DestinationRecord.id==flt.destination_id)):
+                raise ValueError("destination not found")
+            roots=self._roots(flt)
+            rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord)
+                .join(roots,roots.c.signal_id==SignalRecord.id)
+                .outerjoin(SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id)
+                .outerjoin(SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id)
+                .order_by(roots.c.sent_at,SignalRecord.id))).all()
+            return summarize_destination_performance(_projection(*row) for row in rows)
     async def destination_history(self,flt,page=1):
         page=max(1,int(page))
         async with self.sessions() as s:
@@ -306,5 +355,6 @@ class ReportingService:
     async def signalist_summary(self,owner_signalist_id,flt): return await self.repo.signalist_summary(owner_signalist_id,flt)
     async def signalist_history(self,owner_signalist_id,flt,page=1): return await self.repo.signalist_history(owner_signalist_id,flt,page)
     async def destination_summary(self,flt): return await self.repo.destination_summary(flt)
+    async def destination_performance(self,flt): return await self.repo.destination_performance(flt)
     async def destination_history(self,flt,page=1): return await self.repo.destination_history(flt,page)
     async def destination_exists(self,destination_id): return await self.repo.destination_exists(destination_id)
