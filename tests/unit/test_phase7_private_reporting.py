@@ -2,14 +2,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
-from chainura.application.reporting import _projection, summarize, SignalistTradeHistoryItem, DestinationTradeHistoryItem
+from chainura.application.reporting import (_projection, summarize, summarize_destination_performance,
+    SignalistTradeHistoryItem, DestinationTradeHistoryItem)
 from chainura.domain.monitoring import MonitorStage, ResultKind
 from chainura.domain.signal import SignalEntryType, SignalLifecycleStatus, SignalMode, TradeDirection
 from chainura.telegram.presentation import texts
 
 
-def signal(status=SignalLifecycleStatus.ACTIVE):
-    return SimpleNamespace(id=7, signalist_id=91, canonical_symbol="BTCUSDT",
+def signal(status=SignalLifecycleStatus.ACTIVE, symbol="BTCUSDT"):
+    return SimpleNamespace(id=7, signalist_id=91, canonical_symbol=symbol,
         direction=TradeDirection.LONG, entry_type=SignalEntryType.MARKET,
         mode=SignalMode.COMPOSITE, status=status, created_at=datetime.now(timezone.utc))
 
@@ -49,6 +50,27 @@ def test_private_formatters_structurally_have_no_cross_identity_fields():
     rendered=texts.private_history_text(page)
     for forbidden in ("Destination","مقصد","انتشار","ارسال"):
         assert forbidden not in rendered
+
+def test_destination_performance_groups_each_symbol_once_and_nets_before_totals():
+    rows=(
+        _projection(signal(symbol="BTCUSDT"),monitor(),position("10",True)),
+        _projection(signal(symbol="BTCUSDT"),monitor(),position("-3",True)),
+        _projection(signal(symbol="ETHUSDT"),monitor(),position("-4",True)),
+        _projection(signal(symbol="ONGUSDT"),monitor(),position("0",True)),
+        _projection(signal(SignalLifecycleStatus.CANCELLED,"ZROUSDT"),monitor(),position("99",True)),
+        _projection(signal(symbol="OPENUSDT"),monitor(),position("0",False)),
+    )
+    report=summarize_destination_performance(rows)
+    assert [(item.canonical_symbol,item.roi) for item in report.symbols] == [
+        ("BTCUSDT",Decimal("7")),("ETHUSDT",Decimal("-4")),("ONGUSDT",Decimal("0"))]
+    assert (report.positive_total,report.negative_total,report.net_total) == (
+        Decimal("7"),Decimal("-4"),Decimal("3"))
+    rendered=texts.destination_performance_text(
+        report,"DESTINATION_X_PRIVATE","2026-09-01","2026-09-07")
+    assert rendered.count("BTCUSDT")==1
+    assert "2026-09-01" in rendered and "2026-09-07" in rendered
+    assert "جمع سود بدون احتساب ضررها" in rendered and "برآیند نهایی" in rendered
+
 
 def test_best_and_worst_use_all_roi_samples():
     cases=((('-5','-1','2','8'),Decimal('8'),Decimal('-5')),

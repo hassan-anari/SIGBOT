@@ -52,3 +52,4 @@ class Phase7RouteTests(unittest.IsolatedAsyncioTestCase):
         value=period_filter('custom',datetime(2026,1,1,tzinfo=timezone.utc),start=date(2026,3,21),end=date(2026,3,21))
         self.assertEqual(value.start_utc,datetime(2026,3,20,20,30,tzinfo=timezone.utc))
         self.assertEqual(value.end_utc,datetime(2026,3,21,20,30,tzinfo=timezone.utc))
+        self.assertEqual(report_routes._range_labels(value),("2026-03-21","2026-03-21"))
