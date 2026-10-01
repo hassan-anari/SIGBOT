@@ -297,7 +297,7 @@ REPORT_ASK_END="تاریخ پایان را به میلادی و با قالب YY
 REPORT_INVALID_RANGE="بازه تاریخ معتبر نیست؛ تاریخ‌ها را با قالب YYYY-MM-DD و به‌ترتیب درست وارد کنید."
 REPORT_HISTORY="تاریخچه معاملات"; REPORT_REFRESH="تازه‌سازی"; REPORT_YES="بله"; REPORT_NO="خیر"; REPORT_DASH="—"
 MENU_SIGNALIST_REPORT="📊 گزارش عملکرد من"
-DESTINATION_PERFORMANCE="📊 برآیند سیگنال‌ها"
+DESTINATION_PERFORMANCE="📊 گزارش عملکرد"
 SIGNALIST_REPORT_TITLE="<b>📊 گزارش عملکرد من</b>"
 DESTINATION_REPORT_TITLE="<b>📊 گزارش عملکرد مقصد</b>"
 REPORT_PERIOD_PRIVATE="بازه گزارش عملکرد را انتخاب کنید."
