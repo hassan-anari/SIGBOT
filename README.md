@@ -3,9 +3,10 @@
 ## WEEX futures support
 
 WEEX is the fourth futures market. Chainura uses only Contract API V3 at
-`api-contract.weex.com`: catalog discovery intersects
-`/capi/v3/market/exchangeInfo` and `/capi/v3/market/apiTradingSymbols`, and each
-normal poll makes one bulk `/capi/v3/market/premiumIndex` request using
+`api-contract.weex.com`: catalog discovery uses the USDT perpetual market contracts
+from `/capi/v3/market/exchangeInfo`; API-order allowlisting is intentionally not a
+market-data eligibility requirement. Each normal poll makes one bulk
+`/capi/v3/market/premiumIndex` request using
 `markPrice`. There is no per-Signal market request.
 
 Shared eligibility remains the Ourbit/Toobit/LBank core intersection. WEEX may
@@ -363,7 +364,7 @@ Outlier یا Reference Price شرکت نمی‌کند. وضعیت جاری صر�
 - Toobit prices: `GET https://api.toobit.com/quote/v1/contract/ticker/price`
 - LBank instruments: `GET https://lbkperp.lbank.com/cfd/openApi/v1/pub/instrument?productGroup=SwapU`
 - LBank prices: `GET https://lbkperp.lbank.com/cfd/openApi/v1/pub/marketData?productGroup=SwapU`
-- WEEX catalog: Contract API V3 `exchangeInfo` intersected with `apiTradingSymbols`
+- WEEX catalog: Contract API V3 `exchangeInfo` USDT perpetual contracts
 - WEEX prices: bulk Contract API V3 `premiumIndex`, using `markPrice`
 
 ## ساختار پروژه
