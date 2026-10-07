@@ -136,3 +136,30 @@ class RestartMarketTests(unittest.IsolatedAsyncioTestCase):
   self.assertTrue(worker.task.done());self.assertTrue(all(adapter.price_calls>=3 for adapter in p.adapters))
   self.assertIn(('BTCUSDT','toobit'),p.latest)
  async def _works(self,value):return value
+
+class DailyCatalogRefreshTests(unittest.IsolatedAsyncioTestCase):
+ async def test_ready_catalog_refreshes_once_per_day(self):
+  class DailyProbe:
+   def __init__(self):
+    self.now=datetime(2026,10,7,tzinfo=timezone.utc);self.calls=0;self.instruments={};self.common_symbols=set();self.adapters=[]
+   def clock(self): return self.now
+   async def discover(self):
+    self.calls+=1
+    self.instruments={
+     'ourbit':[Instrument('ourbit','BTCUSDT','BTCUSDT','BTC')],
+     'toobit':[Instrument('toobit','BTCUSDT','BTCUSDT','BTC')],
+     'lbank':[Instrument('lbank','btc_usdt','BTCUSDT','BTC')],
+     'weex':[Instrument('weex','BTCUSDT','BTCUSDT','BTC')],
+    }
+    self.common_symbols={'BTCUSDT'}
+  p=DailyProbe();catalog=SymbolCatalogProvider(p)
+  await catalog._ensure_discovered()
+  self.assertEqual(p.calls,1)
+  await catalog.refresh_catalogs_if_due()
+  self.assertEqual(p.calls,1)
+  p.now=p.now+__import__('datetime').timedelta(hours=23)
+  await catalog.refresh_catalogs_if_due()
+  self.assertEqual(p.calls,1)
+  p.now=p.now+__import__('datetime').timedelta(hours=2)
+  await catalog.refresh_catalogs_if_due()
+  self.assertEqual(p.calls,2)
