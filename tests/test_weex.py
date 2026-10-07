@@ -5,15 +5,18 @@ from exchanges.weex import WEEXAdapter
 from market import composite_price_analysis
 
 
-def test_weex_catalog_intersection_and_filters():
+def test_weex_catalog_uses_market_contracts_not_api_trading_allowlist():
     info={"data":{"symbols":[
         {"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","forwardContractFlag":True},
         {"symbol":"ETHUSDT","baseAsset":"ETH","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","forwardContractFlag":True},
         {"symbol":"BTCUSDC","baseAsset":"BTC","quoteAsset":"USDC","marginAsset":"USDC","contractType":"PERPETUAL","forwardContractFlag":True},
         {"symbol":"XAUUSDT_TRADIFI","baseAsset":"XAU","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","forwardContractFlag":True},
     ]}}
-    rows=WEEXAdapter.parse_instruments(info,{"data":["BTCUSDT","BTCUSDC","XAUUSDT_TRADIFI"]})
-    assert [(x.exchange_symbol,x.canonical_symbol) for x in rows]==[("BTCUSDT","BTCUSDT")]
+    rows=WEEXAdapter.parse_instruments(info)
+    assert [(x.exchange_symbol,x.canonical_symbol) for x in rows]==[
+        ("BTCUSDT","BTCUSDT"),
+        ("ETHUSDT","ETHUSDT"),
+    ]
 
 
 def test_weex_bulk_mark_prices_are_decimal_timestamped_and_isolated():
