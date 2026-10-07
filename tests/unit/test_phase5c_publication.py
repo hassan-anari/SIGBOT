@@ -25,6 +25,10 @@ class PlanningTests(unittest.TestCase):
  def test_composite_priority_and_degraded_sources(self):
   self.assertEqual(select_initial_exchange(SignalMode.COMPOSITE,None,
    (Exchange.OURBIT,Exchange.TOOBIT,Exchange.LBANK),(Exchange.TOOBIT,Exchange.LBANK)),Exchange.TOOBIT)
+ def test_composite_weex_first_uses_weex_when_snapshot_contains_it(self):
+  self.assertEqual(select_initial_exchange(SignalMode.COMPOSITE,None,
+   (Exchange.WEEX,Exchange.TOOBIT,Exchange.OURBIT,Exchange.LBANK),
+   (Exchange.OURBIT,Exchange.TOOBIT,Exchange.LBANK,Exchange.WEEX)),Exchange.WEEX)
  def test_single_compatibility_and_none(self):
   self.assertEqual(select_initial_exchange(SignalMode.SINGLE_EXCHANGE,Exchange.LBANK,
    (Exchange.OURBIT,Exchange.LBANK),(Exchange.LBANK,)),Exchange.LBANK)
