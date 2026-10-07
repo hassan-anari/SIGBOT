@@ -40,12 +40,7 @@ class WEEXAdapter:
         return extract_rows(data)
 
     @classmethod
-    def parse_instruments(cls, exchange_info: Any, trading_symbols: Any) -> list[Instrument]:
-        eligible: set[str] = set()
-        for item in cls._rows(trading_symbols, "symbols"):
-            symbol = upper(item.get("symbol") if isinstance(item, dict) else item)
-            if symbol:
-                eligible.add(symbol)
+    def parse_instruments(cls, exchange_info: Any) -> list[Instrument]:
         rows: list[Instrument] = []
         seen: set[str] = set()
         for row in cls._rows(exchange_info, "symbols"):
@@ -59,7 +54,7 @@ class WEEXAdapter:
             forward = row.get("forwardContractFlag")
             is_perpetual = contract in {"PERPETUAL", "PERPETUAL_CONTRACT"}
             is_forward = forward is True or str(forward).strip().lower() in {"true", "1"}
-            if (not symbol or symbol not in eligible or symbol in seen or not base
+            if (not symbol or symbol in seen or not base
                     or quote != "USDT" or margin != "USDT" or not is_perpetual
                     or not is_forward or "TRADIFI" in symbol or not symbol.isascii()):
                 continue
@@ -96,13 +91,13 @@ class WEEXAdapter:
         return ticks
 
     async def fetch_instruments(self) -> list[Instrument]:
-        info, eligible = await asyncio.gather(
-            get_json(f"{self.base_url}/capi/v3/market/exchangeInfo", timeout=self.timeout),
-            get_json(f"{self.base_url}/capi/v3/market/apiTradingSymbols", timeout=self.timeout),
+        info = await get_json(
+            f"{self.base_url}/capi/v3/market/exchangeInfo",
+            timeout=self.timeout,
         )
-        instruments = self.parse_instruments(info, eligible)
+        instruments = self.parse_instruments(info)
         if not instruments:
-            raise RuntimeError("WEEX response contained no usable API-tradable USDT perpetual symbols")
+            raise RuntimeError("WEEX response contained no usable USDT perpetual symbols")
         self.symbol_map = {item.exchange_symbol: item.canonical_symbol for item in instruments}
         return instruments
 
