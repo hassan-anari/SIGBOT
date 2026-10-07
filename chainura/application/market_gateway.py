@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from typing import Protocol
 
@@ -19,6 +20,8 @@ PAGE_SIZE = 8
 LOGGER = logging.getLogger("chainura.market")
 COMPOSITE_CORE = frozenset((Exchange.OURBIT, Exchange.TOOBIT, Exchange.LBANK))
 OPTIONAL_EXCHANGES = tuple(exchange for exchange in Exchange if exchange not in COMPOSITE_CORE)
+CATALOG_REFRESH_INTERVAL = timedelta(days=1)
+CATALOG_REFRESH_RETRY = timedelta(minutes=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,7 @@ class SymbolCatalogProvider:
         self._snapshot_lock = asyncio.Lock()
         self._shared_ready = False
         self._exchange_ready: set[Exchange] = set()
+        self._next_catalog_refresh_at = None
         self.market_service = None
 
     def _clock(self):
@@ -85,11 +89,11 @@ class SymbolCatalogProvider:
             for adapter, result in pairs
         ))
 
-    async def _ensure_discovered(self) -> None:
-        if self._shared_ready:
+    async def _ensure_discovered(self, *, force: bool = False) -> None:
+        if self._shared_ready and not force:
             return
         async with self._discovery_lock:
-            if self._shared_ready:
+            if self._shared_ready and not force:
                 return
             if self._health_recorder is None and hasattr(self._probe, "discover"):
                 try:
@@ -123,7 +127,46 @@ class SymbolCatalogProvider:
                 self._probe.common_symbols = set(); self._exchange_ready.clear()
                 raise SymbolCatalogError("symbol catalog is incomplete")
             self._shared_ready = True
-            self._exchange_ready.update(Exchange(name) for name, rows in self._probe.instruments.items() if rows)
+            self._exchange_ready = {
+                Exchange(name) for name, rows in self._probe.instruments.items() if rows
+            }
+            if not force and self._next_catalog_refresh_at is None:
+                self._next_catalog_refresh_at = self._clock() + CATALOG_REFRESH_INTERVAL
+
+    async def refresh_catalogs_if_due(self) -> None:
+        now = self._clock()
+        if self._next_catalog_refresh_at is not None and now < self._next_catalog_refresh_at:
+            return
+
+        previous_instruments = {
+            name: list(rows) for name, rows in self._probe.instruments.items()
+        }
+        previous_common_symbols = set(self._probe.common_symbols)
+        previous_exchange_ready = set(self._exchange_ready)
+        previous_shared_ready = self._shared_ready
+        previous_collisions = {
+            name: dict(rows) for name, rows in getattr(self._probe, "collisions", {}).items()
+        }
+        previous_symbol_maps = {
+            adapter.name: dict(getattr(adapter, "symbol_map", {}))
+            for adapter in self._probe.adapters
+        }
+
+        try:
+            await self._ensure_discovered(force=True)
+        except Exception:
+            self._probe.instruments = previous_instruments
+            self._probe.common_symbols = previous_common_symbols
+            self._exchange_ready = previous_exchange_ready
+            self._shared_ready = previous_shared_ready
+            if hasattr(self._probe, "collisions"):
+                self._probe.collisions = previous_collisions
+            for adapter in self._probe.adapters:
+                adapter.symbol_map = previous_symbol_maps.get(adapter.name, {})
+            self._next_catalog_refresh_at = now + CATALOG_REFRESH_RETRY
+            raise
+
+        self._next_catalog_refresh_at = now + CATALOG_REFRESH_INTERVAL
 
     async def _ensure_exchange(self, exchange: Exchange) -> None:
         if exchange in self._exchange_ready:
@@ -380,6 +423,7 @@ class MarketPriceWorker:
         signals = await self.load_work(1000) if self.load_work is not None else ()
         try:
             await self.catalog._ensure_discovered()
+            await self.catalog.refresh_catalogs_if_due()
         except Exception as exc:
             LOGGER.warning("market catalog refresh unavailable category=%s", type(exc).__name__)
         await self.catalog.recover_optional_catalogs()
