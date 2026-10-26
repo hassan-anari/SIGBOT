@@ -3,7 +3,7 @@ import asyncio, logging
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile
@@ -434,7 +434,7 @@ class UpdatePublicationWorker(InitialPublicationWorker):
    except asyncio.TimeoutError:pass
 
 class PositionActionPublicationService:
- """Durable TP-follow-up text, activated only by a definitely sent TP image."""
+ """Durable position-action text; manual closes require only a confirmed root."""
  def __init__(self,transactions,publisher,message_templates,clock=lambda:datetime.now(timezone.utc),max_attempts=3,retry_base_seconds=.5):
   self.transactions=transactions;self.publisher=publisher;self.message_templates=message_templates;self.clock=clock;self.max_attempts=max_attempts;self.retry_base_seconds=retry_base_seconds
  async def recover(self):
@@ -459,18 +459,24 @@ class PositionActionPublicationService:
    ids=tuple((await tx._session.scalars(select(R.id).where((R.status==PublicationStatus.PENDING)|((R.status==PublicationStatus.RETRY_WAIT)&(R.retry_at<=now))).order_by(R.created_at).limit(100))).all());await tx.commit();return ids
  async def process(self,item_id):
   from chainura.domain.position import PositionActionKind
+  from chainura.domain.monitoring import SignalEventKind
+  from chainura.domain.publication import PublicationRequestStatus
   from sqlalchemy import exists
-  from chainura.persistence.models import SignalPositionActionPublicationRecord as R,SignalPositionActionRecord,SignalEventRecord,SignalRecord,DestinationRecord,DestinationUpdatePublicationRecord,DestinationPublicationRecord,DestinationSignalistRecord
+  from chainura.persistence.models import SignalPositionActionPublicationRecord as R,SignalPositionActionRecord,SignalEventRecord,SignalRecord,DestinationRecord,DestinationUpdatePublicationRecord,DestinationPublicationRecord,DestinationSignalistRecord,SignalistRecord,LimitPendingPublicationRecord,SignalCommentPublicationRecord,SignalDetailsPublicationRecord,UpdatePublicationRequestRecord
+  from chainura.domain.signalist import SignalistStatus
   from chainura.application.message_templates import position_action_context
   now=self.clock()
   async with self.transactions() as tx:
    s=tx._session;row=await s.get(R,item_id)
    if not row or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return
-   tp=await s.get(DestinationUpdatePublicationRecord,row.tp_publication_id)
+   tp=await s.get(DestinationUpdatePublicationRecord,row.tp_publication_id) if row.tp_publication_id else None
    action=await s.get(SignalPositionActionRecord,row.action_id);event=await s.get(SignalEventRecord,action.event_id);signal=await s.get(SignalRecord,row.signal_id);dest=await s.get(DestinationRecord,row.destination_id)
    initial=await s.scalar(select(exists().where(DestinationPublicationRecord.signal_id==row.signal_id,DestinationPublicationRecord.destination_id==row.destination_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0)))
    assigned=bool(signal and await s.scalar(select(exists().where(DestinationSignalistRecord.destination_id==row.destination_id,DestinationSignalistRecord.signalist_id==signal.signalist_id))))
-   if not tp or tp.status is not PublicationStatus.SENT or tp.telegram_message_id!=row.reply_to_message_id:
+   manual=action.candidate_id is None and action.action_kind is PositionActionKind.FULL_CLOSE and event.kind is SignalEventKind.MANUAL_CLOSE
+   if manual:
+    initial=initial or await s.scalar(select(exists().where(LimitPendingPublicationRecord.signal_id==row.signal_id,LimitPendingPublicationRecord.destination_id==row.destination_id,LimitPendingPublicationRecord.status==PublicationStatus.SENT,LimitPendingPublicationRecord.telegram_message_id>0)))
+   if not manual and (not tp or tp.status is not PublicationStatus.SENT or tp.telegram_message_id!=row.reply_to_message_id):
     row.status=PublicationStatus.SUPERSEDED;row.updated_at=now;await tx.commit();return
    if dest is None or dest.status is not DestinationStatus.ACTIVE:
     row.status=PublicationStatus.SKIPPED_DESTINATION_INACTIVE;row.updated_at=now;await tx.commit();return
@@ -478,7 +484,25 @@ class PositionActionPublicationService:
     row.status=PublicationStatus.SKIPPED_UNASSIGNED;row.updated_at=now;await tx.commit();return
    if not initial:
     row.status=PublicationStatus.SKIPPED_NO_INITIAL_MESSAGE;row.updated_at=now;await tx.commit();return
-   row.status=PublicationStatus.SENDING;row.attempt_count+=1;row.first_attempt_at=row.first_attempt_at or now;row.retry_at=None;row.updated_at=now
+   actor=await s.get(SignalistRecord,signal.signalist_id)
+   if not actor or actor.status is not SignalistStatus.ACTIVE:
+    row.status=PublicationStatus.SKIPPED_SIGNALIST_INACTIVE;row.updated_at=now;await tx.commit();return
+   if manual:
+    # Earlier approved updates may still be planning. Let them drain first.
+    waiting=await s.scalar(select(exists().where(UpdatePublicationRequestRecord.signal_id==row.signal_id,
+      UpdatePublicationRequestRecord.event_id<event.id,UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL,PublicationRequestStatus.PLANNING)))))
+    for model in (DestinationUpdatePublicationRecord,SignalCommentPublicationRecord,SignalDetailsPublicationRecord,R):
+     condition=(model.signal_id==row.signal_id)&(model.destination_id==row.destination_id)&model.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT,PublicationStatus.BLOCKED_TEMPLATE,PublicationStatus.DELIVERY_UNKNOWN))
+     if model is R:condition=condition&(R.id!=row.id)&(R.created_at<=row.created_at)
+     waiting=waiting or await s.scalar(select(exists().where(condition)))
+    if waiting:return
+    parent=await tx.update_publications.last_published_message_id(row.signal_id,row.destination_id)
+    if not parent:
+     row.status=PublicationStatus.SKIPPED_NO_INITIAL_MESSAGE;row.updated_at=now;await tx.commit();return
+    row.reply_to_message_id=parent
+   expected=row.status
+   changed=(await s.execute(update(R).where(R.id==row.id,R.status==expected).values(status=PublicationStatus.SENDING,attempt_count=R.attempt_count+1,first_attempt_at=row.first_attempt_at or now,retry_at=None,updated_at=now,reply_to_message_id=row.reply_to_message_id))).rowcount
+   if changed!=1:return
    attempt=row.attempt_count;chat=dest.telegram_chat_id;parent=row.reply_to_message_id
    await tx.commit()
   kinds={PositionActionKind.RISK_FREE:DestinationMessageKind.RISK_FREE_ACTIVATED,PositionActionKind.SAVE_PROFIT_50:DestinationMessageKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE:DestinationMessageKind.FULL_CLOSE}
@@ -489,7 +513,7 @@ class PositionActionPublicationService:
    status=PublicationStatus.RETRY_WAIT if attempt<self.max_attempts else PublicationStatus.FAILED;retry=self.clock()+timedelta(seconds=max(exc.retry_after,self.retry_base_seconds*(2**(attempt-1)))) if status is PublicationStatus.RETRY_WAIT else None;error='rate_limited'
   except DeliveryRejected as exc:status=PublicationStatus.FAILED;retry=None;error=str(exc)
   except DeliveryAmbiguous as exc:status=PublicationStatus.DELIVERY_UNKNOWN;retry=None;error=str(exc)
-  except Exception as exc:status=PublicationStatus.FAILED;retry=None;error=type(exc).__name__
+  except Exception as exc:status=PublicationStatus.DELIVERY_UNKNOWN;retry=None;error=type(exc).__name__
   else:status=PublicationStatus.SENT;retry=None;error=None
   async with self.transactions() as tx:
    current=await tx._session.get(R,item_id)

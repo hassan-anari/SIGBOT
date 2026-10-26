@@ -45,6 +45,11 @@ def detail_text(x):
   rows.extend([f"نوع ورود: {texts.SIGNAL_ORDER_LIMIT}",f"ورود لیمیت: {format_decimal(x.entry)}"])
   if x.trigger_price is not None:rows.append(f"قیمت مشاهده‌شده: {format_decimal(x.trigger_price)}")
  return "\n".join(rows)
+def full_close_eligible(x):
+ return (x.status is SignalLifecycleStatus.ACTIVE and
+         x.monitor_stage in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1) and
+         x.position_version is not None and x.remaining_fraction>0)
+
 def detail_keyboard(x,page):
  rows=[]
  if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:
@@ -55,6 +60,7 @@ def detail_keyboard(x,page):
   rows.append([InlineKeyboardButton(text=texts.SIGNAL_LIMIT_ACTIVATE,callback_data=cb("a",x.id,page))])
  actions=[]
  if x.status is SignalLifecycleStatus.ACTIVE and x.monitor_stage is not MonitorStage.DISABLED_LEGACY:actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_COMMENT,callback_data=cb("o",x.id,page)))
+ if full_close_eligible(x):actions.append(InlineKeyboardButton(text=texts.TP_ACTION_FULL_CLOSE_BUTTON,callback_data=cb("f",x.id,page)))
  actions.append(InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL,callback_data=cb("c",x.id,page)));rows.append(actions);rows.append([InlineKeyboardButton(text=texts.BUTTON_BACK_STEP,callback_data=cb("l",page))]);return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def comment_choice_keyboard(signal_id,page):
@@ -84,7 +90,7 @@ async def _show(message,actor,service,page=1):
 async def active_list(message:Message,actor:Actor,active_signal_service):await _show(message,actor,active_signal_service)
 
 @router.callback_query(F.data.startswith(PREFIX))
-async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,limit_order_service=None,signal_comment_service=None):
+async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,callback_ack:CallbackAcknowledger,active_signal_service,signal_service,limit_order_service=None,signal_comment_service=None,monitoring_service=None):
  action,args=_parse(callback.data);await callback_ack.answer_once()
  if not isinstance(callback.message,Message):return
  from chainura.telegram.signal_routes import reconcile_stage_one_creating
@@ -100,7 +106,31 @@ async def active_callback(callback:CallbackQuery,actor:Actor,state:FSMContext,ca
   if action in ("s","t","x"):await state.clear()
   return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
  page=args[1] if len(args)>1 else 1
- if action=="d":return await callback.message.answer(detail_text(item),reply_markup=detail_keyboard(item,page))
+ if action=="d":
+  await state.update_data(full_close_token=None)
+  return await callback.message.answer(detail_text(item),reply_markup=detail_keyboard(item,page))
+ if action=="f":
+  if not full_close_eligible(item) or monitoring_service is None:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+  try:version=await monitoring_service.manual_close_version(signal_id,actor.signalist.id)
+  except ValueError:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+  import secrets
+  token=secrets.randbelow(10**12)
+  await state.update_data(full_close_signal=signal_id,full_close_version=version,full_close_token=token)
+  markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=texts.FULL_CLOSE_CONFIRM_BUTTON,callback_data=cb("z",signal_id,token)),InlineKeyboardButton(text=texts.ACTIVE_SIGNAL_CANCEL_NO,callback_data=cb("d",signal_id,page))]])
+  return await callback.message.answer(texts.full_close_confirm(format_trade_id(signal_id),format_symbol(item.symbol)),reply_markup=markup)
+ if action=="z":
+  data=await state.get_data()
+  if (monitoring_service is None or not full_close_eligible(item) or len(args)!=2 or
+      data.get("full_close_signal")!=signal_id or data.get("full_close_token")!=args[1]):return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+  from chainura.application.monitoring import ManualClosePriceUnavailable
+  async def confirmation_current():
+   current=await state.get_data()
+   return current.get("full_close_signal")==signal_id and current.get("full_close_token")==args[1]
+  try:await monitoring_service.manual_full_close(signal_id,actor.signalist.id,data["full_close_version"],confirmation_current=confirmation_current)
+  except ManualClosePriceUnavailable:return await callback.message.answer(texts.FULL_CLOSE_PRICE_UNAVAILABLE)
+  except ValueError:return await callback.message.answer(texts.ACTIVE_SIGNAL_STALE)
+  await state.update_data(full_close_token=None)
+  return await callback.message.answer(texts.FULL_CLOSE_APPLIED,reply_markup=signalist_menu())
  if action=="o":
   if item.status is not SignalLifecycleStatus.ACTIVE or signal_comment_service is None or not await signal_comment_service.eligible(signal_id,actor.signalist.id):return await callback.message.answer(texts.SIGNAL_COMMENT_STALE)
   await state.set_state(SignalComment.waiting_text);await state.set_data({"comment_signal_id":signal_id,"comment_page":page})

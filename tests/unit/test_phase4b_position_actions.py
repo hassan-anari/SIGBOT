@@ -34,10 +34,11 @@ class Phase4BPositionTests(unittest.TestCase):
  def test_action_keyboard_availability_is_explicit(self):
   actions=(PositionActionKind.NORMAL_TP,PositionActionKind.RISK_FREE,PositionActionKind.SAVE_PROFIT_50,PositionActionKind.FULL_CLOSE)
   keyboard=tp_action_keyboard(7,actions)
-  self.assertEqual(len(keyboard.inline_keyboard),4)
+  self.assertEqual(len(keyboard.inline_keyboard),3)
   self.assertNotIn('مقصد',str(keyboard.model_dump()))
+  self.assertNotIn('full_close',str(keyboard.model_dump()))
   final=tp_action_keyboard(7,(PositionActionKind.NORMAL_TP,PositionActionKind.FULL_CLOSE))
-  self.assertEqual(len(final.inline_keyboard),2)
+  self.assertEqual(len(final.inline_keyboard),1)
 
  def test_risk_free_hit_is_text_and_templates_exist(self):
   self.assertIs(update_content_type(SignalEventKind.RISK_FREE_HIT),UpdateContentType.TEXT)

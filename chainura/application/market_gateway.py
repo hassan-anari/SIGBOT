@@ -263,7 +263,11 @@ class BatchedMarketSnapshotProvider:
         self.probe = probe
         self.catalog = catalog
 
-    async def snapshot(self, signals):
+    async def fresh_snapshot(self, signals):
+        """Force one fresh batch using the same durable mappings and price policy."""
+        return await self.snapshot(signals, refresh=True)
+
+    async def snapshot(self, signals, *, refresh=False):
         signals = tuple(signals)
         if not signals:
             return {}
@@ -278,7 +282,7 @@ class BatchedMarketSnapshotProvider:
         if not required:
             return {}
         hydrate_durable_symbol_mappings(self.probe, signals)
-        if self.catalog.market_service is None:
+        if refresh or self.catalog.market_service is None:
             # Compatibility for direct/service use outside Runtime. Runtime
             # monitoring consumes the always-on worker's shared cache instead.
             raw_by_exchange = await self.catalog._fetch_prices(tuple(sorted(required, key=lambda x: x.value)))

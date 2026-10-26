@@ -104,6 +104,16 @@ class RestartMarketTests(unittest.IsolatedAsyncioTestCase):
   sequences=sequences or {}
   p.adapters=[ProductionLikeAdapter('ourbit','BTCUSDT',sequences.get('ourbit',['99'])),ProductionLikeAdapter('toobit','BTCUSDT',sequences.get('toobit',['100'])),ProductionLikeAdapter('lbank','btc_usdt',sequences.get('lbank',['101']))]
   return p
+ async def test_manual_snapshot_forces_fresh_batch_even_with_warm_runtime_cache(self):
+  p=self.probe({name:['100','105'] for name in ('ourbit','toobit','lbank')})
+  catalog=SymbolCatalogProvider(p);catalog._shared_ready=True
+  catalog.market_service=MarketPriceWorker(p,catalog)
+  provider=BatchedMarketSnapshotProvider(p,catalog)
+  first=await provider.fresh_snapshot((work(1),))
+  cached=await provider.snapshot((work(1),))
+  fresh=await provider.fresh_snapshot((work(1),))
+  self.assertEqual((first[1].reference_price,cached[1].reference_price,fresh[1].reference_price),(Decimal('100'),Decimal('100'),Decimal('105')))
+  self.assertTrue(all(x.price_calls==2 and x.catalog_calls==0 for x in p.adapters))
  async def test_snapshot_hydrates_production_like_adapters_before_parsing(self):
   p=self.probe();catalog=SymbolCatalogProvider(p)
   decisions=await BatchedMarketSnapshotProvider(p,catalog).snapshot((work(1),work(2)))

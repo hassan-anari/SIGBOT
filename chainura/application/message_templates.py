@@ -194,7 +194,7 @@ def limit_cancellation_context(signal, *, private):
 def position_action_context(signal,event,action,*,private):
     return {"symbol":_safe(format_symbol(signal.canonical_symbol)),"direction":_direction(signal),
         "entry":_safe(format_decimal(signal.entry_price)),"leverage":_safe(format_leverage(signal.leverage)),
-        "tp_index":_safe(format_symbol(str(event.tp_index or "—"))),
+        "tp_index":_safe(format_symbol(str(event.tp_index)) if event.tp_index is not None else "—"),
         "execution_price":_safe(format_decimal(action.execution_price)),
         "remaining_fraction":_safe(format_percentage(action.remaining_fraction_after*100)),
         "realized_weighted_roi":_safe(format_percentage(action.realized_weighted_roi_after)),

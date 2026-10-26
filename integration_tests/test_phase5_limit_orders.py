@@ -156,6 +156,43 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(await s.scalar(select(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.signal_id==signal.id)))
             self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal.id)),1)
 
+    async def test_activated_limit_full_close_before_tp_uses_fresh_price_and_pending_reply(self):
+        from chainura.application.monitoring import MonitoringService
+        from chainura.application.publication import PositionActionPublicationService
+        from chainura.domain.monitoring import MarketDecision,MonitorStage
+        from chainura.persistence.models import SignalPositionActionPublicationRecord
+        await self.only_good_destination()
+        signal=await self.signal_service.create_limit(self.command())
+        publisher=Publisher();templates=DestinationMessageTemplateService(self.tx)
+        pending=LimitPendingPublicationService(self.tx,publisher,templates,lambda:self.clock_now)
+        await pending.plan_pending()
+        for pid in await pending.pending_ids():await pending.process(pid)
+        class Fresh:
+            async def fresh_snapshot(inner,work):
+                return {signal.id:MarketDecision(Decimal('92'),snapshot('92').source_prices,PriceSourceType.COMPOSITE,self.clock_now)}
+        monitoring=MonitoringService(self.sessions,Fresh(),clock=lambda:self.clock_now)
+        with self.assertRaises(ValueError):await monitoring.manual_close_version(signal.id,self.actor.id)
+        limit=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
+        await limit.observe(signal.id,Decimal('90'),PriceSourceType.COMPOSITE,snapshot('90').source_prices,self.clock_now)
+        with self.assertRaises(ValueError):await monitoring.manual_close_version(signal.id,self.actor.id)
+        await limit.activate(signal.id,self.actor.id)
+        version=await monitoring.manual_close_version(signal.id,self.actor.id)
+        await monitoring.manual_full_close(signal.id,self.actor.id,version)
+        async with self.sessions() as s:
+            position=await s.get(SignalPositionStateRecord,signal.id)
+            self.assertTrue(position.is_closed)
+            self.assertEqual(position.realized_weighted_roi,Decimal('2')/Decimal('90')*100*10)
+            self.assertIs((await s.get(SignalMonitorStateRecord,signal.id)).stage,MonitorStage.COMPLETED_FULL_CLOSE)
+            self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal.id)),0)
+        # Activation photo is still queued: terminal text must reply to known Pending,
+        # and initial delivery must neither reacquire its lock nor create a standalone.
+        initial=InitialPublicationService(self.tx,Image(),publisher,lambda:self.clock_now,message_templates=templates)
+        async with self.sessions() as s:activation=await s.scalar(select(DestinationPublicationRecord).where(DestinationPublicationRecord.signal_id==signal.id))
+        await initial.process(activation.id);self.assertEqual(publisher.photos,[])
+        delivery=PositionActionPublicationService(self.tx,publisher,templates,lambda:self.clock_now)
+        for pid in await delivery.pending_ids():await delivery.process(pid)
+        self.assertEqual(publisher.text[-1][2],701)
+
     async def test_short_threshold_and_moved_price_does_not_revert(self):
         signal=await self.signal_service.create_limit(self.command(TradeDirection.SHORT,"short"))
         service=LimitOrderService(self.sessions,clock=lambda:self.clock_now)

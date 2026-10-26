@@ -144,8 +144,7 @@ class Phase6FinalAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await notify.deliver(note2.id)
         async with self.sessions() as s:
             cand2=(await s.get(SignalUpdateCandidateRecord,cand2.id))
-        self.assertIs(await monitoring.decide_tp_action(cand2.id,sl.id,PositionActionKind.NORMAL_TP),
-                      PositionActionKind.FINAL_TP_CLOSE)
+        self.assertIs(await monitoring.decide_candidate(cand2.id,sl.id,True),CandidateStatus.APPROVED)
         await updates.sweep(); update_ids=await updates.pending_ids(); self.assertEqual(len(update_ids),1); await updates.process(update_ids[0])
         self.assertEqual(photos.updates[1][3], photos.updates[0][4])
         await InitialPublicationService(factory,image,photos,lambda:self.now).recover()

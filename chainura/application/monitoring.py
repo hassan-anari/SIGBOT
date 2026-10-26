@@ -25,6 +25,7 @@ from chainura.persistence.models import (SignalRecord,SignalTakeProfitRecord,
 from chainura.persistence.models import SignalPositionStateRecord,SignalPositionActionRecord
 from chainura.domain.position import PositionState,PositionActionKind,apply_position_action,InvalidPositionTransition
 from chainura.domain.publication import PublicationRequestStatus
+from chainura.application.position_accounting import ledger_matches_position
 
 
 @dataclass(frozen=True,slots=True)
@@ -69,10 +70,17 @@ class CompatibilitySummary:
     inactive_owner_final_positions_terminalized:int = 0
     stale_trade_locks_removed:int = 0
     disabled_legacy_active_signals:int = 0
+    final_positions_terminalized:int = 0
+    inconsistent_final_positions:int = 0
 
 
 class BatchMarketProvider(Protocol):
     async def snapshot(self, signals:tuple[MonitorWork,...]) -> dict[int,MarketDecision]:...
+    async def fresh_snapshot(self, signals:tuple[MonitorWork,...]) -> dict[int,MarketDecision]:...
+
+
+class ManualClosePriceUnavailable(ValueError):
+    """No trustworthy fresh snapshot; accounting and locks remain untouched."""
 
 
 class MonitoringService:
@@ -123,25 +131,22 @@ class MonitoringService:
                     PromptStatus.AWAITING_RESPONSE))).values(status=PromptStatus.SUPERSEDED,
                         expired_at=now,updated_at=now))).rowcount
 
+            terminalized,flagged,inactive=await self._terminalize_final_positions(s,now)
             refreshed,repaired=await self._refresh_legacy_tp_interactions(s,now)
-            terminalized=await self._terminalize_inactive_final_positions(s,now)
-            stale=(await s.execute(delete(DestinationTradeLockRecord).where(
-                DestinationTradeLockRecord.signal_id.in_(select(SignalRecord.id).outerjoin(
-                    SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id).where(
-                    (SignalRecord.status==SignalLifecycleStatus.CANCELLED)|
-                    SignalMonitorStateRecord.stage.in_(TERMINAL_MONITOR_STAGES)))))).rowcount
+            stale=await self._release_terminal_locks(s)
             disabled=await s.scalar(select(func.count()).select_from(SignalMonitorStateRecord).join(
                 SignalRecord,SignalRecord.id==SignalMonitorStateRecord.signal_id).where(
                 SignalRecord.status==SignalLifecycleStatus.ACTIVE,
                 SignalMonitorStateRecord.stage==MonitorStage.DISABLED_LEGACY)) or 0
             summary=CompatibilitySummary(positions_created,refreshed,repaired,retired,
-                terminalized,stale,disabled)
+                inactive,stale,disabled,terminalized,flagged)
         LOGGER.info("production compatibility reconciliation positions_created=%s tp_interactions_refreshed=%s tp_intents_repaired=%s breakeven_prompts_superseded=%s inactive_finals_terminalized=%s stale_locks_removed=%s disabled_legacy=%s",
             summary.open_position_states_created,summary.legacy_tp_interactions_refreshed,
             summary.missing_tp_notification_intents_repaired,
             summary.legacy_breakeven_prompts_superseded,
             summary.inactive_owner_final_positions_terminalized,
             summary.stale_trade_locks_removed,summary.disabled_legacy_active_signals)
+        LOGGER.info("terminal reconciliation closed=%s inconsistent=%s",terminalized,flagged)
         if (refreshed or repaired) and self.notification_wake:self.notification_wake()
         return summary
 
@@ -188,48 +193,100 @@ class MonitoringService:
         action=await s.scalar(select(SignalPositionActionRecord.id).where(
             (SignalPositionActionRecord.candidate_id==candidate.id)|
             (SignalPositionActionRecord.event_id==event.id)))
-        return bool(monitor and monitor.stage is MonitorStage.COMPLETED_TARGETS and
-            position is None and action is None and event.tp_index==tp_count)
+        automatic=await s.scalar(select(SignalPositionActionRecord.id).where(
+            SignalPositionActionRecord.event_id==event.id,
+            SignalPositionActionRecord.candidate_id.is_(None),
+            SignalPositionActionRecord.action_kind==PositionActionKind.FINAL_TP_CLOSE))
+        return bool(monitor and monitor.stage is MonitorStage.COMPLETED_TARGETS and event.tp_index==tp_count and
+            ((position is None and action is None) or (position and position.is_closed and automatic)))
 
     async def reconcile_inactive_final_positions(self)->int:
-        """Run lifecycle-only cleanup without requiring market monitoring."""
-        async with self.sessions() as s,s.begin():
-            return await self._terminalize_inactive_final_positions(s,self.clock())
+        """Compatibility alias for the former owner-restricted cleanup."""
+        return await self.reconcile_terminal_positions()
 
-    async def _terminalize_inactive_final_positions(self,s,now):
-        rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord,
-            SignalistRecord).join(SignalMonitorStateRecord).join(SignalPositionStateRecord).join(
-            SignalistRecord,SignalistRecord.id==SignalRecord.signalist_id).where(
+    async def reconcile_terminal_positions(self)->int:
+        """Reconcile all owners, independent of market and Telegram delivery."""
+        async with self.sessions() as s,s.begin():
+            count,_,_=await self._terminalize_final_positions(s,self.clock())
+            await self._release_terminal_locks(s)
+            if count:await self._refresh_legacy_tp_interactions(s,self.clock())
+            return count
+
+    async def _release_terminal_locks(self,s):
+        # A terminal monitor with a contradictory OPEN modern position is ambiguous.
+        # Historical terminal monitors without a position retain compatibility.
+        terminal_ids=select(SignalRecord.id).outerjoin(
+            SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id).outerjoin(
+            SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id).where(
+            (SignalRecord.status==SignalLifecycleStatus.CANCELLED)|
+            SignalPositionStateRecord.is_closed.is_(True)|
+            (SignalPositionStateRecord.signal_id.is_(None)&
+             SignalMonitorStateRecord.stage.in_(TERMINAL_MONITOR_STAGES)))
+        return (await s.execute(delete(DestinationTradeLockRecord).where(
+            DestinationTradeLockRecord.signal_id.in_(terminal_ids)))).rowcount
+
+    async def _terminalize_final_positions(self,s,now):
+        rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord)
+            .join(SignalMonitorStateRecord).join(SignalPositionStateRecord).where(
             SignalRecord.status==SignalLifecycleStatus.ACTIVE,
             SignalMonitorStateRecord.stage==MonitorStage.AWAITING_FINAL_TP_ACTION,
-            SignalPositionStateRecord.is_closed.is_(False),
-            SignalistRecord.status!=SignalistStatus.ACTIVE))).all()
-        count=0
-        for signal,monitor,position,_ in rows:
-            tp_count=await s.scalar(select(func.count()).select_from(SignalTakeProfitRecord).where(
-                SignalTakeProfitRecord.signal_id==signal.id))
-            event=await s.scalar(select(SignalEventRecord).where(SignalEventRecord.signal_id==signal.id,
-                SignalEventRecord.kind==SignalEventKind.TP_HIT,SignalEventRecord.tp_index==tp_count).order_by(
-                SignalEventRecord.id.desc()).limit(1))
-            if event is None or await s.scalar(select(SignalPositionActionRecord.id).where(
-                SignalPositionActionRecord.event_id==event.id)) is not None:continue
+            SignalPositionStateRecord.is_closed.is_(False)))).all()
+        count=flagged=inactive=0
+        for signal,monitor,position in rows:
+            targets=(await s.scalars(select(SignalTakeProfitRecord).where(
+                SignalTakeProfitRecord.signal_id==signal.id).order_by(SignalTakeProfitRecord.position))).all()
+            events=(await s.scalars(select(SignalEventRecord).where(
+                SignalEventRecord.signal_id==signal.id).order_by(SignalEventRecord.id))).all()
+            actions=(await s.scalars(select(SignalPositionActionRecord).where(
+                SignalPositionActionRecord.signal_id==signal.id).order_by(SignalPositionActionRecord.id))).all()
+            event=next((e for e in events if e.kind is SignalEventKind.TP_HIT and e.tp_index==len(targets)),None)
+            valid=bool(targets and [tp.position for tp in targets]==list(range(1,len(targets)+1)) and
+                event and monitor.highest_tp_index==len(targets) and
+                monitor.next_tp_index==len(targets)+1 and
+                event.threshold_price==event.roi_basis_price==targets[-1].price and
+                event.leveraged_roi==leveraged_roi(signal.direction,signal.entry_price,targets[-1].price,signal.leverage) and
+                event.leveraged_roi>0 and event.price_source_type is signal.price_source_type and
+                not any(e.kind is not SignalEventKind.TP_HIT for e in events) and
+                not any(a.remaining_fraction_after==0 or a.event_id==event.id for a in actions) and
+                ledger_matches_position(position,actions))
+            sources=(await s.scalars(select(SignalEventSourcePriceRecord).where(
+                SignalEventSourcePriceRecord.event_id==event.id))).all() if event else []
+            valid=valid and bool(sources) and all(isinstance(x.price,Decimal) and x.price.is_finite() and x.price>0 for x in sources)
+            if event:
+                valid=valid and reached(signal.direction,event.observed_reference_price,event.roi_basis_price,target=True)
+                valid=valid and all(a.event_id in {e.id for e in events} and a.created_at<=event.occurred_at for a in actions)
             candidate=await s.scalar(select(SignalUpdateCandidateRecord).where(
-                SignalUpdateCandidateRecord.event_id==event.id).order_by(SignalUpdateCandidateRecord.id.desc()).limit(1))
-            if candidate and candidate.status not in (CandidateStatus.AWAITING_NOTIFICATION,
-                    CandidateStatus.AWAITING_DECISION):
-                # Pre-4B approved/declined rows are valid history, not missing
-                # Phase-4 actions to reconstruct.
+                SignalUpdateCandidateRecord.event_id==event.id)) if event else None
+            if candidate and (candidate.signal_id!=signal.id or candidate.signalist_id!=signal.signalist_id or
+                              candidate.superseded_by_event_id is not None):valid=False
+            if not valid:
+                flagged+=1
+                LOGGER.warning("final TP reconciliation skipped signal_id=%s category=inconsistent_terminal_evidence",signal.id)
                 continue
-            final_roi=await self._apply_position(s,position,signal,event,candidate.id if candidate else None,
+            if not await self._claim_monitor(s,signal.id,monitor.version,(MonitorStage.AWAITING_FINAL_TP_ACTION,),now):
+                continue
+            # No candidate ID: accounting must not consume or rewrite publication intent.
+            final_roi=await self._apply_position(s,position,signal,event,None,
                 PositionActionKind.FINAL_TP_CLOSE,now)
-            if candidate and candidate.status in (CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION):
-                candidate.status=CandidateStatus.INELIGIBLE_INACTIVE;candidate.updated_at=now
-            monitor.stage=MonitorStage.COMPLETED_TARGETS;monitor.current_result_kind=self._result_kind(final_roi)
+            monitor.stage=MonitorStage.COMPLETED_TARGETS;monitor.current_result_kind=ResultKind.WIN
             monitor.current_result_price=event.roi_basis_price;monitor.current_leveraged_roi=final_roi
-            monitor.completed_at=now;monitor.updated_at=now;monitor.version+=1
+            monitor.completed_at=now;monitor.updated_at=now
+            actor=await s.get(SignalistRecord,signal.signalist_id)
+            if not actor or actor.status is not SignalistStatus.ACTIVE:inactive+=1
             await s.execute(delete(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal.id))
+            LOGGER.info("final TP reconciled signal_id=%s event_id=%s position_version=%s",signal.id,event.id,position.version)
             count+=1
-        return count
+        return count,flagged,inactive
+
+    async def _claim_monitor(self,s,signal_id,version,stages,now):
+        """CAS before any business writes; all competing lifecycle paths recheck state."""
+        return (await s.execute(update(SignalMonitorStateRecord).where(
+            SignalMonitorStateRecord.signal_id==signal_id,
+            SignalMonitorStateRecord.version==version,
+            SignalMonitorStateRecord.stage.in_(stages),
+            SignalMonitorStateRecord.signal_id.in_(select(SignalRecord.id).where(
+                SignalRecord.status==SignalLifecycleStatus.ACTIVE))).values(
+                    version=version+1,updated_at=now))).rowcount==1
 
     async def load_work(self,limit:int)->tuple[MonitorWork,...]:
         async with self.sessions() as s:
@@ -253,6 +310,7 @@ class MonitoringService:
             position=await s.get(SignalPositionStateRecord,work.signal_id)
             if position is None or position.is_closed:return False
             version=state.version
+            if not await self._claim_monitor(s,signal.id,version,(MonitorStage.PRE_TP1,MonitorStage.POST_TP1),now):return False
             decisions=evaluate_price(direction=work.direction,entry=work.entry_price,leverage=work.leverage,take_profits=work.take_profits,stop_loss=work.stop_loss,next_tp_index=state.next_tp_index,stage=state.stage,market=market,risk_free_active=position.risk_free_active,effective_stop_price=position.effective_stop_price)
             if decisions:
                 created=[]
@@ -267,10 +325,14 @@ class MonitoringService:
                 await s.execute(update(BreakevenPromptRecord).where(BreakevenPromptRecord.signal_id==work.signal_id,BreakevenPromptRecord.status.in_((PromptStatus.PENDING_NOTIFICATION,PromptStatus.AWAITING_RESPONSE))).values(status=PromptStatus.SUPERSEDED,expired_at=now,updated_at=now))
                 candidate=SignalUpdateCandidateRecord(signal_id=work.signal_id,event_id=latest.id,signalist_id=work.signalist_id,status=CandidateStatus.AWAITING_NOTIFICATION if actionable else CandidateStatus.INELIGIBLE_INACTIVE,created_at=now,updated_at=now)
                 s.add(candidate);await s.flush()
-                if actionable:s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,signalist_id=work.signalist_id,status=NotificationStatus.PENDING,created_at=now,updated_at=now))
+                if actionable:s.add(SignalistNotificationRecord(kind=NotificationKind.EVENT,candidate_id=candidate.id,signalist_id=work.signalist_id,status=NotificationStatus.PENDING,interaction_version=LEGACY_TERMINAL_INTERACTION_VERSION if decision.kind is SignalEventKind.TP_HIT and decision.tp_index==len(work.take_profits) else CURRENT_INTERACTION_VERSION,created_at=now,updated_at=now))
                 if decision.kind is SignalEventKind.TP_HIT:
                     state.highest_tp_index=decision.tp_index;state.next_tp_index=decision.tp_index+1;state.current_result_kind=ResultKind.WIN
-                    state.stage=MonitorStage.AWAITING_FINAL_TP_ACTION if decision.tp_index==len(work.take_profits) else MonitorStage.POST_TP1
+                    state.stage=MonitorStage.POST_TP1
+                    if decision.tp_index==len(work.take_profits):
+                        final_roi=await self._apply_position(s,position,signal,latest,None,
+                            PositionActionKind.FINAL_TP_CLOSE,now)
+                        state.stage=MonitorStage.COMPLETED_TARGETS
                 else:
                     action=(PositionActionKind.RISK_FREE_HIT_CLOSE if decision.kind is SignalEventKind.RISK_FREE_HIT
                             else PositionActionKind.STOP_LOSS_CLOSE)
@@ -279,7 +341,7 @@ class MonitoringService:
                     state.stage=(MonitorStage.COMPLETED_RISK_FREE if decision.kind is SignalEventKind.RISK_FREE_HIT
                                  else MonitorStage.COMPLETED_SL)
                 state.current_result_price=decision.threshold_price;state.current_leveraged_roi=decision.leveraged_roi
-                if state.stage in (MonitorStage.COMPLETED_SL,MonitorStage.COMPLETED_RISK_FREE):
+                if state.stage in (MonitorStage.COMPLETED_SL,MonitorStage.COMPLETED_RISK_FREE,MonitorStage.COMPLETED_TARGETS):
                     state.current_leveraged_roi=final_roi
                     state.completed_at=now
                     await s.execute(delete(DestinationTradeLockRecord).where(
@@ -331,14 +393,16 @@ class MonitoringService:
             position=await s.get(SignalPositionStateRecord,candidate.signal_id) if candidate else None
             if not candidate or not event or event.kind is not SignalEventKind.TP_HIT or not signal or signal.signalist_id!=signalist_id or not position or position.is_closed:return ()
             count=await s.scalar(select(__import__('sqlalchemy').func.count()).select_from(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id))
-            result=[PositionActionKind.NORMAL_TP,PositionActionKind.FULL_CLOSE]
+            if event.tp_index == count:return ()
+            result=[PositionActionKind.NORMAL_TP]
             if event.tp_index != count:
                 if not position.risk_free_used:result.insert(1,PositionActionKind.RISK_FREE)
-                if not position.save_profit_50_used:result.insert(-1,PositionActionKind.SAVE_PROFIT_50)
+                if not position.save_profit_50_used:result.append(PositionActionKind.SAVE_PROFIT_50)
             return tuple(result)
 
     async def decide_tp_action(self,candidate_id:int,signalist_id:int,action:PositionActionKind):
         """Atomically decide one TP candidate and mutate authoritative accounting."""
+        if action is PositionActionKind.FULL_CLOSE:raise ValueError("Full Close is available only in the trade panel")
         now=self.clock();wake=False
         try:
             async with self.sessions() as s,s.begin():
@@ -348,7 +412,12 @@ class MonitoringService:
                 actor=await s.get(SignalistRecord,signalist_id)
                 existing=await s.scalar(select(SignalPositionActionRecord).where(
                     SignalPositionActionRecord.candidate_id==candidate_id))
+                if not candidate or not signal or signal.signalist_id!=signalist_id or not actor or actor.status is not SignalistStatus.ACTIVE:
+                    raise ValueError("candidate is not actionable")
                 if existing is not None:
+                    position=await s.get(SignalPositionStateRecord,signal.id)
+                    if signal.status is not SignalLifecycleStatus.ACTIVE or (position and position.is_closed):
+                        raise ValueError("position is terminal")
                     if (existing.action_kind is action or
                         (action is PositionActionKind.NORMAL_TP and
                          existing.action_kind is PositionActionKind.FINAL_TP_CLOSE)):
@@ -362,7 +431,8 @@ class MonitoringService:
                     actor.status is not SignalistStatus.ACTIVE):raise ValueError("candidate is not actionable")
                 position=await s.get(SignalPositionStateRecord,signal.id)
                 monitor=await s.get(SignalMonitorStateRecord,signal.id)
-                if not position or position.is_closed or not monitor:raise ValueError("position is not actionable")
+                if not position or position.is_closed or not monitor or monitor.stage not in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1):raise ValueError("position is not actionable")
+                if not await self._claim_monitor(s,signal.id,monitor.version,(MonitorStage.PRE_TP1,MonitorStage.POST_TP1),now):raise ValueError("position is stale")
                 tp_count=await s.scalar(select(__import__('sqlalchemy').func.count()).select_from(
                     SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal.id))
                 final=event.tp_index==tp_count
@@ -389,6 +459,95 @@ class MonitoringService:
         if wake and self.update_publication_wake:self.update_publication_wake()
         return ledger_action
 
+    async def manual_close_version(self,signal_id,signalist_id):
+        async with self.sessions() as s:
+            signal=await s.get(SignalRecord,signal_id)
+            monitor=await s.get(SignalMonitorStateRecord,signal_id)
+            position=await s.get(SignalPositionStateRecord,signal_id)
+            actor=await s.get(SignalistRecord,signalist_id)
+            if not self._manual_close_eligible(signal,monitor,position,actor,signalist_id):
+                raise ValueError("position is not actionable")
+            return position.version
+
+    @staticmethod
+    def _manual_close_eligible(signal,monitor,position,actor,owner):
+        return bool(signal and signal.signalist_id==owner and signal.status is SignalLifecycleStatus.ACTIVE and
+            actor and actor.status is SignalistStatus.ACTIVE and monitor and
+            monitor.stage in (MonitorStage.PRE_TP1,MonitorStage.POST_TP1) and
+            position and not position.is_closed and position.remaining_fraction>0)
+
+    async def manual_full_close(self,signal_id,signalist_id,expected_position_version,*,confirmation_current=None):
+        """Capture a fresh price outside the transaction, then CAS the entire close."""
+        from chainura.persistence.models import (DestinationPublicationRecord,LimitPendingPublicationRecord,
+            DestinationRecord,DestinationSignalistRecord,SignalPositionActionPublicationRecord)
+        from chainura.domain.destination import DestinationStatus
+        from chainura.domain.publication import PublicationStatus
+        async with self.sessions() as s:
+            signal=await s.get(SignalRecord,signal_id)
+            monitor=await s.get(SignalMonitorStateRecord,signal_id)
+            position=await s.get(SignalPositionStateRecord,signal_id)
+            actor=await s.get(SignalistRecord,signalist_id)
+            if not self._manual_close_eligible(signal,monitor,position,actor,signalist_id) or position.version!=expected_position_version:
+                raise ValueError("position is stale")
+            monitor_version=monitor.version
+            targets=tuple((await s.scalars(select(SignalTakeProfitRecord.price).where(
+                SignalTakeProfitRecord.signal_id==signal_id).order_by(SignalTakeProfitRecord.position))).all())
+            maps=tuple((await s.execute(select(SignalExchangeSymbolRecord.exchange,SignalExchangeSymbolRecord.native_symbol)
+                .where(SignalExchangeSymbolRecord.signal_id==signal_id))).all())
+            work=MonitorWork(signal.id,signal.signalist_id,signal.mode,signal.canonical_symbol,signal.selected_exchange,
+                signal.direction,signal.entry_price,signal.leverage,targets,signal.stop_loss,signal.price_source_type,maps,signal.created_at)
+        try:
+            if self.market is None:raise ValueError("market unavailable")
+            snapshot=await self.market.fresh_snapshot((work,))
+            market=snapshot.get(signal_id)
+            now=self.clock()
+            if (market is None or market.observed_at.tzinfo is None or not timedelta(0)<=now-market.observed_at<=timedelta(seconds=30)
+                    or not isinstance(market.reference_price,Decimal) or not market.reference_price.is_finite() or market.reference_price<=0
+                    or market.price_source_type is not work.price_source_type or not market.source_prices
+                    or any(e not in dict(maps) or not isinstance(p,Decimal) or not p.is_finite() or p<=0 for e,p in market.source_prices)):
+                raise ValueError("invalid fresh market snapshot")
+        except Exception as exc:
+            raise ManualClosePriceUnavailable("fresh market snapshot unavailable") from exc
+        if confirmation_current is not None and not await confirmation_current():
+            raise ValueError("confirmation is stale")
+        async with self.sessions() as s,s.begin():
+            signal=await s.get(SignalRecord,signal_id);monitor=await s.get(SignalMonitorStateRecord,signal_id)
+            position=await s.get(SignalPositionStateRecord,signal_id);actor=await s.get(SignalistRecord,signalist_id)
+            if (not self._manual_close_eligible(signal,monitor,position,actor,signalist_id) or
+                    position.version!=expected_position_version or
+                    not await self._claim_monitor(s,signal_id,monitor_version,(MonitorStage.PRE_TP1,MonitorStage.POST_TP1),now)):
+                raise ValueError("position is stale")
+            roi=leveraged_roi(signal.direction,signal.entry_price,market.reference_price,signal.leverage)
+            event=SignalEventRecord(signal_id=signal_id,kind=SignalEventKind.MANUAL_CLOSE,
+                threshold_price=None,observed_reference_price=market.reference_price,roi_basis_price=market.reference_price,
+                leveraged_roi=roi,price_source_type=market.price_source_type,occurred_at=market.observed_at,created_at=now)
+            s.add(event);await s.flush()
+            s.add_all([SignalEventSourcePriceRecord(event_id=event.id,exchange=e,price=p) for e,p in market.source_prices])
+            total=await self._apply_position(s,position,signal,event,None,PositionActionKind.FULL_CLOSE,now)
+            action=await s.scalar(select(SignalPositionActionRecord).where(SignalPositionActionRecord.event_id==event.id))
+            monitor.stage=MonitorStage.COMPLETED_FULL_CLOSE;monitor.completed_at=now;monitor.updated_at=now
+            monitor.current_result_kind=self._result_kind(total);monitor.current_result_price=market.reference_price
+            monitor.current_leveraged_roi=total
+            await s.execute(delete(DestinationTradeLockRecord).where(DestinationTradeLockRecord.signal_id==signal_id))
+            await s.execute(update(SignalUpdateCandidateRecord).where(
+                SignalUpdateCandidateRecord.signal_id==signal_id,
+                SignalUpdateCandidateRecord.status.in_((CandidateStatus.AWAITING_NOTIFICATION,CandidateStatus.AWAITING_DECISION))).values(
+                    status=CandidateStatus.SUPERSEDED,superseded_by_event_id=event.id,updated_at=now))
+            # Durable publication rows are committed with accounting, even before TP1.
+            destinations=set()
+            for model in (DestinationPublicationRecord,LimitPendingPublicationRecord):
+                destinations.update((await s.scalars(select(model.destination_id).join(DestinationRecord,
+                    DestinationRecord.id==model.destination_id).join(DestinationSignalistRecord,
+                    (DestinationSignalistRecord.destination_id==model.destination_id)&
+                    (DestinationSignalistRecord.signalist_id==signalist_id)).where(
+                    model.signal_id==signal_id,model.status==PublicationStatus.SENT,model.telegram_message_id>0,
+                    DestinationRecord.status==DestinationStatus.ACTIVE))).all())
+            for destination in destinations:
+                s.add(SignalPositionActionPublicationRecord(action_id=action.id,signal_id=signal_id,
+                    destination_id=destination,status=PublicationStatus.PENDING,created_at=now,updated_at=now))
+        if self.update_publication_wake:self.update_publication_wake()
+        return True
+
     async def _breakeven_state(self,s,state,work,market,now):
         cfg=self.settings
         if state.favorable_threshold_reached_at is None and favorable_percent(work.direction,work.entry_price,market.reference_price)>=cfg.favorable_move_percent:state.favorable_threshold_reached_at=now
@@ -409,9 +568,8 @@ class MonitoringService:
         state.currently_inside_breakeven_zone=inside
 
     async def run_cycle(self,limit:int=100,concurrency:int=8)->int:
-        # No market call is needed to close an already-confirmed final target whose
-        # owner can no longer choose presentation semantics.
-        await self.reconcile_inactive_final_positions()
+        # Confirmed terminal business state never depends on owner action or delivery.
+        await self.reconcile_terminal_positions()
         if self.market is None:return 0
         work=await self.load_work(limit);snapshots=await self.market.snapshot(work);sem=asyncio.Semaphore(concurrency)
         async def one(item):
@@ -438,14 +596,22 @@ class MonitoringService:
             legacy_terminal=(event is not None and event.kind is SignalEventKind.TP_HIT and
                 row.superseded_by_event_id is None and
                 await self._is_legacy_terminal_tp(s,row,event,signal))
-            # Generic TP decisions remain forbidden except for the narrowly
-            # proven pre-4B terminal publication decision shape.
+            # Final TP publication survives automatic position terminalization.
             if event is None or (event.kind is SignalEventKind.TP_HIT and not legacy_terminal):
                 raise ValueError("TP candidates require a position action")
             wanted=CandidateStatus.APPROVED if approve else CandidateStatus.DECLINED
             if row.status is wanted:return wanted
             if row.status is not CandidateStatus.AWAITING_DECISION:raise ValueError("candidate is not actionable")
-            row.status=wanted;row.approved_at=now if approve else None;row.declined_at=None if approve else now;row.updated_at=now
+            claimed=(await s.execute(update(SignalUpdateCandidateRecord).where(
+                SignalUpdateCandidateRecord.id==candidate_id,
+                SignalUpdateCandidateRecord.status==CandidateStatus.AWAITING_DECISION,
+                SignalUpdateCandidateRecord.superseded_by_event_id.is_(None)).values(
+                    status=wanted,approved_at=now if approve else None,
+                    declined_at=None if approve else now,updated_at=now))).rowcount
+            if claimed!=1:
+                await s.refresh(row)
+                if row.status is wanted:return wanted
+                raise ValueError("candidate is stale")
             if approve:
                 s.add(UpdatePublicationRequestRecord(candidate_id=row.id,signal_id=row.signal_id,event_id=row.event_id,status=__import__('chainura.domain.publication',fromlist=['PublicationRequestStatus']).PublicationRequestStatus.PENDING,created_at=now,updated_at=now))
             result=wanted

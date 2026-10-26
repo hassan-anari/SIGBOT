@@ -312,7 +312,7 @@ def report_summary_text(summary, scope_label=None, start_text=None, end_text=Non
     rows=["<b>📊 خلاصه گزارش</b>"]
     if scope_label: rows.append(f"دامنه: {safe(scope_label)}")
     if start_text and end_text: rows.append(f"بازه: {safe(start_text)} تا {safe(end_text)}")
-    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"⏳ در انتظار تکمیل: {persian_digits(summary.pending_signals)}",f"🟢 باز: {persian_digits(summary.open_signals)}",f"❌ کنسل‌شده: {persian_digits(summary.cancelled_signals)}",f"✅ نتیجه‌دار: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"خنثی: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"ROI تحقق‌یافته کل: {_dec(summary.total_roi)}",f"میانگین ROI تحقق‌یافته: {_dec(summary.average_roi)}",f"میانگین ROI مثبت تحقق‌یافته: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت تحقق‌یافته: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی تحقق‌یافته: {_dec(summary.average_negative_roi)}",f"کمترین ROI تحقق‌یافته: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
+    rows.extend(["",f"کل سیگنال‌ها: {persian_digits(summary.total_signals)}",f"⏳ در انتظار تکمیل: {persian_digits(summary.pending_signals)}",f"🟢 باز: {persian_digits(summary.open_signals)}",f"❌ کنسل‌شده: {persian_digits(summary.cancelled_signals)}",f"✅ نتیجه‌دار: {persian_digits(summary.resulted_signals)}",f"برد: {persian_digits(summary.wins)}",f"باخت: {persian_digits(summary.losses)}",f"خنثی: {persian_digits(summary.breakevens)}",f"وین‌ریت: {_pct(summary.win_rate)}",f"بازده عملکرد کل: {_dec(summary.total_roi)}",f"میانگین بازده عملکرد: {_dec(summary.average_roi)}",f"میانگین ROI مثبت تحقق‌یافته: {_dec(summary.average_positive_roi)}",f"بیشترین ROI مثبت تحقق‌یافته: {_dec(summary.maximum_positive_roi)}",f"میانگین ROI منفی تحقق‌یافته: {_dec(summary.average_negative_roi)}",f"کمترین بازده عملکرد: {_dec(summary.minimum_negative_roi)}",f"توزیع TP: TP1={persian_digits(summary.tp1_count)}، TP2={persian_digits(summary.tp2_count)}، TP3+={persian_digits(summary.tp3_plus_count)}",f"مرجع مشترک: {persian_digits(summary.composite_count)}",f"تک‌صرافی: {persian_digits(summary.single_exchange_count)}",f"منتشرشده قطعی: {persian_digits(summary.confirmed_published_count)}",f"منتشرنشده: {persian_digits(summary.unpublished_count)}"])
     return "\n".join(rows)
 def _report_ltr(value):
     return bidi_ascii(str(value))
@@ -350,8 +350,8 @@ def private_report_summary_text(summary, title, context=None):
         f"در انتظار: {_report_ltr(summary.pending_signals)}",f"باز: {_report_ltr(summary.open_signals)}",
         f"برد: {_report_ltr(summary.wins)}",f"باخت: {_report_ltr(summary.losses)}",
         f"خنثی: {_report_ltr(summary.breakevens)}",f"لغوشده: {_report_ltr(summary.cancelled_signals)}",
-        f"وین‌ریت: {_report_percent(summary.win_rate)}",f"ROI تحقق‌یافته کل: {_report_decimal(summary.total_roi)}",
-        f"میانگین ROI تحقق‌یافته: {_report_decimal(summary.average_roi)}",
+        f"وین‌ریت: {_report_percent(summary.win_rate)}",f"بازده عملکرد کل: {_report_decimal(summary.total_roi)}",
+        f"میانگین بازده عملکرد: {_report_decimal(summary.average_roi)}",
         f"بهترین ROI: {_report_decimal(summary.best_roi)}",f"بدترین ROI: {_report_decimal(summary.worst_roi)}"])
     return "\n".join(rows)
 def private_history_text(page, *, destination=False):
@@ -364,7 +364,7 @@ def private_history_text(page, *, destination=False):
             f"\nجهت: {bidi_ascii(item.direction.upper())}\nنوع ورود: {bidi_ascii(item.entry_type.upper())}"
             f"\nمنبع: {safe(_report_source(item.source_label))}{exchange}\nزمان: {datetime_value(when)}"
             f"\nوضعیت: {safe(_report_state(item.state))}\nبالاترین TP: {_report_ltr(item.highest_tp) if item.highest_tp else REPORT_DASH}"
-            f"\nROI تحقق‌یافته: {_report_decimal(item.realized_weighted_roi)}")
+            f"\nبازده عملکرد: {_report_decimal(item.realized_weighted_roi)}")
     if not page.items: rows.append(EMPTY_LIST)
     return "\n".join(rows)
 def _report_direction(value): return {"long":"لانگ","short":"شورت"}.get(str(value), str(value))
@@ -425,3 +425,12 @@ def signal_initial_published(trade_id): return f"{_trade_line(trade_id)}\n{SIGNA
 def signal_initial_partial(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_INITIAL_PARTIAL}"
 def signal_continue_details(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_ASK_TP}"
 def signal_details_recorded(trade_id): return f"{_trade_line(trade_id)}\n{SIGNAL_DETAILS_RECORDED}"
+
+
+FULL_CLOSE_CONFIRM_BUTTON = "تأیید بستن کامل"
+FULL_CLOSE_PRICE_UNAVAILABLE = "قیمت تازه و معتبر در دسترس نیست؛ پوزیشن تغییری نکرد. دوباره تلاش کنید."
+FULL_CLOSE_APPLIED = "باقی‌مانده پوزیشن با قیمت تازه بسته و نتیجه ثبت شد."
+
+def full_close_confirm(trade_id, symbol):
+    return (f"آیا تمام حجم باقی‌مانده معامله {bidi_ascii(trade_id)} با نماد {symbol} بسته شود؟"
+            "\nقیمت تازه هنگام تأیید دریافت می‌شود. این عملیات فقط ثبت حسابداری سیگنال است.")

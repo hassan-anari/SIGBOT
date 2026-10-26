@@ -48,6 +48,7 @@ def test_private_formatters_structurally_have_no_cross_identity_fields():
     assert not hasattr(destination,"signalist_display_name") and not hasattr(destination,"owner_signalist_id")
     page=SimpleNamespace(items=(personal,),page=1,pages=1)
     rendered=texts.private_history_text(page)
+    assert "تحقق‌یافته" not in rendered and "بازده عملکرد" in rendered
     for forbidden in ("Destination","مقصد","انتشار","ارسال"):
         assert forbidden not in rendered
 

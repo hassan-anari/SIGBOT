@@ -105,8 +105,10 @@ class SignalistNotificationService:
             if row.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,row.candidate_id);event=await s.get(SignalEventRecord,candidate.event_id);signal=await s.get(SignalRecord,event.signal_id)
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
+                from chainura.persistence.models import SignalPositionStateRecord
+                position=await s.get(SignalPositionStateRecord,signal.id)
                 text=event_text(event.kind,signal.canonical_symbol,event.roi_basis_price,event.leveraged_roi,event.tp_index,signal.id,
-                    position_action=row.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION);source=candidate
+                    position_action=bool(position and not position.is_closed and row.interaction_version!=LEGACY_TERMINAL_INTERACTION_VERSION));source=candidate
             elif row.kind is NotificationKind.BREAKEVEN_PROMPT:
                 prompt=await s.get(BreakevenPromptRecord,row.prompt_id);signal=await s.get(SignalRecord,prompt.signal_id)
                 if prompt.status is not PromptStatus.PENDING_NOTIFICATION:row.status=NotificationStatus.SUPERSEDED;return

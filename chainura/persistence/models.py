@@ -306,6 +306,7 @@ class SignalPositionActionPublicationRecord(Base):
         ForeignKeyConstraint(["destination_id"], ["destinations.id"], ondelete="CASCADE", name="fk_position_action_publications_destination"),
         ForeignKeyConstraint(["tp_publication_id"], ["destination_update_publications.id"], ondelete="CASCADE", name="fk_position_action_publications_tp_publication"),
         UniqueConstraint("action_id", "destination_id", name="uq_position_action_publications_action_destination"),
+        CheckConstraint("(candidate_id IS NULL AND tp_publication_id IS NULL) OR (candidate_id IS NOT NULL AND tp_publication_id IS NOT NULL)", name="ck_position_action_publications_origin"),
         CheckConstraint("attempt_count >= 0", name="ck_position_action_publications_attempts"),
         CheckConstraint("telegram_message_id IS NULL OR telegram_message_id > 0", name="ck_position_action_publications_message"),
         CheckConstraint("reply_to_message_id IS NULL OR reply_to_message_id > 0", name="ck_position_action_publications_reply"),
@@ -315,10 +316,10 @@ class SignalPositionActionPublicationRecord(Base):
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     action_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    candidate_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[int | None] = mapped_column(Integer)
     signal_id: Mapped[int] = mapped_column(Integer, nullable=False)
     destination_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    tp_publication_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tp_publication_id: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[PublicationStatus] = mapped_column(_enum(PublicationStatus,"position_action_publication_status"), nullable=False, default=PublicationStatus.PENDING)
     reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -707,6 +708,7 @@ class SignalEventRecord(Base):
     __table_args__=(ForeignKeyConstraint(["signal_id"],["signals.id"],ondelete="CASCADE",name="fk_signal_events_signal_id_signals"),
       UniqueConstraint("signal_id","tp_index",name="uq_signal_events_signal_tp"),
       CheckConstraint("(kind='tp_hit' AND tp_index > 0 AND threshold_price IS NOT NULL) OR (kind<>'tp_hit' AND tp_index IS NULL)",name="ck_signal_events_tp_shape"),
+      Index("uq_signal_events_one_manual_close","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("kind='manual_close'")),
       Index("uq_signal_events_one_sl","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("kind='sl_hit'")),
       Index("uq_signal_events_one_breakeven","signal_id",unique=True,sqlite_where=__import__('sqlalchemy').text("kind='breakeven'")),Index("ix_signal_events_signal_occurred","signal_id","occurred_at"))
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True);signal_id:Mapped[int]=mapped_column(Integer,nullable=False)
