@@ -25,6 +25,7 @@ class ActiveSignalView:
  id:int;symbol:str;direction:TradeDirection;entry:Decimal;leverage:int;status:SignalLifecycleStatus
  take_profits:tuple[Decimal,...];stop_loss:Decimal|None;monitor_stage:MonitorStage|None;highest_tp_index:int;created_at:datetime
  remaining_fraction:Decimal=Decimal("1");risk_free_used:bool=False;risk_free_active:bool=False;save_profit_50_used:bool=False;realized_weighted_roi:Decimal=Decimal("0")
+ position_version:int|None=None
  entry_type:SignalEntryType=SignalEntryType.MARKET;trigger_price:Decimal|None=None;triggered_at:datetime|None=None
 
 @dataclass(frozen=True,slots=True)
@@ -54,7 +55,7 @@ class ActiveSignalService:
    if not r or r.signalist_id!=signalist_id or not (r.status in (SignalLifecycleStatus.PENDING_DETAILS,SignalLifecycleStatus.PENDING_ENTRY,SignalLifecycleStatus.ENTRY_TRIGGERED) or r.status is SignalLifecycleStatus.ACTIVE and m and m.stage in OPEN_STAGES):return None
    tps=tuple(x.price for x in (await s.scalars(select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id==signal_id).order_by(SignalTakeProfitRecord.position))).all())
    return self._view(r,m,tps,await s.get(SignalPositionStateRecord,signal_id),await s.get(LimitEntryTriggerRecord,signal_id))
- def _view(self,r,m,tps,p=None,t=None):return ActiveSignalView(r.id,r.canonical_symbol,r.direction,r.entry_price,r.leverage,r.status,tps,r.stop_loss,m.stage if m else None,m.highest_tp_index if m else 0,r.created_at,p.remaining_fraction if p else Decimal("1"),p.risk_free_used if p else False,p.risk_free_active if p else False,p.save_profit_50_used if p else False,p.realized_weighted_roi if p else Decimal("0"),r.entry_type,t.observed_reference_price if t else None,t.occurred_at if t else None)
+ def _view(self,r,m,tps,p=None,t=None):return ActiveSignalView(r.id,r.canonical_symbol,r.direction,r.entry_price,r.leverage,r.status,tps,r.stop_loss,m.stage if m else None,m.highest_tp_index if m else 0,r.created_at,p.remaining_fraction if p else Decimal("1"),p.risk_free_used if p else False,p.risk_free_active if p else False,p.save_profit_50_used if p else False,p.realized_weighted_roi if p else Decimal("0"),p.version if p and not p.is_closed else None,r.entry_type,t.observed_reference_price if t else None,t.occurred_at if t else None)
  async def cancel_signal(self,signal_id:int,signalist_id:int)->CancellationResult:
   now=self.clock()
   async with self.transactions() as tx:

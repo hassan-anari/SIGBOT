@@ -13,12 +13,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import desc, func, select, union_all
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from chainura.domain.monitoring import MonitorStage, ResultKind
+from chainura.domain.monitoring import MonitorStage, ResultKind, SignalEventKind, leveraged_roi
 from chainura.domain.publication import PublicationStatus
 from chainura.domain.signal import SignalEntryType, SignalLifecycleStatus, SignalMode
 from chainura.persistence.models import (DestinationPublicationRecord, DestinationRecord,
     LimitPendingPublicationRecord, SignalMonitorStateRecord, SignalPositionStateRecord,
-    SignalRecord, SignalistRecord)
+    SignalRecord, SignalistRecord, SignalEventRecord, SignalTakeProfitRecord,
+    SignalPositionActionRecord)
+from chainura.application.position_accounting import ledger_matches_position
 
 TEHRAN = ZoneInfo("Asia/Tehran")
 PAGE_SIZE = 10
@@ -159,7 +161,7 @@ def destination_period_filter(destination_id: int, period: str, now: datetime,
     return DestinationReportFilter(destination_id, value.start_utc, value.end_utc)
 
 
-def _projection(sig, monitor, position) -> PerformanceProjection:
+def _projection(sig, monitor, position, *, target=None, actions=()) -> PerformanceProjection:
     cancelled = sig.status is SignalLifecycleStatus.CANCELLED
     pending = sig.status is SignalLifecycleStatus.PENDING_DETAILS
     open_ = sig.status in (SignalLifecycleStatus.PENDING_ENTRY, SignalLifecycleStatus.ENTRY_TRIGGERED)
@@ -182,6 +184,21 @@ def _projection(sig, monitor, position) -> PerformanceProjection:
         result = monitor.current_result_kind
         roi = Decimal(monitor.current_leveraged_roi) if monitor.current_leveraged_roi is not None else None
     highest = monitor.highest_tp_index if monitor and monitor.highest_tp_index else None
+    # TP detection is a reporting fact, independent of decisions and delivery.
+    # Keep actual partial closures; value only the residual/terminal slice at TP.
+    if target is not None and not cancelled and not pending and sig.status is SignalLifecycleStatus.ACTIVE:
+        highest = target.tp_index
+        result = ResultKind.WIN
+        if position is None:
+            roi = Decimal(target.leveraged_roi)
+        elif ledger_matches_position(position, actions):
+            terminal = actions[-1] if position.is_closed and actions else None
+            fraction = terminal.closed_fraction if terminal else position.remaining_fraction
+            partial = position.realized_weighted_roi - (terminal.weighted_roi_delta if terminal else Decimal("0"))
+            roi = partial + fraction * target.leveraged_roi
+        # Incomplete modern ledgers keep their actual ROI; never assume full size.
+    if position is not None and position.is_closed:
+        open_ = False
     if pending: state = "Pending Details"
     elif sig.status is SignalLifecycleStatus.PENDING_ENTRY: state = "Limit Pending Entry"
     elif sig.status is SignalLifecycleStatus.ENTRY_TRIGGERED: state = "Limit Entry Triggered"
@@ -248,12 +265,38 @@ class ReportingRepository:
         out = [SignalRecord.created_at >= flt.start_utc, SignalRecord.created_at < flt.end_utc]
         if flt.signalist_id is not None: out.append(SignalRecord.signalist_id == flt.signalist_id)
         return out
+    async def _project_rows(self, session, rows):
+        rows = list(rows)
+        ids = [row[0].id for row in rows]
+        if not ids:
+            return []
+        events = (await session.scalars(select(SignalEventRecord).where(
+            SignalEventRecord.signal_id.in_(ids), SignalEventRecord.kind == SignalEventKind.TP_HIT)
+            .order_by(SignalEventRecord.tp_index))).all()
+        targets = {(tp.signal_id, tp.position): tp.price for tp in (await session.scalars(
+            select(SignalTakeProfitRecord).where(SignalTakeProfitRecord.signal_id.in_(ids)))).all()}
+        ledgers = {i: [] for i in ids}
+        for action in (await session.scalars(select(SignalPositionActionRecord).where(
+                SignalPositionActionRecord.signal_id.in_(ids)).order_by(SignalPositionActionRecord.id))).all():
+            ledgers[action.signal_id].append(action)
+        valid = {}
+        by_id = {row[0].id: row for row in rows}
+        for event in events:
+            sig, monitor, position = by_id[event.signal_id][:3]
+            threshold = targets.get((sig.id, event.tp_index))
+            cutoff = position.closed_at if position and position.is_closed else monitor.completed_at if monitor else None
+            if (threshold is not None and threshold == event.threshold_price == event.roi_basis_price
+                    and event.leveraged_roi == leveraged_roi(sig.direction, sig.entry_price, threshold, sig.leverage)
+                    and event.leveraged_roi > 0 and (cutoff is None or event.occurred_at <= cutoff)):
+                valid[sig.id] = event
+        return [_projection(*row[:3], target=valid.get(row[0].id), actions=ledgers[row[0].id]) for row in rows]
+
     async def _projections(self, session, clauses):
         rows = (await session.execute(select(SignalRecord, SignalMonitorStateRecord, SignalPositionStateRecord)
             .outerjoin(SignalMonitorStateRecord, SignalMonitorStateRecord.signal_id == SignalRecord.id)
             .outerjoin(SignalPositionStateRecord, SignalPositionStateRecord.signal_id == SignalRecord.id)
             .where(*clauses))).all()
-        return [_projection(*row) for row in rows]
+        return await self._project_rows(session, rows)
     async def summary(self, flt):
         async with self.sessions() as s:
             projections = await self._projections(s, self._base(flt)); ids = [x.signal_id for x in projections]
@@ -277,8 +320,8 @@ class ReportingRepository:
                 DestinationPublicationRecord.signal_id.in_(ids),DestinationPublicationRecord.status==PublicationStatus.SENT,
                 DestinationPublicationRecord.telegram_message_id>0).distinct())).all())
             items=[]
-            for sig,owner,monitor,position in rows:
-                p=_projection(sig,monitor,position)
+            projections=await self._project_rows(s, [(sig,monitor,position) for sig,owner,monitor,position in rows])
+            for (sig,owner,monitor,position),p in zip(rows,projections):
                 items.append(TradeHistoryItem(sig.id,owner.display_name,p.canonical_symbol,p.direction,
                     p.created_at.astimezone(TEHRAN),p.source_label,p.state,p.highest_tp,p.report_roi,sig.id in published))
             return TradeHistoryPage(tuple(items),page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE),total)
@@ -295,8 +338,8 @@ class ReportingRepository:
                 .where(*self._base(safe)).order_by(desc(SignalRecord.created_at),desc(SignalRecord.id))
                 .limit(PAGE_SIZE).offset((page-1)*PAGE_SIZE))).all()
             result=[]
-            for row in rows:
-                p=_projection(*row); result.append(SignalistTradeHistoryItem(p.signal_id,p.canonical_symbol,p.direction,p.entry_type,
+            for p in await self._project_rows(s,rows):
+                result.append(SignalistTradeHistoryItem(p.signal_id,p.canonical_symbol,p.direction,p.entry_type,
                     p.source_label,p.created_at.astimezone(TEHRAN),p.state,p.highest_tp,p.report_roi))
             return TradeHistoryPage(tuple(result),page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE),total)
     def _roots(self, flt):
@@ -319,7 +362,7 @@ class ReportingRepository:
             rows=(await s.execute(select(SignalRecord,SignalMonitorStateRecord,SignalPositionStateRecord)
                 .join(roots,roots.c.signal_id==SignalRecord.id).outerjoin(SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id)
                 .outerjoin(SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id))).all()
-            return summarize(_projection(*row) for row in rows)
+            return summarize(await self._project_rows(s,rows))
     async def destination_performance(self,flt):
         async with self.sessions() as s:
             if not await s.scalar(select(DestinationRecord.id).where(DestinationRecord.id==flt.destination_id)):
@@ -330,7 +373,7 @@ class ReportingRepository:
                 .outerjoin(SignalMonitorStateRecord,SignalMonitorStateRecord.signal_id==SignalRecord.id)
                 .outerjoin(SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id)
                 .order_by(roots.c.sent_at,SignalRecord.id))).all()
-            return summarize_destination_performance(_projection(*row) for row in rows)
+            return summarize_destination_performance(await self._project_rows(s,rows))
     async def destination_history(self,flt,page=1):
         page=max(1,int(page))
         async with self.sessions() as s:
@@ -342,8 +385,9 @@ class ReportingRepository:
                 .outerjoin(SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id)
                 .order_by(desc(roots.c.sent_at),desc(SignalRecord.id)).limit(PAGE_SIZE).offset((page-1)*PAGE_SIZE))).all()
             items=[]
-            for sig,monitor,position,sent_at,exchange in rows:
-                p=_projection(sig,monitor,position); items.append(DestinationTradeHistoryItem(p.signal_id,p.canonical_symbol,p.direction,
+            projections=await self._project_rows(s,rows)
+            for (sig,monitor,position,sent_at,exchange),p in zip(rows,projections):
+                items.append(DestinationTradeHistoryItem(p.signal_id,p.canonical_symbol,p.direction,
                     p.entry_type,p.source_label,exchange.value,_aware_utc(sent_at).astimezone(TEHRAN),p.state,p.highest_tp,p.report_roi))
             return TradeHistoryPage(tuple(items),page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE),total)
 

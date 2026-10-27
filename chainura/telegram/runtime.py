@@ -339,7 +339,7 @@ class Runtime:
                 notification_service=SignalistNotificationService(sessions,DirectTransport(),self.settings.signalist_notification_max_attempts,self.settings.signalist_notification_retry_base_seconds)
                 await self._startup_await(notification_service.recover())
                 self.notification_worker=SignalistNotificationWorker(notification_service,self.settings.signalist_notification_concurrency,self.settings.signalist_notification_sweep_seconds,
-                    lifecycle_reconcile=monitoring_service.reconcile_inactive_final_positions)
+                    lifecycle_reconcile=monitoring_service.reconcile_terminal_positions)
                 monitoring_service.notification_wake=self.notification_worker.wake
                 if limit_order_service is not None:
                     limit_order_service.notification_wake=self.notification_worker.wake
@@ -422,7 +422,10 @@ class Runtime:
                 self.details_publication_worker=SignalDetailsPublicationWorker(details_service,
                     self.settings.publication_concurrency,self.settings.publication_sweep_seconds)
                 if monitoring_service is not None:
-                    monitoring_service.update_publication_wake=self.update_publication_worker.wake
+                    def wake_trade_updates():
+                        self.update_publication_worker.wake()
+                        self.position_action_publication_worker.wake()
+                    monitoring_service.update_publication_wake=wake_trade_updates
                 await self._startup_await(publication_service.recover())
                 await self._startup_await(update_publication_service.recover())
                 await self._startup_await(self._cleanup_orphan_outputs())

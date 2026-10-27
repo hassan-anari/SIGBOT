@@ -13,11 +13,10 @@ class TpActionCallback(CallbackData,prefix="p4b"):
 def tp_action_keyboard(candidate_id:int,actions)->InlineKeyboardMarkup:
     labels={PositionActionKind.NORMAL_TP:texts.TP_ACTION_NORMAL_BUTTON,
         PositionActionKind.RISK_FREE:texts.TP_ACTION_RISK_FREE_BUTTON,
-        PositionActionKind.SAVE_PROFIT_50:texts.TP_ACTION_SAVE50_BUTTON,
-        PositionActionKind.FULL_CLOSE:texts.TP_ACTION_FULL_CLOSE_BUTTON}
+        PositionActionKind.SAVE_PROFIT_50:texts.TP_ACTION_SAVE50_BUTTON}
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=labels[action],
         callback_data=TpActionCallback(action=action.value,candidate_id=candidate_id).pack())]
-        for action in actions])
+        for action in actions if action in labels])
 
 def event_decision_keyboard(candidate_id:int,actions=None)->InlineKeyboardMarkup:
     if actions:return tp_action_keyboard(candidate_id,actions)

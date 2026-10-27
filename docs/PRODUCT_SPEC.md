@@ -31,7 +31,7 @@ The system is a comprehensive Telegram bot for creating, publishing, monitoring,
 
 Signalists create Market or Limit signals through the bot. The system retrieves market prices, establishes the authoritative Entry, detects TP, SL, and explicit Risk Free lifecycle events, generates images, and publishes eligible approved updates. Historical Breakeven events remain readable compatibility data only.
 
-The system also maintains complete trade history, private Signalist performance statistics, Destination performance, Win Rate, and weighted realized ROI.
+The system also maintains complete trade history, private Signalist performance statistics, Destination performance, Win Rate, and TP-based performance with Decimal partial-position weighting.
 
 ---
 
@@ -344,8 +344,9 @@ Current publication content types are:
 - Highest-TP/current-result compatibility fields remain available for reporting,
   while each TP Event ROI is the ROI of that specific threshold.
 - Normal at an intermediate TP realizes no fraction. Save Profit 50% realizes half
-  the then-remaining fraction at current TP ROI; Full Close realizes all remaining
-  fraction; final Normal realizes all remaining fraction at final-TP ROI.
+  the then-remaining fraction at current TP ROI. Final TP automatically realizes
+  all remaining fraction at final-TP ROI. Independent manual Full Close realizes
+  the remaining fraction at a verified fresh reference price.
 - Applicable SL realizes the remaining fraction, and `RISK_FREE_HIT` realizes it at
   zero ROI. Terminal weighted ROI is the exact Decimal sum of every
   `closed fraction × leveraged ROI` slice; it is not replaced by a later TP value.
@@ -363,8 +364,8 @@ Current publication content types are:
   fraction and updates Decimal weighted realized ROI.
 - With Risk Free active, original SL is ignored and Entry is the effective stop; an
   Entry hit creates `RISK_FREE_HIT` and closes remaining volume at zero ROI.
-- Once final TP is detected in `AWAITING_FINAL_TP_ACTION`, the Signal waits for the
-  owner's final action and a later SL cannot supersede it.
+- Final TP atomically closes remaining volume and releases all owned destination
+  locks without owner interaction. Its separate publication approval remains usable.
 
 ## 10.4. Crossing Multiple TPs in One Poll
 
@@ -479,7 +480,7 @@ If an event was not published, the next event replies to the last message that w
 
 Reports are synchronous, on-demand SQLite reads. Main Admin general reports retain named all-Signalist and one-Signalist contexts. Main Admin Destination performance is available only inside the selected Destination management screen and never exposes Signalist identity. Active Signalists may request only their own performance; their output never reveals Destination, assignment, publication, delivery, capacity, or selected-Destination-exchange facts.
 
-All surfaces share one performance projection. Modern Signals use Decimal `realized_weighted_roi` from Position State; historical Signals without Position State fall back to Monitor result/ROI. Cancelled Signals have no performance result or ROI. Win Rate is Wins divided by Wins plus Losses; Neutral is excluded.
+All surfaces share one read-only performance projection. Verified TP1 or higher permanently qualifies as Win; reporting ROI is actual realized partial slices plus remaining/terminal exposure valued at highest valid recorded TP ROI. Actual Position State and ledger values remain unchanged. Missing TP evidence or incomplete accounting uses the conservative compatibility rules in Phase 7. Cancelled Signals have no performance result or ROI. Win Rate is Wins divided by Wins plus Losses; Neutral is excluded.
 
 Personal and Main Admin general reports include trade history, total/pending/open/cancelled counts, Win/Loss/Neutral, Win Rate, total/average/best/worst realized ROI, highest TP, and source type. Main Admin general reports additionally retain named Signalist context and publication metrics.
 
@@ -772,11 +773,12 @@ exact Decimal ROI, and source prices are separate durable facts. There is no can
 or wick reconstruction.
 
 Current TP decisions use explicit position actions. At an eligible intermediate TP,
-the Signalist may select Normal, one-time Risk Free, one-time Save Profit 50%, or
-Full Close. Risk Free and Save Profit 50% are independent. Normal closes no
+the Signalist may select Normal, one-time Risk Free, or one-time Save Profit 50%. Risk Free and Save Profit 50% are independent. Normal closes no
 intermediate fraction; Save Profit 50% closes half the remaining fraction; Risk
-Free moves the effective stop to Entry; Full Close closes all remaining fraction.
-Final TP requires explicit action, and final Normal closes all remaining volume.
+Free moves the effective stop to Entry. Final TP automatically closes all remaining
+volume; its notification offers publication approval only. Full Close is available
+exclusively beside Comment in an eligible active trade's detail panel, including
+before TP1, and requires confirmation and a fresh authoritative price.
 SL closes remaining volume unless Risk Free is active; an Entry hit while Risk Free
 is active produces `RISK_FREE_HIT` and exact zero ROI for the remaining slice.
 Weighted position accounting uses Decimal end-to-end.
@@ -838,32 +840,54 @@ Outage handling is safe: one down price source still allows Composite operation 
 
 # Phase 4B — Position Actions and Risk Free Lifecycle
 
-A confirmed TP is decided by its owning active Signalist with one durable position
-action. Intermediate targets offer Normal, one-time Risk Free, one-time Save Profit
-50%, and Full Close; the final target offers only Normal and Full Close. Risk Free
-and Save50 are independent and may be selected in either order. Normal leaves an
-intermediate position unchanged, final Normal closes all remaining volume, Save50
-closes exactly half of the then-remaining fraction, and Full Close is terminal at
-any TP.
+A confirmed intermediate TP offers Normal, one-time Risk Free, and one-time Save
+Profit 50%. Risk Free and Save50 are independent and may be selected in either
+order. Normal leaves intermediate exposure unchanged. Save50 closes exactly half
+the then-remaining fraction. Final TP automatically closes remaining volume with
+FINAL_TP_CLOSE and releases all owned locks atomically; approval to publish that
+TP remains separate and does not change accounting.
 
-All closures use the Phase 4A Decimal reducer. For example, Save50 at +20 realizes
-+10; a later SL at -10 on the remaining half contributes -5, producing a +5 final
-weighted ROI. A later Risk Free hit contributes zero, preserving the earlier +10.
-Terminal result kind is derived from this weighted total rather than the last event.
+Full Close is offered exclusively next to Comment in the eligible ACTIVE trade
+panel, from Market activation or explicit Limit activation through any nonterminal
+TP/Normal/Risk Free/Save50 state with remaining volume. It is absent from all TP
+and event action keyboards, and old TP Full Close callbacks are rejected. The
+owning active Signalist confirms trade identity, then the system captures a fresh
+snapshot with the established source rules outside SQLite transactions. A versioned
+atomic operation uses the existing FULL_CLOSE reducer, stores a distinct audited
+manual_close event and exact price evidence, terminalizes position/monitor,
+releases locks, and queues eligible destination text. It places no exchange order.
+Unavailable prices or stale/unauthorized callbacks leave accounting unchanged.
+
+Operational closures retain their exact Decimal slices. Save50 at +20 followed by
+SL at -10 contributes `0.5×20 + 0.5×(-10) = +5` to actual realized ROI. Reporting
+is separate: highest verified TP permanently qualifies as a Win, and performance
+is actual realized partial slices plus the terminal/remaining fraction valued at
+the highest recorded valid TP ROI. Neither SL nor Risk Free Hit erases it. A manual
+close before TP1 retains actual close ROI and its positive/negative/zero outcome.
 
 Risk Free moves the effective stop to the persisted Entry. Once active, the original
 SL is ignored and a coherent LONG price at or below Entry (or SHORT price at or
 above Entry) closes all remaining volume as `RISK_FREE_HIT`. Without active Risk
 Free, the original SL remains monitored after TP1. The old favorable-move/Entry-zone
 Breakeven prompt generator is retired; historical Breakeven data remains readable.
-A detected final TP waits for Signalist action and cannot be superseded by SL.
+A detected final TP closes automatically and cannot be superseded by SL.
 
-Every accepted TP action first publishes the normal `TP_HIT` image. Risk Free,
-Save50, and Full Close text follows only a definitely sent image and replies to its
-Telegram message ID. Failed or delivery-unknown TP images never cause a guessed or
-standalone follow-up. Final Normal, Full Close, SL, Risk Free hit, and cancellation
-release destination trade locks when product state becomes terminal; Telegram
-publication success does not control that release.
+Accepted intermediate TP actions retain normal TP image publication and the
+existing Risk Free/Save50 follow-up dependency on a definitely sent image.
+Historical TP-bound Full Close delivery records remain compatible. Independent
+manual Full Close text requires only a confirmed eligible initial root (Market
+Initial or Limit Pending), replies to the latest definitely sent destination chain
+message, and uses the existing durable action outbox and Full Close templates.
+No root means no standalone update; ambiguous sends are not blindly retried.
+Final TP, Full Close, SL, Risk Free hit, and cancellation release owned locks when
+business state becomes terminal, independently of Telegram delivery.
+
+Startup and existing worker cycles conservatively reconcile verified old
+AWAITING_FINAL_TP_ACTION positions exactly once, preserving actual partial PnL and
+publication decisions. Missing or contradictory final-event/ledger evidence is
+logged and skipped, retaining active locks. Proven terminal stale locks are also
+released; genuinely open trades continue to block competing Signals. See
+`docs/TERMINAL_TRADE_PATCH.md` for exact selection, no-op, and audit conditions.
 
 ---
 
@@ -911,8 +935,13 @@ the Limit Pending root. Cohort time is that root's `sent_at`; Limit activation d
 not add a row. Destination reports never contain Signalist identity. Existing Main
 Admin all/one-Signalist reports retain their named administrative context.
 
-All report surfaces prefer a modern Position State's Decimal
-`realized_weighted_roi`; closed outcomes are Win, Loss, or Neutral according to its
-sign. Legacy rows without Position State fall back to Monitor result/ROI. Cancelled
+All report surfaces share a read-only TP-based projection: a genuine recorded TP
+qualifies as Win, and highest verified TP ROI values only the residual exposure,
+added to actual realized partial closures. Ledger continuity must match Position
+State; reporting never changes actual realized accounting. Without verifiable TP
+evidence, modern actual-weighted and legacy Monitor fallbacks remain conservative.
+With verified TP but incomplete modern ledger, classification is Win and existing
+actual ROI is retained rather than inventing missing fractions. Manual closure
+before TP1 uses actual close-result semantics. Cancelled
 trades have no result or ROI. Reports remain on-demand only, make no market or
 Telegram calls, and add no reporting schema or worker.

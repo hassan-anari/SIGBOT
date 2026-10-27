@@ -471,3 +471,9 @@ ambiguous Telegram delivery, and resumes retryable work without automatic
 activation. Telegram rate limits are stored as `retry_wait` using the explicit
 Telegram delay, while permanent rejections use privacy-safe categories and do not
 persist raw exception text.
+
+### Terminal trade patch review
+
+See [the targeted lifecycle runbook](docs/TERMINAL_TRADE_PATCH.md) for reporting
+weighting, independent Full Close delivery, conservative automatic reconciliation,
+audit logs, and the history-preserving downgrade guard in migration `20261026_01`.

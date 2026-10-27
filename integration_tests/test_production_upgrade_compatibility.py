@@ -203,7 +203,12 @@ class ProductionUpgradeCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         candidate=await self._candidate(CandidateStatus.AWAITING_DECISION,tp_index=2)
         async with self.sessions() as s,s.begin():
             monitor=await s.get(SignalMonitorStateRecord,self.signal.id)
-            monitor.stage=MonitorStage.AWAITING_FINAL_TP_ACTION;monitor.highest_tp_index=2
+            monitor.stage=MonitorStage.AWAITING_FINAL_TP_ACTION;monitor.highest_tp_index=2;monitor.next_tp_index=3
+            # A genuine final target uses its configured threshold and ROI.
+            event=await s.get(SignalEventRecord,(await s.get(SignalUpdateCandidateRecord,candidate)).event_id)
+            event.threshold_price=event.roi_basis_price=Decimal("120")
+            event.observed_reference_price=Decimal("121");event.leveraged_roi=Decimal("200")
+            s.add(__import__('chainura.persistence.models',fromlist=['SignalEventSourcePriceRecord']).SignalEventSourcePriceRecord(event_id=event.id,exchange=Exchange.OURBIT,price=Decimal("121")))
             actor=await s.get(SignalistRecord,self.actor.id);actor.status=SignalistStatus.INACTIVE
             destination=DestinationRecord(internal_name="private",telegram_chat_id=-817001,
                 destination_type=DestinationType.CHANNEL,access_level=DestinationAccessLevel.PRIVATE,
@@ -219,14 +224,14 @@ class ProductionUpgradeCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             position=await s.get(SignalPositionStateRecord,self.signal.id)
             monitor=await s.get(SignalMonitorStateRecord,self.signal.id)
             action=(await s.scalars(select(SignalPositionActionRecord))).one()
-            self.assertEqual((position.remaining_fraction,position.realized_weighted_roi),(Decimal("0"),Decimal("100")))
+            self.assertEqual((position.remaining_fraction,position.realized_weighted_roi),(Decimal("0"),Decimal("200")))
             self.assertTrue(position.is_closed);self.assertIs(monitor.stage,MonitorStage.COMPLETED_TARGETS)
             self.assertIs(action.action_kind,PositionActionKind.FINAL_TP_CLOSE)
             self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationTradeLockRecord)),0)
             self.assertEqual(await s.scalar(select(func.count()).select_from(UpdatePublicationRequestRecord)),0)
             self.assertEqual(await s.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord)),0)
             self.assertIs((await s.get(SignalUpdateCandidateRecord,candidate)).status,
-                          CandidateStatus.INELIGIBLE_INACTIVE)
+                          CandidateStatus.AWAITING_DECISION)
 
     async def test_disabled_legacy_is_visible_and_cancellable_without_synthetic_accounting(self):
         async with self.sessions() as s,s.begin():

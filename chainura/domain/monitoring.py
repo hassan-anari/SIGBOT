@@ -27,6 +27,7 @@ class SignalEventKind(str, Enum):
     SL_HIT = "sl_hit"
     BREAKEVEN = "breakeven"
     RISK_FREE_HIT = "risk_free_hit"
+    MANUAL_CLOSE = "manual_close"
 
 
 class ResultKind(str, Enum):

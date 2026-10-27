@@ -273,8 +273,8 @@ class RuntimePhase6BCompositionTests(unittest.IsolatedAsyncioTestCase):
         import inspect
         source=inspect.getsource(Runtime.start)
         self.assertIn('monitoring_service.notification_wake=self.notification_worker.wake',source)
-        self.assertIn('lifecycle_reconcile=monitoring_service.reconcile_inactive_final_positions',source)
-        self.assertIn('monitoring_service.update_publication_wake=self.update_publication_worker.wake',source)
+        self.assertIn('lifecycle_reconcile=monitoring_service.reconcile_terminal_positions',source)
+        self.assertIn('monitoring_service.update_publication_wake=wake_trade_updates',source)
         self.assertNotIn('if self.update_publication_worker: monitoring_service.update_publication_wake=self.update_publication_worker.wake;await self._startup_await(self.notification_worker.start())',source)
 
 

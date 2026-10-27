@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, literal, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -13,7 +13,7 @@ from chainura.persistence.models import (DestinationExchangePriorityRecord, Dest
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
     SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
-    DestinationTradeLockRecord, SignalDetailsPublicationRecord, utc_now)
+    DestinationTradeLockRecord, SignalDetailsPublicationRecord, SignalPositionStateRecord, utc_now)
 from chainura.domain.signal import SignalLifecycleStatus
 from chainura.domain.monitoring import MonitorStage
 
@@ -32,28 +32,49 @@ class SqlAlchemyPublicationRepository:
     async def acquire_trade_lock(self, signal_id: int, destination_id: int,
                                  canonical_symbol: str, now: datetime) -> bool:
         """Atomically admit a slot, while conservatively honoring visible legacy rows."""
+        signal=await self.session.get(SignalRecord,signal_id)
+        monitor=await self.session.get(SignalMonitorStateRecord,signal_id)
+        position=await self.session.get(SignalPositionStateRecord,signal_id)
+        if signal is None or signal.status is SignalLifecycleStatus.CANCELLED or (position and position.is_closed) or (position is None and monitor and monitor.stage in TERMINAL_MONITOR_STAGES):
+            return False
         legacy = await self.session.scalar(select(DestinationPublicationRecord.id).join(
             SignalRecord, SignalRecord.id == DestinationPublicationRecord.signal_id).outerjoin(
-            SignalMonitorStateRecord, SignalMonitorStateRecord.signal_id == SignalRecord.id).where(
+            SignalMonitorStateRecord, SignalMonitorStateRecord.signal_id == SignalRecord.id).outerjoin(
+            SignalPositionStateRecord,SignalPositionStateRecord.signal_id==SignalRecord.id).where(
             DestinationPublicationRecord.destination_id == destination_id,
             DestinationPublicationRecord.signal_id != signal_id,
             DestinationPublicationRecord.status.in_(VISIBLE_INITIAL_STATUSES),
             DestinationPublicationRecord.signal_id == SignalRecord.id,
             SignalRecord.canonical_symbol == canonical_symbol,
             SignalRecord.status != SignalLifecycleStatus.CANCELLED,
-            SignalMonitorStateRecord.signal_id.is_(None) |
-            SignalMonitorStateRecord.stage.not_in(TERMINAL_MONITOR_STAGES),
+            SignalPositionStateRecord.is_closed.is_(False) |
+            (SignalPositionStateRecord.signal_id.is_(None) & (
+                SignalMonitorStateRecord.signal_id.is_(None) |
+                SignalMonitorStateRecord.stage.not_in(TERMINAL_MONITOR_STAGES))),
         ).limit(1))
         if legacy is not None:
             return False
-        statement = sqlite_insert(DestinationTradeLockRecord).values(
-            destination_id=destination_id, canonical_symbol=canonical_symbol,
-            signal_id=signal_id, acquired_at=now, updated_at=now).on_conflict_do_nothing(
-            index_elements=["destination_id", "canonical_symbol"])
+        # Recheck business state in the INSERT itself: recovery/delivery may have
+        # loaded an open ORM row before a concurrent terminal transaction committed.
+        live_ids=select(SignalRecord.id).where(SignalRecord.id==signal_id,
+            SignalRecord.status!=SignalLifecycleStatus.CANCELLED,
+            ~SignalRecord.id.in_(select(SignalPositionStateRecord.signal_id).where(
+                SignalPositionStateRecord.is_closed.is_(True))),
+            ~(SignalRecord.id.in_(select(SignalMonitorStateRecord.signal_id).where(
+                SignalMonitorStateRecord.stage.in_(TERMINAL_MONITOR_STAGES))) &
+              ~SignalRecord.id.in_(select(SignalPositionStateRecord.signal_id))))
+        timestamp_type=DestinationTradeLockRecord.acquired_at.type
+        statement = sqlite_insert(DestinationTradeLockRecord).from_select(
+            ["destination_id","canonical_symbol","signal_id","acquired_at","updated_at"],
+            select(literal(destination_id),literal(canonical_symbol),SignalRecord.id,
+                literal(now,type_=timestamp_type),literal(now,type_=timestamp_type)).where(
+                    SignalRecord.id.in_(live_ids))).on_conflict_do_nothing(
+                        index_elements=["destination_id", "canonical_symbol"])
         await self.session.execute(statement)
         owner = await self.session.scalar(select(DestinationTradeLockRecord.signal_id).where(
             DestinationTradeLockRecord.destination_id == destination_id,
-            DestinationTradeLockRecord.canonical_symbol == canonical_symbol))
+            DestinationTradeLockRecord.canonical_symbol == canonical_symbol,
+            DestinationTradeLockRecord.signal_id.in_(live_ids)))
         return owner == signal_id
 
     async def release_trade_lock(self, signal_id: int, destination_id: int | None = None):
@@ -97,8 +118,10 @@ class SqlAlchemyPublicationRepository:
             DestinationPublicationRecord.created_at,
             DestinationPublicationRecord.id))).all()
         for publication, signal, monitor in rows:
+            position=await self.session.get(SignalPositionStateRecord,signal.id)
             terminal = (signal.status is SignalLifecycleStatus.CANCELLED or
-                        (monitor is not None and monitor.stage in TERMINAL_MONITOR_STAGES))
+                        (position is not None and position.is_closed) or
+                        (position is None and monitor is not None and monitor.stage in TERMINAL_MONITOR_STAGES))
             if terminal:
                 publication.status = PublicationStatus.SUPERSEDED
                 publication.updated_at = now

@@ -93,3 +93,27 @@ class PositionAccountingService:
                 if "signal_position_actions" in raw:
                     return False
                 raise
+
+
+def ledger_matches_position(position, actions) -> bool:
+    """Verify slice continuity without repairing or revaluing the operational ledger."""
+    from decimal import Decimal
+    remaining, realized = Decimal("1"), Decimal("0")
+    for action in actions:
+        if remaining <= 0 or action.remaining_fraction_before != remaining:
+            return False
+        if not 0 <= action.closed_fraction <= remaining:
+            return False
+        remaining -= action.closed_fraction
+        realized += action.weighted_roi_delta
+        if (action.remaining_fraction_after != remaining or
+                action.weighted_roi_delta != action.closed_fraction * action.leveraged_roi or
+                action.realized_weighted_roi_after != realized):
+            return False
+    risk_free = any(a.action_kind is PositionActionKind.RISK_FREE for a in actions)
+    saved = any(a.action_kind is PositionActionKind.SAVE_PROFIT_50 for a in actions)
+    return (remaining == position.remaining_fraction and
+            realized == position.realized_weighted_roi and
+            position.is_closed == (remaining == 0) and
+            position.risk_free_used == risk_free and position.save_profit_50_used == saved and
+            position.risk_free_active == (risk_free and not position.is_closed))
