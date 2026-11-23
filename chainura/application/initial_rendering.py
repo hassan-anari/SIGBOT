@@ -2,9 +2,10 @@ from __future__ import annotations
 import asyncio,uuid,logging,os
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from chainura.domain.destination import Exchange
-from chainura.domain.signal import Signal,SignalMode
+from chainura.domain.signal import Signal,SignalEntryType,SignalMode
 from chainura.errors import (RenderPayloadError,RenderingError,UnsafeRenderPathError,
     RenderingLifecycleError)
 from chainura.rendering.logos import CoinLogoStore
@@ -43,14 +44,20 @@ class InitialPayloadFactory:
   mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
   if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
   if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not exchange:raise RenderPayloadError("exchange is incompatible with single-exchange signal")
-  prices=[price for mapped,price in signal.initial_source_prices if mapped is exchange]
-  if len(prices)!=1:raise RenderPayloadError("exchange has no unique initial price snapshot")
+  is_limit = signal.entry_type is SignalEntryType.LIMIT
+  if is_limit:
+   display_price = reference_price = signal.entry_price
+   pnl = Decimal("0.00")
+  else:
+   prices=[price for mapped,price in signal.initial_source_prices if mapped is exchange]
+   if len(prices)!=1:raise RenderPayloadError("exchange has no unique initial price snapshot")
+   display_price, reference_price = prices[0], signal.reference_price
+   pnl = leveraged_return_percent(signal.entry_price, display_price, signal.leverage, signal.direction)
   logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
-  pnl=leveraged_return_percent(signal.entry_price,prices[0],signal.leverage,signal.direction)
   try:return SignalRenderPayload(signal.id,SignalRenderEventKind.INITIAL,exchange,signal.direction,
    signal.price_source_type,signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,
-   signal.entry_price,signal.leverage,signal.take_profits,signal.stop_loss,signal.reference_price,
-   prices[0],pnl,signal.created_at,rendered_at,0,logo)
+   signal.entry_price,signal.leverage,signal.take_profits,signal.stop_loss,reference_price,
+   display_price,pnl,signal.created_at,rendered_at,0,logo,is_limit_initial=is_limit)
   except Exception as exc:
    if isinstance(exc,RenderPayloadError):raise
    raise RenderPayloadError("persisted signal is inconsistent with rendering contract") from exc

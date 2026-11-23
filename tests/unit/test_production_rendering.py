@@ -2,13 +2,15 @@ import io,tempfile,unittest,inspect,asyncio,threading,os
 from unittest.mock import patch
 import errno
 import hashlib
+from dataclasses import replace
 from datetime import datetime,timezone
 from decimal import Decimal
 from pathlib import Path
 from PIL import Image
 from chainura.domain.destination import Exchange
-from chainura.domain.signal import PriceSourceType,Signal,SignalLifecycleStatus,SignalMode,TradeDirection
+from chainura.domain.signal import PriceSourceType,Signal,SignalEntryType,SignalLifecycleStatus,SignalMode,TradeDirection
 from chainura.application.initial_rendering import InitialPayloadFactory,InitialImageService,UpdatePayloadFactory
+from chainura.application.message_templates import initial_context
 from chainura.errors import (RenderingLifecycleError,TemplateValidationError,UnsafeRenderPathError,
     TemplatePersistenceError,TemplateAssetError)
 from chainura.rendering.logos import CoinLogoStore,toobit_logo_key
@@ -51,6 +53,36 @@ class ProductionRenderingTests(unittest.TestCase):
    self.assertEqual(payload.entry_price,Decimal("100.001"));self.assertEqual(payload.display_price,Decimal("100.003"))
    self.assertEqual(payload.initial_pnl_percent,(Decimal(".002")/Decimal("100.001")*100*5));self.assertEqual(payload.elapsed_seconds,0);self.assertEqual(payload.coin_logo_path,logo)
    self.assertIsNone(factory.build(signal(),Exchange.OURBIT,NOW).coin_logo_path)
+   self.assertEqual(_values(payload)["price"], "100.003")
+   self.assertEqual(_values(replace(payload, initial_pnl_percent=Decimal("0")))["pnl"], "+0.00%")
+   context = initial_context(signal(), Exchange.TOOBIT, private=False)
+   self.assertEqual(context["last_price"], "\u2066<code>100.003</code>\u2069")
+   self.assertEqual(context["pnl"], "\u2066<code>0.01%</code>\u2069")
+ def test_limit_initial_uses_configured_entry_for_long_and_short(self):
+  entry = Decimal("0.08593")
+  with tempfile.TemporaryDirectory() as root:
+   factory = InitialPayloadFactory(CoinLogoStore(root))
+   for direction, creation, target, stop in (
+       (TradeDirection.LONG, "0.09035", "0.095", "0.08"),
+       (TradeDirection.SHORT, "0.08035", "0.075", "0.09"),
+   ):
+    limit = replace(signal(), id=1257, canonical_symbol="LISTAUSDT", base_asset="LISTA",
+        entry_type=SignalEntryType.LIMIT, direction=direction, entry_price=entry, leverage=6,
+        take_profits=(Decimal(target),), stop_loss=Decimal(stop), reference_price=Decimal(creation),
+        exchange_symbols=tuple((exchange, "LISTAUSDT") for exchange in Exchange),
+        initial_source_prices=tuple((exchange, Decimal(creation)) for exchange in Exchange))
+    for exchange in Exchange:
+     with self.subTest(direction=direction, exchange=exchange):
+      payload = factory.build(limit, exchange, NOW)
+      self.assertEqual((payload.entry_price, payload.reference_price, payload.display_price), (entry,) * 3)
+      self.assertEqual(payload.initial_pnl_percent, Decimal("0.00"))
+      self.assertEqual((payload.leverage, payload.take_profits, payload.stop_loss),
+                       (limit.leverage, limit.take_profits, limit.stop_loss))
+      values = _values(payload)
+      self.assertEqual((values["entry"], values["price"], values["pnl"]), ("0.08593", "—", "0.00%"))
+      context = initial_context(limit, exchange, private=False)
+      self.assertEqual((context["entry"], context["last_price"], context["pnl"]),
+                       ("\u2066<code>0.08593</code>\u2069", "—", "\u2066<code>0.00%</code>\u2069"))
  def test_explicit_registry_lifecycle(self):
   with tempfile.TemporaryDirectory() as root:
    path=Path(root);dummy=path/"font";dummy.write_text("test")
@@ -251,11 +283,18 @@ class Phase6BUpdateRenderingTests(unittest.IsolatedAsyncioTestCase):
   from chainura.domain.monitoring import SignalEventKind
   with tempfile.TemporaryDirectory() as root:
    factory=UpdatePayloadFactory(CoinLogoStore(root))
+   limit = replace(signal(), entry_type=SignalEntryType.LIMIT)
    tp=self.event(SignalEventKind.TP_HIT,Decimal('111'))
    tp.roi_basis_price=Decimal('110');tp.leveraged_roi=Decimal('49.49950500494995050049499505')
-   payload=factory.build_update(signal(),tp,Exchange.OURBIT)
-   self.assertEqual(payload.display_price,Decimal('110'))
-   self.assertEqual(payload.initial_pnl_percent,tp.leveraged_roi)
+   sl=self.event(SignalEventKind.SL_HIT,Decimal('89'))
+   sl.roi_basis_price=Decimal('90.321');sl.leveraged_roi=Decimal('-48.39951600483995160048399516')
+   for trade in (signal(), limit):
+    for event, display, pnl in ((tp, "110", "+49.50%"), (sl, "90.321", "-48.40%")):
+     with self.subTest(entry_type=trade.entry_type, event=event.kind):
+      payload=factory.build_update(trade,event,Exchange.OURBIT)
+      self.assertEqual(payload.display_price,event.roi_basis_price)
+      self.assertEqual(payload.initial_pnl_percent,event.leveraged_roi)
+      self.assertEqual((_values(payload)["price"], _values(payload)["pnl"]), (display, pnl))
    be=self.event(SignalEventKind.BREAKEVEN,Decimal('101'),None)
    be.roi_basis_price=signal().entry_price
    payload=factory.build_update(signal(),be,Exchange.OURBIT)

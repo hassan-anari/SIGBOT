@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from html import escape
 from html.parser import HTMLParser
 from string import Formatter
 
 from chainura.domain.message_template import DestinationMessageKind, MessageTemplateSource
 from chainura.errors import CaptionGenerationError
-from chainura.domain.signal import TradeDirection
+from chainura.domain.signal import SignalEntryType, TradeDirection
 from chainura.telegram.presentation.formatting import (EXCHANGE_NAMES, format_decimal,
     format_leverage, format_percentage, format_symbol)
 from chainura.trade_id import format_trade_id
@@ -144,14 +145,19 @@ def _private(private): return "#پیامک" if private else ""
 def _exchange(exchange): return EXCHANGE_NAMES[exchange.value]
 
 def initial_context(signal, exchange, *, private):
-    prices = dict(signal.initial_source_prices)
-    last_price = prices[exchange]
-    change = ((last_price - signal.entry_price) / signal.entry_price * 100)
-    if signal.direction is TradeDirection.SHORT: change = -change
-    pnl = change * signal.leverage
+    if signal.entry_type is SignalEntryType.LIMIT:
+        # Existing templates may label {last_price} as a market quote.
+        last_price_text = "—"
+        pnl = Decimal("0.00")
+    else:
+        last_price = dict(signal.initial_source_prices)[exchange]
+        change = ((last_price - signal.entry_price) / signal.entry_price * 100)
+        if signal.direction is TradeDirection.SHORT: change = -change
+        pnl = change * signal.leverage
+        last_price_text = format_decimal(last_price)
     return {"symbol": _safe(format_symbol(signal.canonical_symbol)), "direction": _direction(signal),
             "entry": _safe(format_decimal(signal.entry_price)), "leverage": _safe(format_leverage(signal.leverage)),
-            "last_price": _safe(format_decimal(last_price)), "pnl": _safe(format_percentage(pnl.quantize(__import__('decimal').Decimal('0.01')))),
+            "last_price": _safe(last_price_text), "pnl": _safe(format_percentage(pnl.quantize(Decimal("0.01")))),
             "exchange": _exchange(exchange), "private_tag": _private(private)}
 
 def details_context(signal, *, private):

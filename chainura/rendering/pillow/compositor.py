@@ -42,7 +42,8 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
         "direction": direction,
         "leverage": leverage,
         "entry": format_entry_price(payload.entry_price),
-        "price": format_display_price(payload.display_price),
+        # The market-price labels are part of the PNG; Limit Entry has its own field.
+        "price": "—" if payload.is_limit_initial else format_display_price(payload.display_price),
         "pnl": format_initial_pnl(payload.initial_pnl_percent),
         "time": time,
     }
@@ -55,7 +56,7 @@ def _values(payload: SignalRenderPayload) -> dict[str, str]:
 
         values["time_clock"] = clock_value
         values["time_date"] = date_value
-        if payload.initial_pnl_percent == Decimal("0"):
+        if not payload.is_limit_initial and payload.initial_pnl_percent == Decimal("0"):
             values["pnl"] = "+0.00%"
 
     if payload.exchange is Exchange.LBANK:
