@@ -35,6 +35,13 @@ SIGNAL_OWNED_TABLES = set(UNACTIVATED_NO_ROWS) | {
     "limit_entry_trigger_source_prices", "limit_pending_publications",
     "signal_exchange_symbols", "signal_initial_prices", "signal_take_profits",
 }
+EXPECTED_TABLES = SIGNAL_OWNED_TABLES | {
+    "admin_alert_outbox", "alembic_version", "destination_exchange_priorities",
+    "destination_message_templates", "destination_signalists", "destination_warmup_cooldowns",
+    "destinations", "initial_publication_daily_slots", "outage_incidents",
+    "service_health_states", "signal_event_source_prices", "signal_templates",
+    "signalist_notifications", "signalists", "signals", "warmup_publications", "warmup_requests",
+}
 UNSENT = {"pending", "blocked_template"}
 TERMINAL_UNSENT = {"failed", "superseded", "skipped_daily_limit", "skipped_inactive",
                    "skipped_unassigned"}
@@ -69,12 +76,13 @@ def check_integrity(db):
 def check_schema(db):
     revisions = [row[0] for row in db.execute("SELECT version_num FROM alembic_version")]
     require(revisions in ([LEGACY_REVISION], [AUTOMATIC_REVISION]), "unsupported Alembic revision")
-    tables = set()
-    for name, kind in db.execute("SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'trigger')"):
-        require(kind != "trigger", "unexpected SQLite trigger")
-        if any(row[1] == "signal_id" for row in db.execute("SELECT * FROM pragma_table_info(?)", (name,))):
-            tables.add(name)
-    require(tables == SIGNAL_OWNED_TABLES, "unexpected Signal dependency schema")
+    schema = db.execute("SELECT name, type FROM sqlite_schema "
+                        "WHERE type IN ('table', 'trigger') AND name NOT GLOB 'sqlite_*'").fetchall()
+    require(all(kind == "table" for _, kind in schema), "unexpected SQLite trigger")
+    require({name for name, _ in schema} == EXPECTED_TABLES, "unexpected SQLite tables")
+    for name in SIGNAL_OWNED_TABLES:
+        require(any(row[1] == "signal_id" for row in db.execute(
+            "SELECT * FROM pragma_table_info(?)", (name,))), f"unexpected Signal ownership in {name}")
     columns = {row[1] for row in db.execute("PRAGMA table_info(signals)")}
     require(("auto_activate_limit" in columns) == (revisions == [AUTOMATIC_REVISION]),
             "unexpected automatic activation column")

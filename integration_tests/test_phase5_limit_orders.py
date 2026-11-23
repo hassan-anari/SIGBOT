@@ -50,7 +50,7 @@ class Prices:
     def __init__(self,value="100",result=None):self.value=value;self.result=result;self.calls=0
     async def get_reference_price(self,**kwargs):self.calls+=1;return self.result or snapshot(self.value)
 class Publisher:
-    def __init__(self):self.text=[];self.photos=[]
+    def __init__(self):self.text=[];self.photos=[];self.update_photos=[]
     async def send_standalone_text(self,chat_id,body):self.text.append((chat_id,body));return 700+len(self.text)
     async def send_initial(self,chat_id,path,caption,reply_to_message_id=None):
         self.photos.append((chat_id,path,caption,reply_to_message_id));return 800+len(self.photos)
@@ -58,6 +58,9 @@ class Publisher:
         self.text.append((chat_id,body,reply_to_message_id));return 900+len(self.text)
     async def send_details(self, chat_id, body, reply_to_message_id):
         return await self.send_text_update(chat_id, body, reply_to_message_id)
+    async def send_update(self, chat_id, path, caption, reply_to_message_id):
+        self.update_photos.append((chat_id, path, caption, reply_to_message_id))
+        return 950 + len(self.update_photos)
 class BlockingPublisher(Publisher):
     def __init__(self,kind="text",error=None):
         super().__init__();self.kind=kind;self.error=error
@@ -73,6 +76,8 @@ class Image:
     async def render_initial_signal(self,*args):
         class Output:file_path=Path("/tmp/limit-test.png")
         return Output()
+    async def render_update_signal(self, *args):
+        return await self.render_initial_signal(*args)
     def cleanup(self,path):pass
 class NotificationTransport:
     def __init__(self):self.calls=0;self.rows=[]
@@ -159,7 +164,9 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await notifications.deliver(note.id)
         async with self.sessions() as s:
             note=await s.get(SignalistNotificationRecord,note.id);self.assertIs(note.status,NotificationStatus.RETRY_WAIT);self.assertEqual(note.last_error_category,"rate_limited");self.assertEqual(note.retry_at,NOW+timedelta(seconds=12))
-        self.clock_now+=timedelta(seconds=12);await notifications.deliver(note.id)
+        self.clock_now+=timedelta(seconds=12)
+        await asyncio.gather(notifications.deliver(note.id), notifications.deliver(note.id))
+        self.assertEqual(transport.calls, 2)
         self.assertIn("به‌صورت خودکار فعال شد", transport.rows[-1][1])
         self.assertIsNone(await _limit_trigger_markup(self.sessions, signal.id))
         async with self.sessions() as s:
@@ -448,6 +455,12 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                 LimitCancellationPublicationRecord)),0)
 
     async def test_fast_stop_loss_while_pending_is_sending_preserves_chain_and_release(self):
+        await self._fast_terminal_event_preserves_chain(Decimal("84"), MonitorStage.COMPLETED_SL)
+
+    async def test_fast_final_tp_while_pending_is_sending_preserves_chain_and_release(self):
+        await self._fast_terminal_event_preserves_chain(Decimal("105"), MonitorStage.COMPLETED_TARGETS)
+
+    async def _fast_terminal_event_preserves_chain(self, exit_price, terminal_stage):
         await self.only_good_destination()
         signal = await self.signal_service.create_limit(self.command())
         publisher = BlockingPublisher()
@@ -464,9 +477,9 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             monitoring = MonitoringService(self.sessions, None, clock=lambda: self.clock_now)
             work, = await monitoring.load_work(100)
             self.assertTrue(await monitoring.evaluate(work, MarketDecision(
-                Decimal("84"), snapshot("84").source_prices, PriceSourceType.COMPOSITE, NOW)))
+                exit_price, snapshot(str(exit_price)).source_prices, PriceSourceType.COMPOSITE, NOW)))
             async with self.sessions() as s:
-                self.assertIs((await s.get(SignalMonitorStateRecord, signal.id)).stage, MonitorStage.COMPLETED_SL)
+                self.assertIs((await s.get(SignalMonitorStateRecord, signal.id)).stage, terminal_stage)
                 self.assertTrue((await s.get(SignalPositionStateRecord, signal.id)).is_closed)
                 self.assertIsNone(await s.scalar(select(DestinationTradeLockRecord.signal_id)))
                 candidate_id = await s.scalar(select(SignalUpdateCandidateRecord.id))
@@ -500,12 +513,18 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         update_id, = await updates.pending_ids()
         await updates.process(update_id)
         self.assertEqual(len(publisher.text), 1)
+        self.assertEqual(publisher.update_photos, [])
         details = SignalDetailsPublicationService(self.tx, publisher, lambda: self.clock_now,
                                                   message_templates=templates)
         details_id, = await details.pending_ids()
         await details.process(details_id)
         await updates.process(update_id)
-        self.assertEqual([message[2] for message in publisher.text[1:]], [801, 902])
+        self.assertEqual(publisher.text[1][2], 801)
+        if terminal_stage is MonitorStage.COMPLETED_TARGETS:
+            update, = publisher.update_photos
+            self.assertEqual(update[3], 902)
+        else:
+            self.assertEqual(publisher.text[2][2], 902)
         async with self.sessions() as s:
             self.assertIsNone(await s.scalar(select(DestinationTradeLockRecord.signal_id)))
             self.assertIs((await s.get(LimitPendingPublicationRecord, pending_id)).status,

@@ -224,9 +224,12 @@ class RetireLegacyLimitsTests(unittest.IsolatedAsyncioTestCase):
         self.assert_refused_without_mutation("mismatched daily slot")
 
     def test_unexpected_revision_or_dependency_refuses_apply(self):
-        self.execute("CREATE TABLE unknown_outbox(signal_id INTEGER PRIMARY KEY)")
-        self.assert_refused_without_mutation("unexpected Signal dependency schema")
+        self.execute("CREATE TABLE unknown_outbox(trade_id INTEGER PRIMARY KEY)")
+        self.assert_refused_without_mutation("unexpected SQLite tables")
         self.execute("DROP TABLE unknown_outbox")
+        self.execute("CREATE TRIGGER unexpected AFTER UPDATE ON signals BEGIN SELECT 1; END")
+        self.assert_refused_without_mutation("unexpected SQLite trigger")
+        self.execute("DROP TRIGGER unexpected")
         self.execute("UPDATE alembic_version SET version_num='other'")
         self.assert_refused_without_mutation("unsupported Alembic revision")
 
