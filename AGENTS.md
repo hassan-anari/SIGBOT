@@ -107,8 +107,11 @@ Before changing the code:
   the fresh reference. New Limits activate atomically when the sampled Entry
   condition is met. Historical Limits retain `PENDING_ENTRY` → `ENTRY_TRIGGERED`
   → explicit Signalist activation. Follow the per-Signal compatibility flag.
-- Initial rendering uses the authoritative Entry and the original persisted
-  per-exchange source price. Keep its existing PnL calculation and formatting.
+- Market initial rendering uses the authoritative Entry and the original persisted
+  per-exchange source price with the existing PnL calculation and formatting.
+  Limit initial images and captions use configured Entry and the destination
+  exchange's persisted trigger quote for Last Price and leveraged PnL. Missing
+  trigger quotes fail initial delivery before send.
 - TP and SL belong to the future caption, not the rendered card layout.
 - Renderer clock and elapsed values are supplied externally; renderers never generate current time.
 - Do not guess or commit production coordinates, fonts, or final layout details.

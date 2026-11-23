@@ -227,12 +227,22 @@ class InitialPublicationService:
     await self._finish(delivery,PublicationStatus.SKIPPED_DAILY_LIMIT);return
   output=None
   try:
-   async with self.transactions() as tx:signal=await tx.signals.get_by_id(delivery.signal_id);await tx.commit()
+   trigger_prices = None
+   async with self.transactions() as tx:
+    signal = await tx.signals.get_by_id(delivery.signal_id)
+    if delivery.origin == "limit_activation":
+     trigger_prices = await tx.publications.get_limit_trigger_prices(delivery.signal_id, delivery.selected_exchange)
+    await tx.commit()
+   if delivery.origin == "limit_activation" and trigger_prices is None:
+    await self._finish(delivery, PublicationStatus.FAILED, "limit_trigger_price_missing", release=True)
+    return
+   price_options = {"trigger_prices": trigger_prices} if trigger_prices is not None else {}
    if self.message_templates:
-    caption=(await self.message_templates.resolve(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id=delivery.destination_id,context=initial_context(signal,delivery.selected_exchange,private=delivery.private))).text
+    context = initial_context(signal, delivery.selected_exchange, private=delivery.private, **price_options)
+    caption=(await self.message_templates.resolve(DestinationMessageKind.INITIAL_PHOTO_CAPTION,destination_id=delivery.destination_id,context=context)).text
    else:caption=None
    caption=caption or None
-   output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now)
+   output=await self.image_service.render_initial_signal(signal,delivery.selected_exchange,delivery.destination_id,now,**price_options)
    async with self.transactions() as tx:
     if delivery.origin=="market":
      ownership=await tx.publications.prepare_send(delivery.id,delivery.signal_id,

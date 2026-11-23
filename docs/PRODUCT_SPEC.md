@@ -301,22 +301,29 @@ WEEX mapping when available, so they normally have three or four durable mapping
 The actual healthy/degraded validation snapshot may contain two, three, or four
 fresh valid source prices; all persisted prices must correspond to a mapping, but
 not every mapping must have supplied a fresh creation price. Single Exchange
-Signals retain exactly their selected mapping and price. Initial rendering uses
-the exact persisted validation prices and never refreshes them.
+Signals retain exactly their selected mapping and price. Initial rendering never
+fetches market prices.
 
-For an exchange card, Reference Price remains the persisted validation reference,
-while Display Price is that exchange's persisted snapshot price. Initial leveraged
-PnL uses the temporary formula in section 12 with persisted Entry, Display Price,
-direction, and leverage, without intermediate rounding. The visible card symbol is
-the persisted canonical symbol; native symbols remain available only for exchange
-integration and local Toobit logo lookup.
+For a Market initial card, Reference Price is the persisted validation reference
+and Display Price is the selected exchange's persisted snapshot price. Initial
+leveraged PnL uses the formula in section 12 without intermediate rounding.
+For a Limit initial card, Entry is the original configured price and Reference
+Price is the persisted observed trigger reference. The card's market-price field
+and the caption's `{last_price}` use the persisted trigger quote for the
+destination's selected exchange. The image and caption calculate leveraged PnL
+from configured Entry and that exchange quote using the formula in section 12
+and their existing rounding and formatting. A missing quote for the selected
+exchange fails the initial delivery before send with `limit_trigger_price_missing`.
+
+The visible card symbol is the persisted canonical symbol. Native symbols remain
+available for exchange integration and local Toobit logo lookup.
 Toobit logo files use one traversal-safe canonical logo key (for example,
 `TONUSDT`) derived at the logo-store boundary; the hyphenated native/API identity
 (for example, `TON-SWAP-USDT`) remains unchanged for exchange calls.
 
-Signals created before the initial-price migration are detected as legacy rows
-without snapshots and cannot be rendered as initial cards. The system must not
-fabricate their snapshot from Reference Price or perform a fresh market request.
+Market Signals created before the initial-price migration lack snapshots and
+cannot be rendered as initial cards. The system must not fabricate their snapshot
+from Reference Price or perform a fresh market request.
 
 Each exchange has one default templates.
 
@@ -736,11 +743,9 @@ is authoritative Entry. Limit Entry is the requested Decimal price. Opaque creat
 tokens keep creation idempotent, and short transactions recheck Signalist status
 and atomically store each durable aggregate and its exact native mappings.
 
-The rendering contract remains separate from signal creation. For the initial open
-card, Entry is the exact persisted user value, Reference Price remains the final
-validation reference, and Display Price/PnL derive deterministically from the
-selected exchange's persisted final-validation source snapshot as specified in
-section 9.1. Elapsed duration is zero. TP and SL are retained for a future caption
+The rendering contract remains separate from signal creation. The initial open
+card uses the persisted Entry and the price basis specified in section 9.1.
+Elapsed duration is zero. TP and SL are retained for a future caption
 and are not card-layout fields. Ourbit displays elapsed/open time (`00H 00M`
 initially), while Toobit, LBank, and WEEX display the externally supplied render time
 converted to Asia/Tehran. Renderers receive all clock values; they do not read a
@@ -923,7 +928,9 @@ activation. A definitely sent Pending acknowledgement and its initial-photo
 intent commit together. A fast automatic exit releases Trade Locks at the usual
 time and preserves already established publication intents. Approved updates wait
 for their destination's initial photo and existing details delivery barrier.
-The original creation-time Entry and source prices remain the renderer inputs.
+Both automatic and manual activation use the original configured Entry and the
+selected exchange's persisted trigger quote for the initial photo and caption.
+Delayed publication, including retries and recovery, reads the same snapshot.
 
 SQLite durably stores triggers, outboxes, capacity, and locks. Monitoring consumes
 the shared batched price cache and current sampled reference prices; it does not
