@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import case, exists, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from chainura.domain.destination import DestinationStatus
 from chainura.domain.monitoring import CandidateStatus, SignalEventKind
@@ -10,6 +10,7 @@ from chainura.domain.signal import SignalLifecycleStatus
 from chainura.errors import PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,DestinationSignalistRecord,DestinationUpdatePublicationRecord,InitialPublicationRequestRecord,SignalDetailsPublicationRecord,SignalCommentPublicationRecord,SignalCancellationPublicationRecord,SignalEventRecord,SignalEventSourcePriceRecord,SignalRecord,SignalUpdateCandidateRecord,SignalistRecord,UpdatePublicationRequestRecord,SignalPositionActionPublicationRecord,SignalPositionActionRecord,LimitPendingPublicationRecord)
 from chainura.domain.position import PositionActionKind
+from chainura.persistence.models import LimitAdmissionRequestRecord, SignalPositionStateRecord
 UPDATE_TERMINAL=TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.BLOCKED_TEMPLATE}
 class SqlAlchemyUpdatePublicationRepository:
  def __init__(self,session):self.session=session
@@ -41,7 +42,15 @@ class SqlAlchemyUpdatePublicationRepository:
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.RETRY_WAIT,DestinationUpdatePublicationRecord.retry_at<=now).values(status=PublicationStatus.PENDING,retry_at=None,updated_at=now))
   for request_id in affected:await self.complete_request(request_id,now)
  async def plan_pending(self,now,limit=50):
-  ids=(await self.session.scalars(select(UpdatePublicationRequestRecord.id).where(UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL))).order_by(UpdatePublicationRequestRecord.created_at).limit(limit))).all()
+  request = UpdatePublicationRequestRecord
+  # Let a request awaiting a delayed destination yield to other approved work.
+  automatic_wait = ((request.status == PublicationRequestStatus.WAITING_INITIAL) &
+                    request.signal_id.in_(select(SignalRecord.id).where(
+                     SignalRecord.auto_activate_limit.is_(True))))
+  ids=(await self.session.scalars(select(request.id).where(request.status.in_(
+   (PublicationRequestStatus.PENDING, PublicationRequestStatus.WAITING_INITIAL))).order_by(
+    case((automatic_wait, request.updated_at), else_=request.created_at),
+    request.created_at, request.id).limit(limit))).all()
   for rid in ids:await self.plan(rid,now)
  async def plan(self,request_id,now):
   req=await self.session.get(UpdatePublicationRequestRecord,request_id)
@@ -53,8 +62,18 @@ class SqlAlchemyUpdatePublicationRepository:
   signal=await self.session.get(SignalRecord,req.signal_id);event=await self.session.get(SignalEventRecord,req.event_id);candidate=await self.session.get(SignalUpdateCandidateRecord,req.candidate_id)
   if not signal or signal.status is not SignalLifecycleStatus.ACTIVE or not event or not candidate or candidate.superseded_by_event_id is not None:
    req.status=PublicationRequestStatus.SUPERSEDED;req.superseded_at=now;req.updated_at=now;return True
+  waiting = signal.auto_activate_limit and await self._limit_initial_in_flight(signal.id)
   sources=frozenset((await self.session.scalars(select(SignalEventSourcePriceRecord.exchange).where(SignalEventSourcePriceRecord.event_id==req.event_id))).all())
-  initials=(await self.session.execute(select(DestinationPublicationRecord.destination_id).where(DestinationPublicationRecord.signal_id==req.signal_id,DestinationPublicationRecord.status==PublicationStatus.SENT,DestinationPublicationRecord.telegram_message_id>0))).all()
+  initials = select(DestinationPublicationRecord.destination_id).where(
+   DestinationPublicationRecord.signal_id == req.signal_id,
+   DestinationPublicationRecord.status == PublicationStatus.SENT,
+   DestinationPublicationRecord.telegram_message_id > 0,
+  )
+  if signal.auto_activate_limit:
+   initials = initials.where(DestinationPublicationRecord.destination_id.not_in(
+    select(DestinationUpdatePublicationRecord.destination_id).where(
+     DestinationUpdatePublicationRecord.request_id == req.id)))
+  initials = (await self.session.execute(initials)).all()
   for (destination_id,) in initials:
    priorities=(await self.session.scalars(select(DestinationExchangePriorityRecord.exchange).where(DestinationExchangePriorityRecord.destination_id==destination_id).order_by(DestinationExchangePriorityRecord.position))).all()
    selected=select_event_exchange(signal.mode,signal.selected_exchange,priorities,sources)
@@ -62,7 +81,31 @@ class SqlAlchemyUpdatePublicationRepository:
    if selected is None:selected=next(iter(sources),None)
    if selected is None:continue
    self.session.add(DestinationUpdatePublicationRecord(request_id=req.id,candidate_id=req.candidate_id,signal_id=req.signal_id,event_id=req.event_id,destination_id=destination_id,selected_exchange=selected,event_kind=event.kind,status=status,created_at=now,updated_at=now))
-  await self.session.flush();req.status=PublicationRequestStatus.PLANNED;req.planned_at=now;req.updated_at=now;await self.complete_request(req.id,now);return True
+  await self.session.flush()
+  req.updated_at = now
+  if waiting:
+   req.status = PublicationRequestStatus.WAITING_INITIAL
+  else:
+   req.status = PublicationRequestStatus.PLANNED
+   req.planned_at = now
+   await self.complete_request(req.id, now)
+  return True
+ async def _limit_initial_in_flight(self, signal_id):
+  # A Limit has no Market Initial request. Its one admission request and Pending
+  # rows can still produce Initial intents, even after an approved TP or SL.
+  position = await self.session.get(SignalPositionStateRecord, signal_id)
+  open_position = position is not None and not position.is_closed
+  unfinished = tuple(TERMINAL_PUBLICATION_STATUSES)
+  pending = LimitPendingPublicationRecord
+  pending_status = (pending.status.not_in(unfinished) if open_position else
+                    pending.status == PublicationStatus.SENDING)
+  admission = LimitAdmissionRequestRecord
+  initial = DestinationPublicationRecord
+  in_flight = (exists().where(pending.signal_id == signal_id, pending_status) |
+               exists().where(initial.signal_id == signal_id, initial.status.not_in(unfinished)))
+  if open_position:
+   in_flight |= exists().where(admission.signal_id == signal_id, admission.status.in_(("pending", "planning")))
+  return await self.session.scalar(select(in_flight))
  async def supersede_obsolete_tp(self,now):
   rows=(await self.session.execute(select(DestinationUpdatePublicationRecord,SignalEventRecord).join(SignalEventRecord,SignalEventRecord.id==DestinationUpdatePublicationRecord.event_id).where(SignalEventRecord.kind==SignalEventKind.TP_HIT,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.RETRY_WAIT,PublicationStatus.BLOCKED_TEMPLATE))))).all()
   affected=set()
@@ -88,6 +131,14 @@ class SqlAlchemyUpdatePublicationRepository:
   if row is None or row.status not in (PublicationStatus.PENDING,PublicationStatus.RETRY_WAIT):return None
   earlier=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.signal_id==row.signal_id,DestinationUpdatePublicationRecord.destination_id==row.destination_id,DestinationUpdatePublicationRecord.id!=row.id,DestinationUpdatePublicationRecord.event_id<row.event_id,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.SENDING,PublicationStatus.RETRY_WAIT))))
   if earlier:return None
+  request = UpdatePublicationRequestRecord
+  earlier_unplanned = await self.session.scalar(select(exists().where(
+   request.signal_id == row.signal_id, request.event_id < row.event_id,
+   request.status.in_((PublicationRequestStatus.PENDING, PublicationRequestStatus.WAITING_INITIAL)),
+   request.signal_id.in_(select(SignalRecord.id).where(SignalRecord.auto_activate_limit.is_(True))),
+   ~exists().where(DestinationUpdatePublicationRecord.request_id == request.id,
+                   DestinationUpdatePublicationRecord.destination_id == row.destination_id))))
+  if earlier_unplanned:return None
   # A Phase 7 Details row is a durable chain barrier while its Telegram result
   # is still unknown. Legacy signals have no row and remain unblocked.
   details_in_flight=await self.session.scalar(select(exists().where(
@@ -153,7 +204,15 @@ class SqlAlchemyUpdatePublicationRepository:
   for model in (DestinationUpdatePublicationRecord,SignalPositionActionPublicationRecord,SignalCommentPublicationRecord,SignalCancellationPublicationRecord,SignalDetailsPublicationRecord,DestinationPublicationRecord,LimitPendingPublicationRecord):
    row=(await self.session.execute(select(model.telegram_message_id,model.sent_at,model.id).where(model.signal_id==signal_id,model.destination_id==destination_id,model.status==PublicationStatus.SENT,model.telegram_message_id>0).order_by(model.sent_at.desc(),model.id.desc()).limit(1))).first()
    if row:candidates.append(row)
-  return max(candidates,key=lambda row:(row.sent_at,row.id)).telegram_message_id if candidates else None
+  if not candidates:return None
+  newest = max(row.sent_at for row in candidates)
+  tied = [row for row in candidates if row.sent_at == newest]
+  if len(tied) > 1 and await self.session.scalar(select(SignalRecord.auto_activate_limit).where(
+    SignalRecord.id == signal_id)):
+   # IDs from different outbox tables are unrelated. Telegram IDs are shared
+   # across this chat and order replies even when timestamps are identical.
+   return max(row.telegram_message_id for row in tied)
+  return max(tied, key=lambda row: row.id).telegram_message_id
  async def complete_request(self,request_id,now):
   unfinished=await self.session.scalar(select(func.count()).select_from(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.request_id==request_id,DestinationUpdatePublicationRecord.status.not_in(tuple(TERMINAL_PUBLICATION_STATUSES|{PublicationStatus.SUPERSEDED}))))
   if unfinished:return
@@ -162,6 +221,12 @@ class SqlAlchemyUpdatePublicationRepository:
   target=PublicationRequestStatus.SUPERSEDED if total and total==superseded else PublicationRequestStatus.COMPLETED
   values={"status":target,"completed_at":now,"updated_at":now}
   if target is PublicationRequestStatus.SUPERSEDED:values["superseded_at"]=now
-  await self.session.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.id==request_id,UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING,PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL))).values(**values))
+  request = UpdatePublicationRequestRecord
+  await self.session.execute(update(request).where(request.id==request_id,
+   request.status.in_((PublicationRequestStatus.PLANNED,PublicationRequestStatus.PLANNING,
+                      PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL)),
+   ~((request.status == PublicationRequestStatus.WAITING_INITIAL) &
+     request.signal_id.in_(select(SignalRecord.id).where(SignalRecord.auto_activate_limit.is_(True)))),
+  ).values(**values))
  async def unblock_templates(self,now):
   await self.session.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.status==PublicationStatus.BLOCKED_TEMPLATE).values(status=PublicationStatus.PENDING,last_error_category=None,updated_at=now))

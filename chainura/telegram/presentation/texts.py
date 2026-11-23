@@ -226,15 +226,17 @@ SIGNAL_LIMIT_ACTIVATED="✅ سیگنال لیمیت فعال شد."
 ACTIVE_SIGNAL_LIMIT_WAITING="در انتظار رسیدن قیمت ورود"
 ACTIVE_SIGNAL_LIMIT_TRIGGERED="قیمت ورود رسیده — در انتظار فعال‌سازی"
 
-def limit_trigger_notification(signal_id,symbol,direction,entry,observed):
+def limit_trigger_notification(signal_id,symbol,direction,entry,observed,*,automatic=False):
     from chainura.telegram.presentation.formatting import format_decimal,format_symbol,bidi_ascii
     from chainura.trade_id import format_trade_id
     direction_text=SIGNAL_DIRECTION_LONG if getattr(direction,"value",direction)=="long" else SIGNAL_DIRECTION_SHORT
+    action = ("سیگنال لیمیت به‌صورت خودکار فعال شد و پایش پوزیشن آغاز شد."
+              if automatic else "برای شروع پایش پوزیشن، سیگنال را صریحاً فعال کنید.")
     return (f"شناسه معامله: {bidi_ascii(format_trade_id(signal_id))}\n"
             f"🎯 <b>شرط ورود لیمیت {format_symbol(symbol)} برقرار شد</b>\n\n"
             f"جهت: {direction_text}\nورود درخواستی: {format_decimal(entry)}\n"
             f"قیمت مشاهده‌شده: {format_decimal(observed)}\n\n"
-            "برای شروع پایش پوزیشن، سیگنال را صریحاً فعال کنید.")
+            f"{action}")
 EVENT_APPROVED = "✅ درخواست انتشار این آپدیت ثبت شد."
 EVENT_DECLINED = "این آپدیت برای مقصدها منتشر نخواهد شد."
 EVENT_DECISION_STALE = "⚠️ این درخواست دیگر قابل انجام نیست."

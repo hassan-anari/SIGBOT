@@ -1,23 +1,20 @@
-"""Durable Limit-entry monitoring and explicit activation."""
+"""Durable Limit-entry monitoring and activation."""
 from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import exists, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from chainura.domain.destination import DestinationStatus
 from chainura.domain.monitoring import MonitorStage, NotificationKind, NotificationStatus
-from chainura.domain.publication import PublicationStatus
 from chainura.domain.signal import (SignalEntryType, SignalLifecycleStatus, SignalMode,
     limit_entry_reached)
 from chainura.domain.signalist import SignalistStatus
-from chainura.persistence.models import (DestinationPublicationRecord, DestinationRecord,
-    DestinationSignalistRecord, DestinationTradeLockRecord, LimitEntryTriggerRecord,
-    LimitEntryTriggerSourcePriceRecord, LimitPendingPublicationRecord,
+from chainura.persistence.models import (LimitEntryTriggerRecord, LimitEntryTriggerSourcePriceRecord,
     SignalExchangeSymbolRecord, SignalMonitorStateRecord, SignalPositionStateRecord,
     SignalRecord, SignalistNotificationRecord, SignalistRecord)
+from chainura.persistence.publication_repository import SqlAlchemyPublicationRepository
 
 LOGGER=logging.getLogger("chainura.limit_orders")
 
@@ -85,7 +82,8 @@ class LimitOrderService:
                 SignalRecord.id==signal_id,
                 SignalRecord.status==SignalLifecycleStatus.PENDING_ENTRY,
                 SignalRecord.entry_type==SignalEntryType.LIMIT).values(
-                status=SignalLifecycleStatus.ENTRY_TRIGGERED,updated_at=now))).rowcount
+                status=(SignalLifecycleStatus.ACTIVE if signal.auto_activate_limit
+                        else SignalLifecycleStatus.ENTRY_TRIGGERED),updated_at=now))).rowcount
             if changed!=1:return False
             s.add(LimitEntryTriggerRecord(signal_id=signal_id,
                 requested_entry=signal.entry_price,observed_reference_price=reference_price,
@@ -95,8 +93,11 @@ class LimitOrderService:
             s.add(SignalistNotificationRecord(kind=NotificationKind.LIMIT_TRIGGER,
                 limit_trigger_signal_id=signal_id,signalist_id=signal.signalist_id,
                 status=NotificationStatus.PENDING,created_at=now,updated_at=now))
+            if signal.auto_activate_limit:
+                await self._initialize_activation(s, signal, now)
             await s.flush() # any conflict aborts the whole transaction; never swallowed
         if self.notification_wake:self.notification_wake()
+        if signal.auto_activate_limit:self._wake_activation()
         return True
 
     async def activate(self,signal_id:int,signalist_id:int)->bool:
@@ -109,40 +110,30 @@ class LimitOrderService:
             if signal.status is SignalLifecycleStatus.ACTIVE:
                 return True
             trigger=await s.get(LimitEntryTriggerRecord,signal_id)
-            if (actor is None or actor.status is not SignalistStatus.ACTIVE or trigger is None or
+            if (signal.auto_activate_limit or actor is None or actor.status is not SignalistStatus.ACTIVE or trigger is None or
                     signal.status is not SignalLifecycleStatus.ENTRY_TRIGGERED):return False
             changed=(await s.execute(update(SignalRecord).where(SignalRecord.id==signal_id,
                 SignalRecord.status==SignalLifecycleStatus.ENTRY_TRIGGERED,
                 SignalRecord.entry_type==SignalEntryType.LIMIT).values(
                 status=SignalLifecycleStatus.ACTIVE,updated_at=now))).rowcount
             if changed!=1:return False
-            s.add(SignalPositionStateRecord(signal_id=signal_id,remaining_fraction=Decimal("1"),
-                realized_weighted_roi=Decimal("0"),risk_free_used=False,risk_free_active=False,
-                save_profit_50_used=False,effective_stop_price=signal.stop_loss,is_closed=False,
-                version=1,created_at=now,updated_at=now))
-            s.add(SignalMonitorStateRecord(signal_id=signal_id,stage=MonitorStage.PRE_TP1,
-                next_tp_index=1,highest_tp_index=0,created_at=now,updated_at=now))
-            admitted=(await s.execute(select(LimitPendingPublicationRecord).join(
-                DestinationRecord,DestinationRecord.id==LimitPendingPublicationRecord.destination_id).join(
-                DestinationSignalistRecord,(DestinationSignalistRecord.destination_id==LimitPendingPublicationRecord.destination_id)&
-                    (DestinationSignalistRecord.signalist_id==signalist_id)).join(
-                DestinationTradeLockRecord,(DestinationTradeLockRecord.destination_id==LimitPendingPublicationRecord.destination_id)&
-                    (DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol)&
-                    (DestinationTradeLockRecord.signal_id==signal_id)).where(
-                LimitPendingPublicationRecord.signal_id==signal_id,
-                LimitPendingPublicationRecord.status==PublicationStatus.SENT,
-                LimitPendingPublicationRecord.telegram_message_id.is_not(None),
-                DestinationRecord.status==DestinationStatus.ACTIVE))).scalars().all()
-            for pending in admitted:
-                s.add(DestinationPublicationRecord(signal_id=signal_id,
-                    destination_id=pending.destination_id,event_kind="initial",
-                    origin="limit_activation",selected_exchange=pending.selected_exchange,
-                    reply_to_message_id=pending.telegram_message_id,status=PublicationStatus.PENDING,
-                    created_at=now,updated_at=now))
+            await self._initialize_activation(s, signal, now)
             await s.flush() # position/monitor/publication intent are one boundary
+        self._wake_activation()
+        return True
+
+    async def _initialize_activation(self, session, signal, now):
+        session.add(SignalPositionStateRecord(signal_id=signal.id,remaining_fraction=Decimal("1"),
+            realized_weighted_roi=Decimal("0"),risk_free_used=False,risk_free_active=False,
+            save_profit_50_used=False,effective_stop_price=signal.stop_loss,is_closed=False,
+            version=1,created_at=now,updated_at=now))
+        session.add(SignalMonitorStateRecord(signal_id=signal.id,stage=MonitorStage.PRE_TP1,
+            next_tp_index=1,highest_tp_index=0,created_at=now,updated_at=now))
+        await SqlAlchemyPublicationRepository(session).queue_limit_initials(signal, now)
+
+    def _wake_activation(self):
         if self.publication_wake:self.publication_wake()
         if self.monitoring_wake:self.monitoring_wake()
-        return True
 
 class LimitMonitoringWorker:
     def __init__(self,service:LimitOrderService,interval=5,batch_size=100,concurrency=8):

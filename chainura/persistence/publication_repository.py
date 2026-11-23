@@ -12,10 +12,12 @@ from chainura.errors import DailyCapacityError, PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord, DestinationPublicationRecord,
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
-    SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
+    LimitPendingPublicationRecord, SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
+    SignalistRecord,
     DestinationTradeLockRecord, SignalDetailsPublicationRecord, SignalPositionStateRecord, utc_now)
 from chainura.domain.signal import SignalLifecycleStatus
 from chainura.domain.monitoring import MonitorStage
+from chainura.domain.signalist import SignalistStatus
 
 TRADE_LOCK_REASON = "destination_trade_lock_occupied"
 VISIBLE_INITIAL_STATUSES = (PublicationStatus.SENT, PublicationStatus.DELIVERY_UNKNOWN,
@@ -24,10 +26,49 @@ TERMINAL_MONITOR_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETE
                            MonitorStage.COMPLETED_BREAKEVEN,
                            MonitorStage.COMPLETED_FULL_CLOSE,
                            MonitorStage.COMPLETED_RISK_FREE)
+AUTOMATIC_EXIT_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_SL,
+                         MonitorStage.COMPLETED_RISK_FREE)
 
 
 class SqlAlchemyPublicationRepository:
     def __init__(self, session): self.session = session
+
+    async def queue_limit_initials(self, signal, now, *, pending_id=None):
+        """Within the trigger or Pending-ack transaction, queue from proven parents."""
+        pending = LimitPendingPublicationRecord
+        eligible = select(pending).join(
+            DestinationRecord, DestinationRecord.id == pending.destination_id
+        ).join(DestinationSignalistRecord,
+            (DestinationSignalistRecord.destination_id == pending.destination_id) &
+            (DestinationSignalistRecord.signalist_id == signal.signalist_id)
+        ).where(
+            pending.signal_id == signal.id, pending.status == PublicationStatus.SENT,
+            pending.telegram_message_id > 0, DestinationRecord.status == DestinationStatus.ACTIVE,
+            ~exists().where(DestinationPublicationRecord.signal_id == signal.id,
+                            DestinationPublicationRecord.destination_id == pending.destination_id),
+        )
+        if pending_id is not None:
+            eligible = eligible.where(pending.id == pending_id)
+        if signal.auto_activate_limit:
+            eligible = eligible.where(exists().where(
+                SignalistRecord.id == signal.signalist_id, SignalistRecord.status == SignalistStatus.ACTIVE))
+        # For an ack after an automatic exit, SENDING was committed while the lock
+        # was held. The exit releases the lock, but the delivered parent is still valid.
+        monitor = (await self.session.get(SignalMonitorStateRecord, signal.id)
+                   if signal.auto_activate_limit and pending_id is not None else None)
+        if monitor is None or monitor.stage not in AUTOMATIC_EXIT_STAGES:
+            eligible = eligible.where(exists().where(
+                DestinationTradeLockRecord.destination_id == pending.destination_id,
+                DestinationTradeLockRecord.canonical_symbol == signal.canonical_symbol,
+                DestinationTradeLockRecord.signal_id == signal.id))
+        rows = (await self.session.scalars(eligible)).all()
+        self.session.add_all(DestinationPublicationRecord(
+            signal_id=signal.id, destination_id=row.destination_id, event_kind="initial",
+            origin="limit_activation", selected_exchange=row.selected_exchange,
+            reply_to_message_id=row.telegram_message_id, status=PublicationStatus.PENDING,
+            created_at=now, updated_at=now,
+        ) for row in rows)
+        return bool(rows)
 
     async def acquire_trade_lock(self, signal_id: int, destination_id: int,
                                  canonical_symbol: str, now: datetime) -> bool:
@@ -122,6 +163,12 @@ class SqlAlchemyPublicationRepository:
             terminal = (signal.status is SignalLifecycleStatus.CANCELLED or
                         (position is not None and position.is_closed) or
                         (position is None and monitor is not None and monitor.stage in TERMINAL_MONITOR_STAGES))
+            if (signal.auto_activate_limit and publication.origin == "limit_activation" and
+                    signal.status is SignalLifecycleStatus.ACTIVE and monitor is not None and
+                    monitor.stage in AUTOMATIC_EXIT_STAGES):
+                # This intent already owns a definite Pending parent. Recovery
+                # must neither reacquire the released lock nor discard the chain.
+                continue
             if terminal:
                 publication.status = PublicationStatus.SUPERSEDED
                 publication.updated_at = now
@@ -225,11 +272,17 @@ class SqlAlchemyPublicationRepository:
         elif destination is None or destination.status is not DestinationStatus.ACTIVE:
             target=PublicationStatus.SKIPPED_INACTIVE
         elif not assigned:target=PublicationStatus.SKIPPED_UNASSIGNED
+        elif (origin == "limit_activation" and signal.auto_activate_limit and not
+              await self.session.scalar(select(exists().where(
+                  SignalistRecord.id == signalist_id, SignalistRecord.status == SignalistStatus.ACTIVE)))):
+            target = PublicationStatus.SKIPPED_SIGNALIST_INACTIVE
         elif origin=="limit_activation":
             owner=await self.session.scalar(select(DestinationTradeLockRecord.signal_id).where(
                 DestinationTradeLockRecord.destination_id==destination_id,
                 DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))
-            if owner!=signal_id:
+            monitor = (await self.session.get(SignalMonitorStateRecord, signal_id)
+                       if signal.auto_activate_limit else None)
+            if owner!=signal_id and (monitor is None or monitor.stage not in AUTOMATIC_EXIT_STAGES):
                 changed=await self.transition(publication_id,PublicationStatus.RENDERING,
                     PublicationStatus.SUPERSEDED,now,error=TRADE_LOCK_REASON)
                 return PublicationStatus.SUPERSEDED.value if changed else "lost"

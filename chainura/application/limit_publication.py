@@ -15,10 +15,11 @@ from chainura.domain.publication import PublicationStatus,select_initial_exchang
 from chainura.domain.signal import SignalEntryType,SignalLifecycleStatus
 from chainura.domain.signalist import SignalistStatus
 from chainura.errors import TemplateNotConfiguredError
-from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationPublicationRecord,DestinationRecord,
+from chainura.persistence.models import (DestinationExchangePriorityRecord,DestinationRecord,
     DestinationSignalistRecord,DestinationTradeLockRecord,InitialPublicationDailySlotRecord,
     LimitAdmissionRequestRecord,LimitCancellationPublicationRecord,
-    LimitPendingPublicationRecord,SignalInitialPriceRecord,SignalRecord,SignalistRecord)
+    LimitPendingPublicationRecord,SignalInitialPriceRecord,SignalPositionStateRecord,
+    SignalRecord,SignalistRecord)
 
 LOGGER=logging.getLogger("chainura.limit_publication")
 LOCKED=(PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,
@@ -31,6 +32,11 @@ def _safe_error(exc):
     return value if value in {"reply_parent_not_found","caption_too_long","message_invalid",
         "chat_not_found","insufficient_rights","telegram_bad_request","rate_limited",
         "delivery_ambiguous"} else "telegram_bad_request"
+
+def _can_publish_pending(signal):
+    return (signal is not None and signal.entry_type is SignalEntryType.LIMIT and
+            (signal.status in (SignalLifecycleStatus.PENDING_ENTRY, SignalLifecycleStatus.ENTRY_TRIGGERED)
+             or (signal.auto_activate_limit and signal.status is SignalLifecycleStatus.ACTIVE)))
 
 class LimitPendingPublicationService:
     def __init__(self,transactions,publisher,message_templates,clock=lambda:datetime.now(timezone.utc),
@@ -62,6 +68,9 @@ class LimitPendingPublicationService:
                         publication.status=PublicationStatus.SUPERSEDED
                         await self._release_admission(s,publication)
                     continue
+                if signal.auto_activate_limit and signal.status is SignalLifecycleStatus.ACTIVE and (
+                        publication.status in (PublicationStatus.SENT, PublicationStatus.DELIVERY_UNKNOWN)):
+                    continue
                 owner=await s.scalar(select(DestinationTradeLockRecord.signal_id).where(
                     DestinationTradeLockRecord.destination_id==publication.destination_id,
                     DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))
@@ -92,8 +101,9 @@ class LimitPendingPublicationService:
                 LimitAdmissionRequestRecord.signal_id))).scalar_one_or_none()
             if signal_id is None:await tx.commit();return
             signal=await s.get(SignalRecord,signal_id)
-            if signal is None or signal.entry_type is not SignalEntryType.LIMIT or signal.status not in (
-                    SignalLifecycleStatus.PENDING_ENTRY,SignalLifecycleStatus.ENTRY_TRIGGERED):
+            position = await s.get(SignalPositionStateRecord, signal_id) if (
+                signal and signal.auto_activate_limit and signal.status is SignalLifecycleStatus.ACTIVE) else None
+            if not _can_publish_pending(signal) or (position and position.is_closed):
                 await s.execute(update(LimitAdmissionRequestRecord).where(
                     LimitAdmissionRequestRecord.id==request_id).values(status="superseded",updated_at=now))
                 await tx.commit();return
@@ -173,7 +183,17 @@ class LimitPendingPublicationService:
         except Exception:
             await self._definite_no_send(publication_id,"template_invalid");return
         async with self.transactions() as tx:
-            s=tx._session;publication=await s.get(LimitPendingPublicationRecord,publication_id)
+            s=tx._session
+            # Serialize the final eligibility check with Trigger, cancellation and
+            # terminal monitoring. Persist SENDING before any Telegram call.
+            claimed = (await s.execute(update(LimitPendingPublicationRecord).where(
+                LimitPendingPublicationRecord.id == publication_id,
+                LimitPendingPublicationRecord.status == PublicationStatus.RENDERING,
+            ).values(updated_at=now))).rowcount
+            if not claimed:
+                await tx.commit()
+                return
+            publication=await s.get(LimitPendingPublicationRecord,publication_id)
             db_signal=await s.get(SignalRecord,signal_id);actor=await s.get(SignalistRecord,db_signal.signalist_id) if db_signal else None
             db_destination=await s.get(DestinationRecord,destination_id)
             assigned=bool(db_signal and await s.scalar(select(exists().where(
@@ -182,15 +202,12 @@ class LimitPendingPublicationService:
             lock_owner=(await s.scalar(select(DestinationTradeLockRecord.signal_id).where(
                 DestinationTradeLockRecord.destination_id==destination_id,
                 DestinationTradeLockRecord.canonical_symbol==db_signal.canonical_symbol))) if db_signal else None
-            valid=(publication is not None and publication.status==PublicationStatus.RENDERING and
-                db_signal is not None and db_signal.entry_type is SignalEntryType.LIMIT and
-                db_signal.status in (SignalLifecycleStatus.PENDING_ENTRY,SignalLifecycleStatus.ENTRY_TRIGGERED) and
+            valid=(_can_publish_pending(db_signal) and
                 actor is not None and actor.status is SignalistStatus.ACTIVE and db_destination is not None and
                 db_destination.status is DestinationStatus.ACTIVE and assigned and lock_owner==signal_id)
             if not valid:
-                if publication and publication.status==PublicationStatus.RENDERING:
-                    publication.status=PublicationStatus.SUPERSEDED;publication.updated_at=now
-                    await self._release_admission(s,publication)
+                publication.status=PublicationStatus.SUPERSEDED;publication.updated_at=now
+                await self._release_admission(s,publication)
                 await tx.commit();return
             publication.status=PublicationStatus.SENDING;publication.attempt_count+=1
             publication.updated_at=now;chat_id=db_destination.telegram_chat_id;attempts=publication.attempt_count
@@ -228,23 +245,8 @@ class LimitPendingPublicationService:
                             index_elements=("signal_id","destination_id")))
                     cancellation_created=result.rowcount==1
                 elif signal and signal.status is SignalLifecycleStatus.ACTIVE:
-                    existing=await s.scalar(select(DestinationPublicationRecord.id).where(
-                        DestinationPublicationRecord.signal_id==pending.signal_id,
-                        DestinationPublicationRecord.destination_id==pending.destination_id))
-                    destination=await s.get(DestinationRecord,pending.destination_id)
-                    assigned=bool(await s.scalar(select(exists().where(
-                        DestinationSignalistRecord.destination_id==pending.destination_id,
-                        DestinationSignalistRecord.signalist_id==signal.signalist_id))))
-                    owner=await s.scalar(select(DestinationTradeLockRecord.signal_id).where(
-                        DestinationTradeLockRecord.destination_id==pending.destination_id,
-                        DestinationTradeLockRecord.canonical_symbol==signal.canonical_symbol))
-                    if (existing is None and destination and destination.status is DestinationStatus.ACTIVE
-                            and assigned and owner==signal.id):
-                        s.add(DestinationPublicationRecord(signal_id=signal.id,
-                            destination_id=pending.destination_id,event_kind="initial",
-                            origin="limit_activation",selected_exchange=pending.selected_exchange,
-                            reply_to_message_id=message_id,status=PublicationStatus.PENDING,
-                            created_at=self.clock(),updated_at=self.clock()));activation_created=True
+                    activation_created = await tx.publications.queue_limit_initials(
+                        signal, self.clock(), pending_id=pending.id)
             await tx.commit()
         if activation_created and self.activation_wake:self.activation_wake()
         if cancellation_created and self.cancellation_wake:self.cancellation_wake()

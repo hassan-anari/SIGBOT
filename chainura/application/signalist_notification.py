@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime,timezone,timedelta
 from html import escape
-from sqlalchemy import select
+from sqlalchemy import select, update
 from decimal import Decimal, ROUND_HALF_UP
 from chainura.domain.monitoring import *
 from chainura.domain.signal import SignalLifecycleStatus
@@ -101,7 +101,16 @@ class SignalistNotificationService:
             row=await s.get(SignalistNotificationRecord,notification_id);actor=await s.get(SignalistRecord,row.signalist_id) if row else None
             if row is None or row.status not in (NotificationStatus.PENDING,NotificationStatus.RETRY_WAIT):return
             if actor is None or actor.status is not SignalistStatus.ACTIVE:row.status=NotificationStatus.SKIPPED_INACTIVE;row.updated_at=now;return
-            row.status=NotificationStatus.SENDING;row.attempt_count+=1;row.updated_at=now;telegram_id=actor.telegram_user_id
+            claimed = (await s.execute(update(SignalistNotificationRecord).where(
+                SignalistNotificationRecord.id == notification_id,
+                SignalistNotificationRecord.status == row.status,
+                (SignalistNotificationRecord.retry_at.is_(None) |
+                 (SignalistNotificationRecord.retry_at <= now)),
+            ).values(status=NotificationStatus.SENDING,
+                     attempt_count=SignalistNotificationRecord.attempt_count + 1,
+                     updated_at=now))).rowcount
+            if not claimed:return
+            telegram_id=actor.telegram_user_id
             if row.kind is NotificationKind.EVENT:
                 candidate=await s.get(SignalUpdateCandidateRecord,row.candidate_id);event=await s.get(SignalEventRecord,candidate.event_id);signal=await s.get(SignalRecord,event.signal_id)
                 if candidate.status is CandidateStatus.SUPERSEDED:row.status=NotificationStatus.SUPERSEDED;return
@@ -116,12 +125,14 @@ class SignalistNotificationService:
             else:
                 trigger=await s.get(LimitEntryTriggerRecord,row.limit_trigger_signal_id)
                 signal=await s.get(SignalRecord,row.limit_trigger_signal_id)
-                if (trigger is None or signal is None or
-                        signal.status is not SignalLifecycleStatus.ENTRY_TRIGGERED):
+                expected_status = (SignalLifecycleStatus.ACTIVE if signal and signal.auto_activate_limit
+                                   else SignalLifecycleStatus.ENTRY_TRIGGERED)
+                if trigger is None or signal is None or signal.status is not expected_status:
                     row.status=NotificationStatus.SUPERSEDED;return
                 from chainura.telegram.presentation import texts
                 text=texts.limit_trigger_notification(signal.id,signal.canonical_symbol,
-                    signal.direction,trigger.requested_entry,trigger.observed_reference_price)
+                    signal.direction,trigger.requested_entry,trigger.observed_reference_price,
+                    automatic=signal.auto_activate_limit)
                 source=trigger
             source_id=row.candidate_id or row.prompt_id or row.limit_trigger_signal_id
         try:message_id=await self.transport.send(telegram_id,text,row.kind,source_id)

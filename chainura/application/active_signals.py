@@ -85,7 +85,7 @@ class ActiveSignalService:
    await s.execute(update(UpdatePublicationRequestRecord).where(UpdatePublicationRequestRecord.signal_id==signal_id,UpdatePublicationRequestRecord.status.in_((PublicationRequestStatus.PENDING,PublicationRequestStatus.WAITING_INITIAL,PublicationRequestStatus.PLANNING,PublicationRequestStatus.PLANNED))).values(status=PublicationRequestStatus.SUPERSEDED,superseded_at=now,updated_at=now))
    await s.execute(update(DestinationUpdatePublicationRecord).where(DestinationUpdatePublicationRecord.signal_id==signal_id,DestinationUpdatePublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.BLOCKED_TEMPLATE))).values(status=PublicationStatus.SUPERSEDED,updated_at=now))
    limit_destinations=[]
-   if preactivation:
+   if preactivation or row.auto_activate_limit:
     await s.execute(update(LimitAdmissionRequestRecord).where(
      LimitAdmissionRequestRecord.signal_id==signal_id,
      LimitAdmissionRequestRecord.status.in_(("pending","planning"))).values(status="superseded",updated_at=now))
@@ -101,11 +101,18 @@ class ActiveSignalService:
      LimitPendingPublicationRecord.status.in_((PublicationStatus.PENDING,PublicationStatus.RENDERING,
       PublicationStatus.READY,PublicationStatus.RETRY_WAIT,PublicationStatus.BLOCKED_TEMPLATE))).values(
       status=PublicationStatus.SUPERSEDED,updated_at=now))
-    sent=(await s.scalars(select(LimitPendingPublicationRecord).where(
+    sent=select(LimitPendingPublicationRecord).where(
      LimitPendingPublicationRecord.signal_id==signal_id,
      LimitPendingPublicationRecord.status==PublicationStatus.SENT,
-     LimitPendingPublicationRecord.telegram_message_id>0))).all()
-    for pending in sent:
+     LimitPendingPublicationRecord.telegram_message_id>0)
+    if not preactivation:
+     # Use the Pending root only when an initial image cannot be visible.
+     sent=sent.where(~LimitPendingPublicationRecord.destination_id.in_(select(
+      DestinationPublicationRecord.destination_id).where(
+       DestinationPublicationRecord.signal_id==signal_id,
+       DestinationPublicationRecord.status.in_((PublicationStatus.SENT,
+        PublicationStatus.SENDING,PublicationStatus.DELIVERY_UNKNOWN)))))
+    for pending in (await s.scalars(sent)).all():
      s.add(LimitCancellationPublicationRecord(signal_id=signal_id,
       destination_id=pending.destination_id,pending_publication_id=pending.id,
       reply_to_message_id=pending.telegram_message_id,status=PublicationStatus.PENDING,

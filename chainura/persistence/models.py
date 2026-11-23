@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, CheckConstraint, Enum, ForeignKeyConstraint, Index, Integer, Text, UniqueConstraint, Date
+from sqlalchemy import BigInteger, CheckConstraint, Enum, ForeignKeyConstraint, Index, Integer, Text, UniqueConstraint, Date, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from chainura.domain.signalist import SignalistStatus
@@ -227,6 +227,7 @@ class SignalRecord(Base):
     creation_token: Mapped[str] = mapped_column(Text, nullable=False)
     entry_type: Mapped[SignalEntryType] = mapped_column(
         SIGNAL_ENTRY_TYPE_ENUM, nullable=False, default=SignalEntryType.MARKET)
+    auto_activate_limit: Mapped[bool] = mapped_column(nullable=False, server_default=false())
     mode: Mapped[SignalMode] = mapped_column(SIGNAL_MODE_ENUM, nullable=False)
     canonical_symbol: Mapped[str] = mapped_column(Text, nullable=False)
     base_asset: Mapped[str] = mapped_column(Text, nullable=False)
