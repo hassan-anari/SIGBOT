@@ -52,6 +52,12 @@ live application writers):
 7. Compare open-signal and trade-lock counts with pre-deployment expectations.
 8. Only then consider the deployment healthy.
 
+Alembic revision `20261123_01` makes automatic Limit activation available for
+newly created Limits. Existing Limits keep their manual activation path, including
+Limits that were pending at upgrade. The separate
+[silent retirement runbook](docs/SILENT_LEGACY_LIMIT_RETIREMENT.md) covers the six
+audited historical Signals and its required maintenance window.
+
 ## Production initial rendering
 
 Configure `RENDER_TEMPLATE_ASSET_ROOT`, `RENDER_OUTPUT_ROOT`,
@@ -452,11 +458,12 @@ unchanged. A Limit is created only after all levels have been supplied and a fre
 snapshot proves that a LONG entry is below, or a SHORT entry is above, the current
 reference price. Its requested entry remains authoritative throughout its life.
 
-A Limit has no expiration and follows `PENDING_ENTRY → ENTRY_TRIGGERED → ACTIVE`.
-The trigger is irreversible, durable, and uses Chainura's sampled reference prices
-from the shared batched market cache—not candle wicks or reconstructed trade
-history. Reaching entry never activates the Signal: its Signalist must explicitly
-activate it. Before activation, TP/SL and position accounting do not run.
+A Limit has no expiration. A new Limit goes from `PENDING_ENTRY` to `ACTIVE`
+when Chainura's sampled reference from the shared batched market cache meets
+its Entry condition. The trigger, activation, monitoring state and eligible
+initial-photo intents commit together. Historical Limits still go through
+`ENTRY_TRIGGERED` and require the Signalist's explicit activation before
+TP/SL monitoring and position accounting begin.
 
 Pending Limit text is the destination admission message. Admission retains the
 same global `(destination, canonical symbol)` Trade Lock and consumes one Tehran
@@ -466,9 +473,9 @@ must reply to the definitely-sent pending message, so an unknown parent never
 causes a standalone fallback.
 
 Limit trigger, publication, capacity, and lock facts live in SQLite. Restart
-recovery treats interrupted sends as `delivery_unknown`, never blindly resends an
-ambiguous Telegram delivery, and resumes retryable work without automatic
-activation. Telegram rate limits are stored as `retry_wait` using the explicit
+recovery treats interrupted sends as `delivery_unknown` and resumes
+definitely retryable work. Historical Limits retain their manual activation path
+throughout recovery. Telegram rate limits are stored as `retry_wait` using the explicit
 Telegram delay, while permanent rejections use privacy-safe categories and do not
 persist raw exception text.
 

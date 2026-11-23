@@ -5,7 +5,7 @@ from datetime import datetime,timezone,timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 from aiogram.exceptions import TelegramRetryAfter
 from sqlalchemy import func,select,text
 
@@ -13,7 +13,10 @@ from chainura.application.limit_orders import LimitOrderService
 from chainura.application.limit_publication import (LimitCancellationPublicationService,
     LimitPendingPublicationService)
 from chainura.application.message_templates import DestinationMessageTemplateService
-from chainura.application.publication import CancellationPublicationService,InitialPublicationService
+from chainura.application.initial_rendering import InitialPayloadFactory
+from chainura.application.monitoring import MonitoringService
+from chainura.application.publication import (CancellationPublicationService, InitialPublicationService,
+    SignalDetailsPublicationService, UpdatePublicationService)
 from chainura.application.publication import DeliveryAmbiguous,DeliveryRateLimited,DeliveryRejected
 from chainura.application.signal_service import (CreateLimitSignalCommand,CreatePendingSignalCommand,
     ReferencePriceResult,SignalService)
@@ -21,8 +24,8 @@ from chainura.application.signalist_notification import SignalistNotificationSer
 from chainura.application.active_signals import ActiveSignalService
 from chainura.application.pagination import PageRequest
 from chainura.domain.destination import Exchange
-from chainura.domain.monitoring import NotificationStatus
-from chainura.domain.publication import PublicationStatus
+from chainura.domain.monitoring import MarketDecision, MonitorStage, NotificationStatus
+from chainura.domain.publication import PublicationRequestStatus, PublicationStatus
 from chainura.domain.signal import (PriceSourceType,SignalEntryType,SignalLifecycleStatus,
     SignalMode,TradeDirection)
 from chainura.domain.signalist import Signalist
@@ -31,9 +34,10 @@ from chainura.persistence.models import (DestinationPublicationRecord,Destinatio
     InitialPublicationDailySlotRecord,LimitCancellationPublicationRecord,LimitEntryTriggerRecord,LimitPendingPublicationRecord,
     SignalCancellationPublicationRecord,
     SignalDetailsPublicationRecord,SignalMonitorStateRecord,SignalPositionStateRecord,
-    SignalRecord,SignalistNotificationRecord)
+    SignalRecord,SignalUpdateCandidateRecord,SignalistNotificationRecord,UpdatePublicationRequestRecord)
 from chainura.persistence.signalist_repository import SqlAlchemySignalistRepository
 from chainura.persistence.transaction import SqlAlchemySignalistTransactionFactory
+from chainura.telegram.runtime import _limit_trigger_markup
 from integration_tests.support import create_safe_engine,migrate,require_safe_test_database
 
 NOW=datetime(2026,8,18,8,tzinfo=timezone.utc)
@@ -52,6 +56,8 @@ class Publisher:
         self.photos.append((chat_id,path,caption,reply_to_message_id));return 800+len(self.photos)
     async def send_text_update(self,chat_id,body,reply_to_message_id):
         self.text.append((chat_id,body,reply_to_message_id));return 900+len(self.text)
+    async def send_details(self, chat_id, body, reply_to_message_id):
+        return await self.send_text_update(chat_id, body, reply_to_message_id)
 class BlockingPublisher(Publisher):
     def __init__(self,kind="text",error=None):
         super().__init__();self.kind=kind;self.error=error
@@ -112,6 +118,13 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as c:
             await c.execute(text("UPDATE destinations SET status='inactive' WHERE id=:d"),{"d":self.blocked})
 
+    async def legacy_limit(self, command):
+        signal = await self.signal_service.create_limit(command)
+        async with self.engine.begin() as connection:
+            await connection.execute(text("UPDATE signals SET auto_activate_limit=0 WHERE id=:id"),
+                                     {"id": signal.id})
+        return signal
+
     async def test_long_production_style_lifecycle_and_retry(self):
         await self.create_blocking_market();signal=await self.signal_service.create_limit(self.command())
         duplicate=await self.signal_service.create_limit(self.command())
@@ -128,12 +141,18 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as s:
             admitted=await s.scalar(select(LimitPendingPublicationRecord).where(LimitPendingPublicationRecord.signal_id==signal.id,LimitPendingPublicationRecord.destination_id==self.good))
             self.assertIs(admitted.status,PublicationStatus.SENT);self.assertEqual(admitted.telegram_message_id,701)
-        limit=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
+        decision = MarketDecision(Decimal("89"), snapshot("89").source_prices,
+                                  PriceSourceType.COMPOSITE, NOW)
+        market = Mock(snapshot=AsyncMock(return_value={signal.id: decision}))
+        limit=LimitOrderService(self.sessions,market,clock=lambda:self.clock_now)
         self.assertFalse(await limit.observe(signal.id,Decimal("91"),PriceSourceType.COMPOSITE,snapshot("91").source_prices,NOW))
-        observed=await asyncio.gather(*[limit.observe(signal.id,Decimal("90"),PriceSourceType.COMPOSITE,snapshot("90").source_prices,NOW) for _ in range(2)])
-        self.assertEqual(observed.count(True),1)
+        self.assertEqual(sum(await asyncio.gather(limit.run_cycle(), limit.run_cycle())), 1)
+        monitoring = MonitoringService(self.sessions, market, clock=lambda:self.clock_now)
+        self.assertEqual([work.signal_id for work in await monitoring.load_work(100)], [signal.id])
         async with self.sessions() as s:
-            self.assertEqual(await s.scalar(select(func.count()).select_from(LimitEntryTriggerRecord).where(LimitEntryTriggerRecord.signal_id==signal.id)),1)
+            trigger = await s.get(LimitEntryTriggerRecord, signal.id)
+            self.assertEqual((trigger.requested_entry, trigger.observed_reference_price, trigger.occurred_at),
+                             (Decimal("90"), Decimal("89"), NOW))
             note=await s.scalar(select(SignalistNotificationRecord).where(SignalistNotificationRecord.limit_trigger_signal_id==signal.id))
             self.assertIs(note.status,NotificationStatus.PENDING)
         transport=NotificationTransport();notifications=SignalistNotificationService(self.sessions,transport,max_attempts=1,retry_base_seconds=1,clock=lambda:self.clock_now)
@@ -141,16 +160,34 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as s:
             note=await s.get(SignalistNotificationRecord,note.id);self.assertIs(note.status,NotificationStatus.RETRY_WAIT);self.assertEqual(note.last_error_category,"rate_limited");self.assertEqual(note.retry_at,NOW+timedelta(seconds=12))
         self.clock_now+=timedelta(seconds=12);await notifications.deliver(note.id)
-        self.assertTrue(await limit.activate(signal.id,self.actor.id));self.assertTrue(await limit.activate(signal.id,self.actor.id))
+        self.assertIn("به‌صورت خودکار فعال شد", transport.rows[-1][1])
+        self.assertIsNone(await _limit_trigger_markup(self.sessions, signal.id))
         async with self.sessions() as s:
             db=await s.get(SignalRecord,signal.id);self.assertIs(db.status,SignalLifecycleStatus.ACTIVE);self.assertEqual(db.entry_price,Decimal("90"))
             self.assertIsNotNone(await s.get(SignalPositionStateRecord,signal.id));self.assertIsNotNone(await s.get(SignalMonitorStateRecord,signal.id))
             activations=(await s.scalars(select(DestinationPublicationRecord).where(DestinationPublicationRecord.signal_id==signal.id))).all()
             self.assertEqual(len(activations),1);self.assertEqual(activations[0].reply_to_message_id,701)
             self.assertEqual(await s.scalar(select(func.count()).select_from(InitialPublicationDailySlotRecord).where(InitialPublicationDailySlotRecord.limit_publication_id.is_not(None))),1)
-        initial=InitialPublicationService(self.tx,Image(),publisher,lambda:self.clock_now,message_templates=templates)
+        images = Image()
+        images.render_initial_signal = AsyncMock(wraps=images.render_initial_signal)
+        initial=InitialPublicationService(self.tx,images,publisher,lambda:self.clock_now,message_templates=templates)
+        await initial.recover()
+        self.assertEqual(await LimitOrderService(self.sessions, market).load_work(), ())
         await initial.process(activations[0].id)
+        await initial.process(activations[0].id)
+        self.assertEqual(len(publisher.photos), 1)
         self.assertEqual(publisher.photos[0][3],701)
+        initial_signal, exchange, destination, rendered_at = images.render_initial_signal.await_args.args
+        factory = InitialPayloadFactory(Mock())
+        payload = factory.build(initial_signal, exchange, rendered_at)
+        self.assertEqual(payload, factory.build(signal, exchange, rendered_at))
+        self.assertEqual((payload.entry_price, payload.display_price), (Decimal("90"), Decimal("100")))
+        self.assertEqual((exchange, destination), (Exchange.OURBIT, self.good))
+        details = SignalDetailsPublicationService(self.tx, publisher, lambda:self.clock_now,
+                                                  message_templates=templates)
+        for item_id in await details.pending_ids():
+            await details.process(item_id)
+        self.assertEqual(publisher.text[-1][2], 801)
         async with self.sessions() as s:
             activation=await s.get(DestinationPublicationRecord,activations[0].id);self.assertIs(activation.status,PublicationStatus.SENT)
             self.assertIsNotNone(await s.scalar(select(SignalDetailsPublicationRecord).where(SignalDetailsPublicationRecord.signal_id==signal.id)))
@@ -162,7 +199,7 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         from chainura.domain.monitoring import MarketDecision,MonitorStage
         from chainura.persistence.models import SignalPositionActionPublicationRecord
         await self.only_good_destination()
-        signal=await self.signal_service.create_limit(self.command())
+        signal=await self.legacy_limit(self.command())
         publisher=Publisher();templates=DestinationMessageTemplateService(self.tx)
         pending=LimitPendingPublicationService(self.tx,publisher,templates,lambda:self.clock_now)
         await pending.plan_pending()
@@ -194,12 +231,20 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(publisher.text[-1][2],701)
 
     async def test_short_threshold_and_moved_price_does_not_revert(self):
-        signal=await self.signal_service.create_limit(self.command(TradeDirection.SHORT,"short"))
+        signal=await self.legacy_limit(self.command(TradeDirection.SHORT,"short"))
         service=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
         self.assertFalse(await service.observe(signal.id,Decimal("109"),PriceSourceType.COMPOSITE,snapshot("109").source_prices,NOW))
         self.assertTrue(await service.observe(signal.id,Decimal("110"),PriceSourceType.COMPOSITE,snapshot("110").source_prices,NOW))
         self.assertFalse(await service.observe(signal.id,Decimal("100"),PriceSourceType.COMPOSITE,snapshot("100").source_prices,NOW))
         async with self.sessions() as s:self.assertIs((await s.get(SignalRecord,signal.id)).status,SignalLifecycleStatus.ENTRY_TRIGGERED)
+        transport = Mock(send=AsyncMock(return_value=33))
+        notifications = SignalistNotificationService(self.sessions, transport)
+        await notifications.recover()
+        await notifications.deliver((await notifications.pending())[0])
+        self.assertIn("صریحاً فعال کنید", transport.send.await_args.args[1])
+        self.assertIsNotNone(await _limit_trigger_markup(self.sessions, signal.id))
+        self.assertTrue(await service.activate(signal.id,self.actor.id))
+        self.assertTrue(await service.activate(signal.id,self.actor.id))
 
     async def test_weex_single_exchange_limit_admission_trigger_and_activation(self):
         await self.only_good_destination()
@@ -230,7 +275,6 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             ((Exchange.WEEX,Decimal("90")),),NOW))
         self.assertFalse(await limits.observe(signal.id,Decimal("89"),PriceSourceType.WEEX_ONLY,
             ((Exchange.WEEX,Decimal("89")),),NOW))
-        self.assertTrue(await limits.activate(signal.id,self.actor.id))
         async with self.sessions() as s:
             self.assertEqual(await s.scalar(select(func.count()).select_from(LimitEntryTriggerRecord)
                 .where(LimitEntryTriggerRecord.signal_id==signal.id)),1)
@@ -240,7 +284,7 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs((await s.get(SignalRecord,signal.id)).status,SignalLifecycleStatus.ACTIVE)
 
     async def test_triggered_active_signal_fallback_and_atomic_cancellation(self):
-        signal=await self.signal_service.create_limit(self.command(token="cancel-limit"))
+        signal=await self.legacy_limit(self.command(token="cancel-limit"))
         publisher=Publisher();pending=LimitPendingPublicationService(self.tx,publisher,
             DestinationMessageTemplateService(self.tx),lambda:self.clock_now)
         await pending.plan_pending()
@@ -402,3 +446,168 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(publication.telegram_message_id)
             self.assertEqual(await s.scalar(select(func.count()).select_from(
                 LimitCancellationPublicationRecord)),0)
+
+    async def test_fast_stop_loss_while_pending_is_sending_preserves_chain_and_release(self):
+        await self.only_good_destination()
+        signal = await self.signal_service.create_limit(self.command())
+        publisher = BlockingPublisher()
+        templates = DestinationMessageTemplateService(self.tx)
+        pending = LimitPendingPublicationService(self.tx, publisher, templates, lambda: self.clock_now)
+        await pending.plan_pending()
+        pending_id = (await pending.pending_ids())[0]
+        sending = asyncio.create_task(pending.process(pending_id))
+        try:
+            await asyncio.wait_for(publisher.started.wait(), 5)
+            limits = LimitOrderService(self.sessions, clock=lambda: self.clock_now)
+            self.assertTrue(await limits.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE,
+                                                 snapshot("90").source_prices, NOW))
+            monitoring = MonitoringService(self.sessions, None, clock=lambda: self.clock_now)
+            work, = await monitoring.load_work(100)
+            self.assertTrue(await monitoring.evaluate(work, MarketDecision(
+                Decimal("84"), snapshot("84").source_prices, PriceSourceType.COMPOSITE, NOW)))
+            async with self.sessions() as s:
+                self.assertIs((await s.get(SignalMonitorStateRecord, signal.id)).stage, MonitorStage.COMPLETED_SL)
+                self.assertTrue((await s.get(SignalPositionStateRecord, signal.id)).is_closed)
+                self.assertIsNone(await s.scalar(select(DestinationTradeLockRecord.signal_id)))
+                candidate_id = await s.scalar(select(SignalUpdateCandidateRecord.id))
+                note_id = await s.scalar(select(SignalistNotificationRecord.id).where(
+                    SignalistNotificationRecord.candidate_id == candidate_id))
+            notifications = SignalistNotificationService(self.sessions, Mock(send=AsyncMock(return_value=33)))
+            await notifications.deliver(note_id)
+            await monitoring.decide_candidate(candidate_id, self.actor.id, True)
+            updates = UpdatePublicationService(self.tx, Image(), publisher, lambda: self.clock_now,
+                                               message_templates=templates)
+            await updates.sweep()
+            self.assertEqual(await updates.pending_ids(), ())
+            async with self.sessions() as s:
+                self.assertIs(await s.scalar(select(UpdatePublicationRequestRecord.status)),
+                              PublicationRequestStatus.WAITING_INITIAL)
+        finally:
+            publisher.release.set()
+            await sending
+
+        initial = InitialPublicationService(self.tx, Image(), publisher, lambda: self.clock_now,
+                                             message_templates=templates)
+        await pending.recover()
+        await initial.recover()
+        await updates.recover()
+        await updates.sweep()
+        self.assertEqual(await updates.pending_ids(), ())
+        initial_id, = await initial.pending_ids()
+        await initial.process(initial_id)
+        self.assertEqual(publisher.photos[0][3], 701)
+        await updates.sweep()
+        update_id, = await updates.pending_ids()
+        await updates.process(update_id)
+        self.assertEqual(len(publisher.text), 1)
+        details = SignalDetailsPublicationService(self.tx, publisher, lambda: self.clock_now,
+                                                  message_templates=templates)
+        details_id, = await details.pending_ids()
+        await details.process(details_id)
+        await updates.process(update_id)
+        self.assertEqual([message[2] for message in publisher.text[1:]], [801, 902])
+        async with self.sessions() as s:
+            self.assertIsNone(await s.scalar(select(DestinationTradeLockRecord.signal_id)))
+            self.assertIs((await s.get(LimitPendingPublicationRecord, pending_id)).status,
+                          PublicationStatus.SENT)
+
+    async def test_trigger_before_admission_and_interrupted_pending_send(self):
+        signal = await self.signal_service.create_limit(self.command())
+        limits = LimitOrderService(self.sessions, clock=lambda: self.clock_now)
+        self.assertTrue(await limits.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE,
+                                             snapshot("90").source_prices, NOW))
+        publisher = BlockingPublisher()
+        templates = DestinationMessageTemplateService(self.tx)
+        pending = LimitPendingPublicationService(self.tx, publisher, templates, lambda: self.clock_now)
+        await pending.plan_pending()
+        interrupted_id, successful_id = await pending.pending_ids()
+        interrupted = asyncio.create_task(pending.process(interrupted_id))
+        await asyncio.wait_for(publisher.started.wait(), 5)
+        interrupted.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await interrupted
+        publisher = Publisher()
+        restarted = LimitPendingPublicationService(self.tx, publisher, templates, lambda: self.clock_now)
+        await restarted.recover()
+        self.assertEqual(await restarted.pending_ids(), (successful_id,))
+        await restarted.process(successful_id)
+        await restarted.plan_pending()
+        self.assertEqual(await restarted.pending_ids(), ())
+        async with self.sessions() as s:
+            unknown = await s.get(LimitPendingPublicationRecord, interrupted_id)
+            self.assertIs(unknown.status, PublicationStatus.DELIVERY_UNKNOWN)
+            self.assertIsNone(unknown.telegram_message_id)
+            initial, = (await s.scalars(select(DestinationPublicationRecord))).all()
+            self.assertEqual((initial.destination_id, initial.reply_to_message_id), (self.blocked, 701))
+
+    async def test_trigger_transaction_rolls_back_before_retry(self):
+        signal = await self.signal_service.create_limit(self.command())
+        limits = LimitOrderService(self.sessions, clock=lambda: self.clock_now)
+        with patch("chainura.persistence.publication_repository.SqlAlchemyPublicationRepository.queue_limit_initials",
+                   side_effect=RuntimeError("fault before commit")):
+            with self.assertRaisesRegex(RuntimeError, "fault before commit"):
+                await limits.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE,
+                                     snapshot("90").source_prices, NOW)
+        async with self.sessions() as s:
+            self.assertIs((await s.get(SignalRecord, signal.id)).status, SignalLifecycleStatus.PENDING_ENTRY)
+            for model in (LimitEntryTriggerRecord, SignalMonitorStateRecord, SignalPositionStateRecord):
+                self.assertIsNone(await s.get(model, signal.id))
+            self.assertIsNone(await s.scalar(select(SignalistNotificationRecord.id)))
+        restarted = LimitOrderService(self.sessions)
+        self.assertTrue(await restarted.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE,
+                                                snapshot("90").source_prices, NOW))
+
+    async def test_fast_exit_update_can_publish_to_ready_destination_while_other_pending_sends(self):
+        signal = await self.signal_service.create_limit(self.command())
+        publisher = Publisher()
+        templates = DestinationMessageTemplateService(self.tx)
+        pending = LimitPendingPublicationService(self.tx, publisher, templates, lambda: self.clock_now)
+        await pending.plan_pending()
+        ready_id, late_id = await pending.pending_ids()
+        await pending.process(ready_id)
+        delayed = BlockingPublisher()
+        pending.publisher = delayed
+        sending = asyncio.create_task(pending.process(late_id))
+        try:
+            await asyncio.wait_for(delayed.started.wait(), 5)
+            clock = lambda: self.clock_now
+            orders = LimitOrderService(self.sessions, clock=clock)
+            await orders.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE,
+                                 snapshot("90").source_prices, NOW)
+            initial = InitialPublicationService(self.tx, Image(), publisher, clock, message_templates=templates)
+            details = SignalDetailsPublicationService(self.tx, publisher, clock, message_templates=templates)
+            await initial.process((await initial.pending_ids())[0])
+            await details.process((await details.pending_ids())[0])
+            monitoring = MonitoringService(self.sessions, None, clock=clock)
+            work, = await monitoring.load_work(100)
+            await monitoring.evaluate(work, MarketDecision(
+                Decimal("84"), snapshot("84").source_prices, PriceSourceType.COMPOSITE, NOW))
+            async with self.sessions() as s:
+                candidate = await s.scalar(select(SignalUpdateCandidateRecord.id))
+                note = await s.scalar(select(SignalistNotificationRecord.id).where(
+                    SignalistNotificationRecord.candidate_id == candidate))
+            direct = SignalistNotificationService(self.sessions, Mock(send=AsyncMock(return_value=55)))
+            await direct.deliver(note)
+            await monitoring.decide_candidate(candidate, self.actor.id, True)
+            updates = UpdatePublicationService(self.tx, Image(), publisher, clock, message_templates=templates)
+            await updates.sweep()
+            item_id, = await updates.pending_ids()
+            await updates.process(item_id)
+            self.assertEqual(publisher.text[-1][2], 902)
+            async with self.sessions() as s:
+                self.assertIs(await s.scalar(select(UpdatePublicationRequestRecord.status)),
+                              PublicationRequestStatus.WAITING_INITIAL)
+        finally:
+            delayed.release.set()
+            await sending
+
+        await initial.process((await initial.pending_ids())[0])
+        await details.process((await details.pending_ids())[0])
+        await updates.sweep()
+        await updates.process((await updates.pending_ids())[0])
+        await updates.sweep()
+        self.assertEqual(await updates.pending_ids(), ())
+        async with self.sessions() as s:
+            self.assertIs(await s.scalar(select(UpdatePublicationRequestRecord.status)),
+                          PublicationRequestStatus.COMPLETED)
+        self.assertEqual(publisher.text[-1][2], 904)

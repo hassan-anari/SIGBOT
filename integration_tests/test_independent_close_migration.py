@@ -19,7 +19,7 @@ class IndependentCloseMigrationTests(unittest.IsolatedAsyncioTestCase):
             def snapshot():
                 with sqlite3.connect(fixture.safe.path) as db:
                     return {name:db.execute(f'SELECT * FROM "{name}"').fetchall() for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='alembic_version'").fetchall()}
-            before=snapshot(); migrate('head',fixture.safe)
+            before=snapshot(); migrate('20261026_01',fixture.safe)
             self.assertEqual(snapshot(),before)
             fixture.engine=create_safe_engine(fixture.safe)
             from chainura.persistence.database import create_session_factory

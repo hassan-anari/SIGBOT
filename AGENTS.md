@@ -104,10 +104,11 @@ Before changing the code:
   P0-to-P1 drift must not exceed exactly 0.70 percent. The accepted creation
   reference is the authoritative Market Entry, and Stage Two is `PENDING_DETAILS`.
 - Limit Entry is the requested Decimal price. LONG must be below, and SHORT above,
-  the fresh reference. Limits have no expiration and transition durably through
-  `PENDING_ENTRY` to `ENTRY_TRIGGERED`, then require explicit Signalist activation
-  before becoming `ACTIVE` or receiving TP/SL monitoring.
-- The initial render uses the authoritative Entry and the Reference Price as display price; initial PnL is always 0.00 percent.
+  the fresh reference. New Limits activate atomically when the sampled Entry
+  condition is met. Historical Limits retain `PENDING_ENTRY` → `ENTRY_TRIGGERED`
+  → explicit Signalist activation. Follow the per-Signal compatibility flag.
+- Initial rendering uses the authoritative Entry and the original persisted
+  per-exchange source price. Keep its existing PnL calculation and formatting.
 - TP and SL belong to the future caption, not the rendered card layout.
 - Renderer clock and elapsed values are supplied externally; renderers never generate current time.
 - Do not guess or commit production coordinates, fonts, or final layout details.

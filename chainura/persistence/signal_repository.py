@@ -34,6 +34,7 @@ class SqlAlchemySignalRepository:
     async def add(self, signal: Signal):
         row = SignalRecord(signalist_id=signal.signalist_id, creation_token=signal.creation_token,
             entry_type=signal.entry_type,
+            auto_activate_limit=signal.entry_type is SignalEntryType.LIMIT,
             mode=signal.mode, canonical_symbol=signal.canonical_symbol, base_asset=signal.base_asset,
             quote_asset=signal.quote_asset, selected_exchange=signal.selected_exchange,
             direction=signal.direction, entry_price=signal.entry_price, leverage=signal.leverage,

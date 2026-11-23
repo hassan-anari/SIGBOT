@@ -54,7 +54,7 @@ unchanged.
 
 Only eligible ACTIVE trades with modern open Position State and PRE_TP1 or
 POST_TP1 monitoring expose Full Close, next to Comment in the detail panel. Market
-and explicitly activated Limit trades qualify. The owner confirms trade identity
+and activated Limit trades qualify. The owner confirms trade identity
 using an ephemeral confirmation token and the position version. A fresh batch is
 then fetched outside any SQLite transaction through the established persisted
 source mappings and reference rules. Invalid/unavailable prices leave state and

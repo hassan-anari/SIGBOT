@@ -41,7 +41,7 @@ from chainura.telegram.signal_routes import router as signal_router
 from chainura.telegram.template_routes import router as template_router
 from chainura.telegram.message_template_routes import router as message_template_router
 from chainura.telegram.event_routes import router as event_router
-from chainura.telegram.active_signal_routes import router as active_signal_router
+from chainura.telegram.active_signal_routes import limit_activation_keyboard, router as active_signal_router
 from chainura.telegram.warmup_routes import router as warmup_router
 from chainura.application.warmup import WarmupService, WarmupPublicationService, WarmupPublicationWorker
 from chainura.application.signal_service import SignalService
@@ -77,6 +77,15 @@ from chainura.application.limit_publication import (LimitPendingPublicationServi
 LOGGER = logging.getLogger("chainura.telegram.runtime")
 CLEANUP_OPERATION_TIMEOUT_SECONDS = 5
 T = TypeVar("T")
+
+
+async def _limit_trigger_markup(sessions, signal_id):
+    from chainura.persistence.models import SignalRecord
+
+    async with sessions() as session:
+        automatic = await session.scalar(select(SignalRecord.auto_activate_limit).where(
+            SignalRecord.id == signal_id))
+    return limit_activation_keyboard(signal_id) if automatic is False else None
 
 
 class RuntimeState(str, Enum):
@@ -316,8 +325,7 @@ class Runtime:
                     elif kind is NotificationKind.BREAKEVEN_PROMPT:
                         markup=breakeven_prompt_keyboard(source_id)
                     else:
-                        from chainura.telegram.active_signal_routes import limit_activation_keyboard
-                        markup=limit_activation_keyboard(source_id)
+                        markup=await _limit_trigger_markup(sessions, source_id)
                     message=await self.bot.send_message(telegram_id,text,reply_markup=markup)
                     return message.message_id
             class AdminAlertTransport:

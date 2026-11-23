@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import text
 
+from chainura.application.limit_orders import LimitOrderService
+from chainura.domain.destination import Exchange
+from chainura.domain.signal import PriceSourceType
+from chainura.persistence.database import create_session_factory
 from integration_tests.support import create_safe_engine, migrate, require_safe_test_database
 from chainura.persistence.sqlite_migration import (SQLiteMigrationIntegrityError,
     run_with_sqlite_foreign_keys_suspended)
@@ -30,6 +36,46 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.safe.cleanup()
+
+    async def test_automatic_limit_migration_preserves_both_legacy_entry_states(self):
+        safe = require_safe_test_database()
+        self.addCleanup(safe.cleanup)
+        migrate("20261026_01", safe)
+        now = datetime(2026, 11, 23, 8, tzinfo=timezone.utc)
+        engine = create_safe_engine(safe)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text(
+                    "INSERT INTO signalists(id,telegram_user_id,display_name,status,created_at,updated_at) "
+                    "VALUES(1,1101,'legacy','active',:now,:now)"), {"now": now.isoformat()})
+                for signal_id, status in ((1, "pending_entry"), (2, "entry_triggered")):
+                    await connection.execute(text(
+                        "INSERT INTO signals(id,signalist_id,creation_token,mode,canonical_symbol,base_asset,"
+                        "quote_asset,direction,entry_price,leverage,stop_loss,reference_price,price_source_type,"
+                        "status,created_at,updated_at,entry_type) VALUES(:id,1,:token,'composite','BTCUSDT',"
+                        "'BTC','USDT','long','90',10,'85','100','composite',:status,:now,:now,'limit')"),
+                        {"id": signal_id, "token": f"pre-migration-{signal_id}", "status": status,
+                         "now": now.isoformat()})
+                await connection.execute(text(
+                    "INSERT INTO limit_entry_triggers VALUES(2,'90','89','composite',:now,:now)"),
+                    {"now": now.isoformat()})
+        finally:
+            await engine.dispose()
+        migrate("head", safe)
+        engine = create_safe_engine(safe)
+        self.addAsyncCleanup(engine.dispose)
+        sessions = create_session_factory(engine)
+        orders = LimitOrderService(sessions, clock=lambda: now)
+        self.assertEqual([item.signal_id for item in await orders.load_work()], [1])
+        self.assertFalse(await orders.observe(2, Decimal("89"), PriceSourceType.COMPOSITE, (), now))
+        self.assertTrue(await orders.observe(1, Decimal("89"), PriceSourceType.COMPOSITE,
+                                             ((Exchange.OURBIT, Decimal("89")),), now))
+        async with engine.connect() as connection:
+            self.assertEqual((await connection.execute(text(
+                "SELECT id,status,auto_activate_limit FROM signals ORDER BY id"))).all(),
+                [(1, "entry_triggered", 0), (2, "entry_triggered", 0)])
+            self.assertEqual(await connection.scalar(text("SELECT count(*) FROM signal_monitor_states")), 0)
+        self.assertTrue(await orders.activate(1, 1))
 
     async def test_phase4a_upgrade_constraints_downgrade_and_reupgrade(self) -> None:
         safe=require_safe_test_database()
