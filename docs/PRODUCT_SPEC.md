@@ -307,10 +307,13 @@ fetches market prices.
 For a Market initial card, Reference Price is the persisted validation reference
 and Display Price is the selected exchange's persisted snapshot price. Initial
 leveraged PnL uses the formula in section 12 without intermediate rounding.
-For a Limit initial card, the configured Entry is the sole price basis and
-initial leveraged PnL displays as `0.00%`. The card's market-price field and the
-caption's `{last_price}` placeholder display a dash. Caption `{entry}` and `{pnl}`
-display the configured Entry and `0.00%`.
+For a Limit initial card, Entry is the original configured price and Reference
+Price is the persisted observed trigger reference. The card's market-price field
+and the caption's `{last_price}` use the persisted trigger quote for the
+destination's selected exchange. The image and caption calculate leveraged PnL
+from configured Entry and that exchange quote using the formula in section 12
+and their existing rounding and formatting. A missing quote for the selected
+exchange fails the initial delivery before send with `limit_trigger_price_missing`.
 
 The visible card symbol is the persisted canonical symbol. Native symbols remain
 available for exchange integration and local Toobit logo lookup.
@@ -925,8 +928,9 @@ activation. A definitely sent Pending acknowledgement and its initial-photo
 intent commit together. A fast automatic exit releases Trade Locks at the usual
 time and preserves already established publication intents. Approved updates wait
 for their destination's initial photo and existing details delivery barrier.
-The configured Entry is the sole price basis for the initial photo and caption
-after either automatic or manual activation, including publication retries.
+Both automatic and manual activation use the original configured Entry and the
+selected exchange's persisted trigger quote for the initial photo and caption.
+Delayed publication, including retries and recovery, reads the same snapshot.
 
 SQLite durably stores triggers, outboxes, capacity, and locks. Monitoring consumes
 the shared batched price cache and current sampled reference prices; it does not

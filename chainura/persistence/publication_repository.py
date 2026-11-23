@@ -5,14 +5,15 @@ from sqlalchemy import delete, exists, func, literal, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from chainura.domain.destination import DestinationAccessLevel, DestinationStatus
-from chainura.domain.publication import (PublicationDelivery, PublicationRequestStatus,
+from chainura.domain.destination import DestinationAccessLevel, DestinationStatus, Exchange
+from chainura.domain.publication import (LimitTriggerPrices, PublicationDelivery, PublicationRequestStatus,
     PublicationStatus, TERMINAL_PUBLICATION_STATUSES, select_initial_exchange)
 from chainura.errors import DailyCapacityError, PublicationPersistenceError
 from chainura.persistence.models import (DestinationExchangePriorityRecord, DestinationPublicationRecord,
     DestinationRecord, DestinationSignalistRecord, InitialPublicationDailySlotRecord,
     InitialPublicationRequestRecord, InitialPublicationNotificationRecord,
-    LimitPendingPublicationRecord, SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
+    LimitEntryTriggerRecord, LimitEntryTriggerSourcePriceRecord, LimitPendingPublicationRecord,
+    SignalInitialPriceRecord, SignalRecord, SignalMonitorStateRecord,
     SignalistRecord,
     DestinationTradeLockRecord, SignalDetailsPublicationRecord, SignalPositionStateRecord, utc_now)
 from chainura.domain.signal import SignalLifecycleStatus
@@ -32,6 +33,14 @@ AUTOMATIC_EXIT_STAGES = (MonitorStage.COMPLETED_TARGETS, MonitorStage.COMPLETED_
 
 class SqlAlchemyPublicationRepository:
     def __init__(self, session): self.session = session
+
+    async def get_limit_trigger_prices(self, signal_id: int, exchange: Exchange) -> LimitTriggerPrices | None:
+        trigger = LimitEntryTriggerRecord
+        source = LimitEntryTriggerSourcePriceRecord
+        row = (await self.session.execute(select(trigger.observed_reference_price, source.price)
+            .join(source, source.signal_id == trigger.signal_id)
+            .where(trigger.signal_id == signal_id, source.exchange == exchange))).one_or_none()
+        return LimitTriggerPrices(row.observed_reference_price, row.price) if row is not None else None
 
     async def queue_limit_initials(self, signal, now, *, pending_id=None):
         """Within the trigger or Pending-ack transaction, queue from proven parents."""

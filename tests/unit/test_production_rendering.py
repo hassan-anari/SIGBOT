@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from PIL import Image
 from chainura.domain.destination import Exchange
+from chainura.domain.publication import LimitTriggerPrices
 from chainura.domain.signal import PriceSourceType,Signal,SignalEntryType,SignalLifecycleStatus,SignalMode,TradeDirection
 from chainura.application.initial_rendering import InitialPayloadFactory,InitialImageService,UpdatePayloadFactory
 from chainura.application.message_templates import initial_context
@@ -58,31 +59,36 @@ class ProductionRenderingTests(unittest.TestCase):
    context = initial_context(signal(), Exchange.TOOBIT, private=False)
    self.assertEqual(context["last_price"], "\u2066<code>100.003</code>\u2069")
    self.assertEqual(context["pnl"], "\u2066<code>0.01%</code>\u2069")
- def test_limit_initial_uses_configured_entry_for_long_and_short(self):
+ def test_limit_initial_uses_trigger_quote_for_long_and_short(self):
   entry = Decimal("0.08593")
   with tempfile.TemporaryDirectory() as root:
    factory = InitialPayloadFactory(CoinLogoStore(root))
-   for direction, creation, target, stop in (
-       (TradeDirection.LONG, "0.09035", "0.095", "0.08"),
-       (TradeDirection.SHORT, "0.08035", "0.075", "0.09"),
+   for direction, creation, target, stop, expected_pnls in (
+       (TradeDirection.LONG, "0.09035", "0.095", "0.08", ("0.00", "-6.49", "7.47")),
+       (TradeDirection.SHORT, "0.08035", "0.075", "0.09", ("0.00", "6.49", "-7.47")),
    ):
     limit = replace(signal(), id=1257, canonical_symbol="LISTAUSDT", base_asset="LISTA",
         entry_type=SignalEntryType.LIMIT, direction=direction, entry_price=entry, leverage=6,
         take_profits=(Decimal(target),), stop_loss=Decimal(stop), reference_price=Decimal(creation),
         exchange_symbols=tuple((exchange, "LISTAUSDT") for exchange in Exchange),
         initial_source_prices=tuple((exchange, Decimal(creation)) for exchange in Exchange))
-    for exchange in Exchange:
-     with self.subTest(direction=direction, exchange=exchange):
-      payload = factory.build(limit, exchange, NOW)
-      self.assertEqual((payload.entry_price, payload.reference_price, payload.display_price), (entry,) * 3)
-      self.assertEqual(payload.initial_pnl_percent, Decimal("0.00"))
-      self.assertEqual((payload.leverage, payload.take_profits, payload.stop_loss),
-                       (limit.leverage, limit.take_profits, limit.stop_loss))
-      values = _values(payload)
-      self.assertEqual((values["entry"], values["price"], values["pnl"]), ("0.08593", "—", "0.00%"))
-      context = initial_context(limit, exchange, private=False)
-      self.assertEqual((context["entry"], context["last_price"], context["pnl"]),
-                       ("\u2066<code>0.08593</code>\u2069", "—", "\u2066<code>0.00%</code>\u2069"))
+    for quote, expected_pnl in zip(("0.08593", "0.085", "0.087"), expected_pnls):
+     for exchange in Exchange:
+      with self.subTest(direction=direction, exchange=exchange, quote=quote):
+       prices = LimitTriggerPrices(entry, Decimal(quote))
+       payload = factory.build(limit, exchange, NOW, trigger_prices=prices)
+       self.assertEqual((payload.entry_price, payload.reference_price, payload.display_price),
+                        (entry, entry, Decimal(quote)))
+       self.assertEqual(payload.initial_pnl_percent, leveraged_return_percent(entry, Decimal(quote), 6, direction))
+       self.assertEqual((payload.leverage, payload.take_profits, payload.stop_loss),
+                        (limit.leverage, limit.take_profits, limit.stop_loss))
+       values = _values(payload)
+       image_pnl = f"{Decimal(expected_pnl):+.2f}" if expected_pnl != "0.00" or exchange is Exchange.TOOBIT else expected_pnl
+       self.assertEqual((values["entry"], values["price"], values["pnl"]), ("0.08593", quote, f"{image_pnl}%"))
+       context = initial_context(limit, exchange, private=False, trigger_prices=prices)
+       self.assertEqual((context["entry"], context["last_price"], context["pnl"]),
+                        ("\u2066<code>0.08593</code>\u2069", f"\u2066<code>{quote}</code>\u2069",
+                         f"\u2066<code>{expected_pnl}%</code>\u2069"))
  def test_explicit_registry_lifecycle(self):
   with tempfile.TemporaryDirectory() as root:
    path=Path(root);dummy=path/"font";dummy.write_text("test")

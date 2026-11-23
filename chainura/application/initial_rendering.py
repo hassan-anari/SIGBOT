@@ -2,9 +2,9 @@ from __future__ import annotations
 import asyncio,uuid,logging,os
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 from chainura.domain.destination import Exchange
+from chainura.domain.publication import LimitTriggerPrices
 from chainura.domain.signal import Signal,SignalEntryType,SignalMode
 from chainura.errors import (RenderPayloadError,RenderingError,UnsafeRenderPathError,
     RenderingLifecycleError)
@@ -38,26 +38,28 @@ class _OutputReservation:
 
 class InitialPayloadFactory:
  def __init__(self,logo_store:CoinLogoStore):self.logo_store=logo_store
- def build(self,signal:Signal,exchange:Exchange,rendered_at:datetime)->SignalRenderPayload:
+ def build(self, signal: Signal, exchange: Exchange, rendered_at: datetime, *,
+           trigger_prices: LimitTriggerPrices | None = None) -> SignalRenderPayload:
   if signal.id is None or signal.id<1:raise RenderPayloadError("persisted signal is required")
   if not isinstance(rendered_at,datetime) or rendered_at.tzinfo is None or rendered_at.utcoffset() is None:raise RenderPayloadError("render instant must be timezone-aware")
   mappings=[symbol for mapped,symbol in signal.exchange_symbols if mapped is exchange]
   if len(mappings)!=1:raise RenderPayloadError("exchange has no unique native-symbol mapping")
   if signal.mode is SignalMode.SINGLE_EXCHANGE and signal.selected_exchange is not exchange:raise RenderPayloadError("exchange is incompatible with single-exchange signal")
-  is_limit = signal.entry_type is SignalEntryType.LIMIT
-  if is_limit:
-   display_price = reference_price = signal.entry_price
-   pnl = Decimal("0.00")
+  if signal.entry_type is SignalEntryType.LIMIT:
+   if trigger_prices is None:
+    raise RenderPayloadError("exchange has no persisted Limit trigger price")
+   display_price = trigger_prices.exchange_price
+   reference_price = trigger_prices.observed_reference_price
   else:
    prices=[price for mapped,price in signal.initial_source_prices if mapped is exchange]
    if len(prices)!=1:raise RenderPayloadError("exchange has no unique initial price snapshot")
    display_price, reference_price = prices[0], signal.reference_price
-   pnl = leveraged_return_percent(signal.entry_price, display_price, signal.leverage, signal.direction)
   logo=self.logo_store.resolve(exchange,mappings[0],signal.canonical_symbol) if exchange is Exchange.TOOBIT else None
+  pnl = leveraged_return_percent(signal.entry_price, display_price, signal.leverage, signal.direction)
   try:return SignalRenderPayload(signal.id,SignalRenderEventKind.INITIAL,exchange,signal.direction,
    signal.price_source_type,signal.canonical_symbol,mappings[0],signal.base_asset,signal.quote_asset,
    signal.entry_price,signal.leverage,signal.take_profits,signal.stop_loss,reference_price,
-   display_price,pnl,signal.created_at,rendered_at,0,logo,is_limit_initial=is_limit)
+   display_price,pnl,signal.created_at,rendered_at,0,logo)
   except Exception as exc:
    if isinstance(exc,RenderPayloadError):raise
    raise RenderPayloadError("persisted signal is inconsistent with rendering contract") from exc
@@ -89,9 +91,10 @@ class InitialImageService:
   task=asyncio.create_task(coroutine);self._owned_tasks.add(task)
   task.add_done_callback(self._owned_tasks.discard);task.add_done_callback(_observe_future)
   return task
- async def render_initial_signal(self,signal,exchange,destination_id,rendered_at)->RenderedSignalImage:
+ async def render_initial_signal(self, signal, exchange, destination_id, rendered_at, *,
+                                 trigger_prices: LimitTriggerPrices | None = None) -> RenderedSignalImage:
   return await self._render_with_builder(
-   payload_builder=lambda: self.payload_factory.build(signal,exchange,rendered_at),
+   payload_builder=lambda: self.payload_factory.build(signal, exchange, rendered_at, trigger_prices=trigger_prices),
    exchange=exchange,destination_id=destination_id,output_prefix="initial")
  async def render_update_signal(self,signal,event,exchange,destination_id)->RenderedSignalImage:
   factory=self.payload_factory if hasattr(self.payload_factory,"build_update") else UpdatePayloadFactory(self.payload_factory.logo_store)

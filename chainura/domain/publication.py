@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 
 from chainura.domain.destination import Exchange
@@ -74,6 +75,12 @@ class PublicationDelivery:
     daily_limit: int
     origin: str = "market"
     reply_to_message_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LimitTriggerPrices:
+    observed_reference_price: Decimal
+    exchange_price: Decimal
 
 
 def select_event_exchange(mode, selected_exchange, priorities, source_exchanges):

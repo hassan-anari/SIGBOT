@@ -67,7 +67,6 @@ class SignalRenderPayload:
     rendered_at: datetime
     elapsed_seconds: int
     coin_logo_path: Path | None = None
-    is_limit_initial: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.signal_id, bool) or not isinstance(self.signal_id, int) or self.signal_id < 1:

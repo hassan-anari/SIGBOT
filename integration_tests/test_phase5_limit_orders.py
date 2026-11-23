@@ -82,7 +82,7 @@ class BlockingPublisher(Publisher):
     async def send_initial(self,chat_id,path,caption,reply_to_message_id=None):
         await self._wait();return await super().send_initial(chat_id,path,caption,reply_to_message_id)
 class Image:
-    async def render_initial_signal(self,*args):
+    async def render_initial_signal(self, *args, trigger_prices=None):
         class Output:file_path=Path("/tmp/limit-test.png")
         return Output()
     async def render_update_signal(self, *args):
@@ -156,7 +156,8 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as s:
             admitted=await s.scalar(select(LimitPendingPublicationRecord).where(LimitPendingPublicationRecord.signal_id==signal.id,LimitPendingPublicationRecord.destination_id==self.good))
             self.assertIs(admitted.status,PublicationStatus.SENT);self.assertEqual(admitted.telegram_message_id,701)
-        decision = MarketDecision(Decimal("89"), snapshot("89").source_prices,
+        decision = MarketDecision(Decimal("89"),
+                                  ((Exchange.OURBIT, Decimal("88")), (Exchange.TOOBIT, Decimal("90"))),
                                   PriceSourceType.COMPOSITE, NOW)
         market = Mock(snapshot=AsyncMock(return_value={signal.id: decision}))
         limit=LimitOrderService(self.sessions,market,clock=lambda:self.clock_now)
@@ -195,15 +196,17 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await initial.process(activations[0].id)
         self.assertEqual(len(publisher.photos), 1)
         self.assertEqual(publisher.photos[0][3],701)
-        self.assertEqual(publisher.photos[0][2], f"ورود {bidi_ascii('90')}\nآخرین قیمت —\nبازده {bidi_ascii('0.00%')}")
+        self.assertEqual(publisher.photos[0][2],
+                         f"ورود {bidi_ascii('90')}\nآخرین قیمت {bidi_ascii('88')}\nبازده {bidi_ascii('-22.22%')}")
         self.assertEqual(self.prices.calls, 2)
         self.assertEqual(market.snapshot.await_count, market_calls)
-        initial_signal, exchange, destination, rendered_at = images.render_initial_signal.await_args.args
+        args, kwargs = images.render_initial_signal.await_args
+        initial_signal, exchange, destination, rendered_at = args
         factory = InitialPayloadFactory(Mock())
-        payload = factory.build(initial_signal, exchange, rendered_at)
-        self.assertEqual(payload, factory.build(signal, exchange, rendered_at))
-        self.assertEqual((payload.entry_price, payload.reference_price, payload.display_price), (Decimal("90"),) * 3)
-        self.assertEqual(_values(payload)["pnl"], "0.00%")
+        payload = factory.build(initial_signal, exchange, rendered_at, **kwargs)
+        self.assertEqual((payload.entry_price, payload.reference_price, payload.display_price),
+                         (Decimal("90"), Decimal("89"), Decimal("88")))
+        self.assertEqual(_values(payload)["pnl"], "-22.22%")
         self.assertEqual((exchange, destination), (Exchange.OURBIT, self.good))
         details = SignalDetailsPublicationService(self.tx, publisher, lambda:self.clock_now,
                                                   message_templates=templates)
@@ -264,7 +267,8 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await pending.process(pending_id)
         service=LimitOrderService(self.sessions,clock=lambda:self.clock_now)
         self.assertFalse(await service.observe(signal.id,Decimal("109"),PriceSourceType.COMPOSITE,snapshot("109").source_prices,NOW))
-        self.assertTrue(await service.observe(signal.id,Decimal("110"),PriceSourceType.COMPOSITE,snapshot("110").source_prices,NOW))
+        trigger_quotes = ((Exchange.OURBIT, Decimal("109")), (Exchange.TOOBIT, Decimal("111")))
+        self.assertTrue(await service.observe(signal.id, Decimal("110"), PriceSourceType.COMPOSITE, trigger_quotes, NOW))
         self.assertFalse(await service.observe(signal.id,Decimal("100"),PriceSourceType.COMPOSITE,snapshot("100").source_prices,NOW))
         async with self.sessions() as s:self.assertIs((await s.get(SignalRecord,signal.id)).status,SignalLifecycleStatus.ENTRY_TRIGGERED)
         transport = Mock(send=AsyncMock(return_value=33))
@@ -283,11 +287,12 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                                             message_templates=templates)
         activation_id, = await initial.pending_ids()
         await initial.process(activation_id)
-        rendered_signal, exchange, _, rendered_at = images.render_initial_signal.await_args.args
-        payload = InitialPayloadFactory(Mock()).build(rendered_signal, exchange, rendered_at)
-        self.assertEqual((payload.entry_price, payload.display_price), (Decimal("110"),) * 2)
-        self.assertEqual(_values(payload)["pnl"], "0.00%")
-        self.assertEqual(publisher.photos[0][2:], (f"{bidi_ascii('110')} — {bidi_ascii('0.00%')}", 701))
+        args, kwargs = images.render_initial_signal.await_args
+        rendered_signal, exchange, _, rendered_at = args
+        payload = InitialPayloadFactory(Mock()).build(rendered_signal, exchange, rendered_at, **kwargs)
+        self.assertEqual((payload.entry_price, payload.display_price), (Decimal("110"), Decimal("109")))
+        self.assertEqual(_values(payload)["pnl"], "+9.09%")
+        self.assertEqual(publisher.photos[0][2:], (f"{bidi_ascii('110')} {bidi_ascii('109')} {bidi_ascii('9.09%')}", 701))
         self.assertEqual(self.prices.calls, 1)
 
     async def test_multi_exchange_limit_initial_retry_resolves_each_destination_template(self):
@@ -309,8 +314,8 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         for item_id in await pending.pending_ids():
             await pending.process(item_id)
         orders = LimitOrderService(self.sessions, clock=lambda: self.clock_now)
-        self.assertTrue(await orders.observe(signal.id, Decimal("89"), PriceSourceType.COMPOSITE,
-                                             snapshot("89").source_prices, NOW))
+        trigger_quotes = ((Exchange.OURBIT, Decimal("89")), (Exchange.TOOBIT, Decimal("91")))
+        self.assertTrue(await orders.observe(signal.id, Decimal("90"), PriceSourceType.COMPOSITE, trigger_quotes, NOW))
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -349,22 +354,54 @@ class Phase5LimitAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                 await initial.process(toobit_id)
 
             self.assertEqual(retry.await_args.args[2:], publisher.photos[-1][2:])
-            entry_and_pnl = f"{bidi_ascii('90')} — {bidi_ascii('0.00%')}"
-            self.assertEqual(publisher.photos[0][2], f"Ourbit {entry_and_pnl}")
-            self.assertEqual(publisher.photos[1][2], f"{bidi_ascii('BTCUSDT')} Toobit {entry_and_pnl}")
+            entry = bidi_ascii("90")
+            self.assertEqual(publisher.photos[0][2], f"Ourbit {entry} {bidi_ascii('89')} {bidi_ascii('-11.11%')}")
+            self.assertEqual(publisher.photos[1][2],
+                             f"{bidi_ascii('BTCUSDT')} Toobit {entry} {bidi_ascii('91')} {bidi_ascii('11.11%')}")
             self.assertEqual(renderer.call_count, 3)
-            expected = ((Exchange.OURBIT, "BTC_USDT", None), (Exchange.TOOBIT, "BTC-SWAP-USDT", self.blocked))
-            for call, (exchange, native_symbol, destination) in zip(renderer.call_args_list, (*expected, expected[1])):
+            ourbit = (Exchange.OURBIT, "BTC_USDT", None, "89", "-11.11%")
+            toobit = (Exchange.TOOBIT, "BTC-SWAP-USDT", self.blocked, "91", "+11.11%")
+            for call, (exchange, native_symbol, destination, quote, pnl) in zip(renderer.call_args_list, (ourbit, toobit, toobit)):
                 payload, template, _ = call.args
                 self.assertIs(payload.exchange, exchange)
                 self.assertEqual((payload.canonical_symbol, payload.native_symbol), ("BTCUSDT", native_symbol))
-                self.assertEqual((payload.entry_price, payload.display_price), (Decimal("90"),) * 2)
-                self.assertEqual(_values(payload)["pnl"], "0.00%")
+                self.assertEqual((payload.entry_price, payload.display_price), (Decimal("90"), Decimal(quote)))
+                self.assertEqual((_values(payload)["price"], _values(payload)["pnl"]), (quote, pnl))
                 resolved = await image_templates.resolve(exchange, destination)
                 self.assertEqual(template, resolved.path)
                 self.assertEqual(resolved.is_destination_specific, destination is not None)
             self.assertEqual(list(images.output_root.iterdir()), [])
         self.assertEqual(self.prices.calls, 1)
+
+    async def test_limit_initial_fails_before_send_if_destination_trigger_quote_is_missing(self):
+        await self.only_good_destination()
+        signal = await self.signal_service.create_limit(self.command())
+        publisher = Publisher()
+        templates = DestinationMessageTemplateService(self.tx)
+        pending = LimitPendingPublicationService(self.tx, publisher, templates, lambda: self.clock_now)
+        await pending.plan_pending()
+        pending_id, = await pending.pending_ids()
+        await pending.process(pending_id)
+        trigger_quotes = ((Exchange.TOOBIT, Decimal("88")), (Exchange.LBANK, Decimal("90")))
+        orders = LimitOrderService(self.sessions, clock=lambda: self.clock_now)
+        self.assertTrue(await orders.observe(signal.id, Decimal("89"), PriceSourceType.COMPOSITE, trigger_quotes, NOW))
+
+        images = Mock(render_initial_signal=AsyncMock())
+        initial = InitialPublicationService(self.tx, images, publisher, lambda: self.clock_now,
+                                            message_templates=templates)
+        delivery_id, = await initial.pending_ids()
+        await initial.process(delivery_id)
+        await initial.recover()
+        self.assertEqual(await initial.pending_ids(), ())
+        images.render_initial_signal.assert_not_awaited()
+        self.assertEqual(publisher.photos, [])
+        self.assertEqual(self.prices.calls, 1)
+        async with self.sessions() as session:
+            delivery = await session.get(DestinationPublicationRecord, delivery_id)
+            self.assertEqual((delivery.status, delivery.last_error_category),
+                             (PublicationStatus.FAILED, "limit_trigger_price_missing"))
+            self.assertIs((await session.get(LimitPendingPublicationRecord, pending_id)).status, PublicationStatus.SENT)
+            self.assertIs((await session.get(SignalRecord, signal.id)).status, SignalLifecycleStatus.ACTIVE)
 
     async def test_weex_single_exchange_limit_admission_trigger_and_activation(self):
         await self.only_good_destination()
